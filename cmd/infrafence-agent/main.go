@@ -137,12 +137,14 @@ func runAgent() {
 
 	// Callback for the updater to report update outcomes to the server
 	reportUpdateEvent := func(eventType, severity string, details map[string]string) {
-		_ = apiClient.ReportEvents([]api.EventRequest{{
+		if err := apiClient.ReportEvents([]api.EventRequest{{
 			Type:       eventType,
 			Severity:   severity,
 			Details:    details,
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}})
+		}}); err != nil {
+			log.Printf("[updater] failed to report %s: %v", eventType, err)
+		}
 	}
 
 	log.Printf("Starting InfraFence agent v%s (agent_id=%d)", version, cfg.AgentID)
@@ -174,13 +176,13 @@ func runAgent() {
 	if modsecEngine.IsAvailable() {
 		if err := modsecEngine.Setup(); err != nil {
 			log.Printf("[modsec] setup failed: %v", err)
-		} else {
-			_ = apiClient.ReportEvents([]api.EventRequest{{
-				Type:       "modsecurity_enabled",
-				Severity:   "info",
-				Details:    map[string]string{"status": "active"},
-				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
+		} else if err := apiClient.ReportEvents([]api.EventRequest{{
+			Type:       "modsecurity_enabled",
+			Severity:   "info",
+			Details:    map[string]string{"status": "active"},
+			OccurredAt: time.Now().UTC().Format(time.RFC3339),
+		}}); err != nil {
+			log.Printf("[modsec] failed to report modsecurity_enabled: %v", err)
 		}
 	}
 
@@ -237,13 +239,15 @@ func runAgent() {
 		// Record IP in dedup so the web log watcher skips this IP for 30s
 		modsecDedup.Record(entry.SourceIP)
 
-		_ = apiClient.ReportEvents([]api.EventRequest{{
+		if err := apiClient.ReportEvents([]api.EventRequest{{
 			Type:       eventType,
 			Severity:   severity,
 			SourceIP:   entry.SourceIP,
 			Details:    details,
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}})
+		}}); err != nil {
+			log.Printf("[modsec-audit] failed to report %s: %v", eventType, err)
+		}
 	}); auditWatcher != nil {
 		go auditWatcher.Run()
 		log.Printf("[modsec-audit] watcher started on %s", auditWatcher.Path())
@@ -272,12 +276,14 @@ func runAgent() {
 
 		go k8sClient.WatchEvents(func(event kubernetes.K8sEvent) {
 			log.Printf("[kubernetes] event: %s (%s)", event.Type, event.Severity)
-			_ = apiClient.ReportEvents([]api.EventRequest{{
+			if err := apiClient.ReportEvents([]api.EventRequest{{
 				Type:       event.Type,
 				Severity:   event.Severity,
 				Details:    event.Details,
 				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
+			}}); err != nil {
+				log.Printf("[kubernetes] failed to report %s: %v", event.Type, err)
+			}
 		})
 	}
 
@@ -437,12 +443,14 @@ func runAgent() {
 
 	// Setup UA blocking at web server level (runs once; no-op if sentinel exists)
 	uaReport := func(eventType, severity string, details map[string]string) {
-		_ = apiClient.ReportEvents([]api.EventRequest{{
+		if err := apiClient.ReportEvents([]api.EventRequest{{
 			Type:       eventType,
 			Severity:   severity,
 			Details:    details,
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}})
+		}}); err != nil {
+			log.Printf("[ua-block] failed to report %s: %v", eventType, err)
+		}
 	}
 	if wsName == "nginx" {
 		go func() {
@@ -780,22 +788,26 @@ func runAgent() {
 				log.Printf("[reverb] yara_install.requested")
 				go func() {
 					if err := malware.InstallYara(); err != nil {
-						_ = apiClient.ReportEvents([]api.EventRequest{{
+						if reportErr := apiClient.ReportEvents([]api.EventRequest{{
 							Type:       "yara_install_failed",
 							Severity:   "warning",
 							Details:    map[string]string{"error": err.Error()},
 							OccurredAt: time.Now().UTC().Format(time.RFC3339),
-						}})
+						}}); reportErr != nil {
+							log.Printf("[yara] failed to report yara_install_failed: %v", reportErr)
+						}
 						return
 					}
 					// Re-initialize YARA scanner after install
 					yaraScanner = malware.NewYaraScanner()
-					_ = apiClient.ReportEvents([]api.EventRequest{{
+					if err := apiClient.ReportEvents([]api.EventRequest{{
 						Type:       "yara_installed",
 						Severity:   "info",
 						Details:    map[string]string{"status": "ok"},
 						OccurredAt: time.Now().UTC().Format(time.RFC3339),
-					}})
+					}}); err != nil {
+						log.Printf("[yara] failed to report yara_installed: %v", err)
+					}
 				}()
 			},
 		},
@@ -1115,12 +1127,14 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			}
 		}
 		uaReport := func(eventType, severity string, details map[string]string) {
-			_ = client.ReportEvents([]api.EventRequest{{
+			if err := client.ReportEvents([]api.EventRequest{{
 				Type:       eventType,
 				Severity:   severity,
 				Details:    details,
 				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
+			}}); err != nil {
+				log.Printf("[ua-block] failed to report %s: %v", eventType, err)
+			}
 		}
 		if wsType == "nginx" {
 			go func(fps []webserver.UAFingerprint) {
@@ -1160,22 +1174,26 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		go func() {
 			if err := malware.InstallYara(); err != nil {
 				log.Printf("[yara] install failed: %v", err)
-				_ = client.ReportEvents([]api.EventRequest{{
+				if reportErr := client.ReportEvents([]api.EventRequest{{
 					Type:       "yara_install_failed",
 					Severity:   "warning",
 					Details:    map[string]string{"error": err.Error()},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
-				}})
+				}}); reportErr != nil {
+					log.Printf("[yara] failed to report yara_install_failed: %v", reportErr)
+				}
 				return
 			}
 			yaraScanner = malware.NewYaraScanner()
 			log.Printf("[yara] installed successfully")
-			_ = client.ReportEvents([]api.EventRequest{{
+			if err := client.ReportEvents([]api.EventRequest{{
 				Type:       "yara_installed",
 				Severity:   "info",
 				Details:    map[string]string{"status": "ok"},
 				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
+			}}); err != nil {
+				log.Printf("[yara] failed to report yara_installed: %v", err)
+			}
 		}()
 	}
 
@@ -1197,20 +1215,24 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			log.Printf("[quarantine] processing request: %s", filePath)
 			if _, err := malware.QuarantineFile(filePath); err != nil {
 				log.Printf("[quarantine] failed to quarantine %s: %v", filePath, err)
-				_ = client.ReportEvents([]api.EventRequest{{
+				if reportErr := client.ReportEvents([]api.EventRequest{{
 					Type:     "quarantine_failed",
 					Severity: "warning",
 					Details:  map[string]string{"file": filePath, "error": err.Error()},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
-				}})
+				}}); reportErr != nil {
+					log.Printf("[quarantine] failed to report quarantine_failed for %s: %v", filePath, reportErr)
+				}
 			} else {
 				log.Printf("[quarantine] moved %s to quarantine", filePath)
-				_ = client.ReportEvents([]api.EventRequest{{
+				if err := client.ReportEvents([]api.EventRequest{{
 					Type:     "quarantine_completed",
 					Severity: "info",
 					Details:  map[string]string{"file": filePath},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
-				}})
+				}}); err != nil {
+					log.Printf("[quarantine] failed to report quarantine_completed for %s: %v", filePath, err)
+				}
 			}
 		}
 	}
@@ -1409,10 +1431,12 @@ func applyAndAckRule(client *api.Client, r api.Rule) {
 	if err := firewall.ApplyRule(spec); err != nil {
 		log.Printf("[firewall] failed to apply rule %d: %v", r.ID, err)
 		errMsg := err.Error()
-		_ = client.AckRule(r.ID, api.RuleAckRequest{
+		if ackErr := client.AckRule(r.ID, api.RuleAckRequest{
 			Status:       "failed",
 			ErrorMessage: &errMsg,
-		})
+		}); ackErr != nil {
+			log.Printf("[api] failed to ack rule %d: %v", r.ID, ackErr)
+		}
 		return
 	}
 
@@ -1888,12 +1912,14 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 	malwareScanCancel.Store(false)
 	log.Printf("[malware] starting scan (intensity=%s)", intensityStr)
 
-	_ = client.ReportEvents([]api.EventRequest{{
+	if err := client.ReportEvents([]api.EventRequest{{
 		Type:       "malware_scan_started",
 		Severity:   "info",
 		Details:    map[string]string{"intensity": intensityStr},
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
-	}})
+	}}); err != nil {
+		log.Printf("[malware] failed to report malware_scan_started: %v", err)
+	}
 
 	intensity := malware.IntensityMedium
 	switch intensityStr {
@@ -1911,7 +1937,7 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 		for i, r := range webRoots {
 			rootPaths[i] = r.Path
 		}
-		_ = client.ReportEvents([]api.EventRequest{{
+		if err := client.ReportEvents([]api.EventRequest{{
 			Type:     "malware_scan_progress",
 			Severity: "info",
 			Details: map[string]string{
@@ -1920,17 +1946,21 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 				"root_paths": strings.Join(rootPaths, ", "),
 			},
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}})
+		}}); err != nil {
+			log.Printf("[malware] failed to report malware_scan_progress (detecting_roots): %v", err)
+		}
 	}
 
 	if len(webRoots) == 0 {
 		log.Printf("[malware] no web roots found — skipping scan")
-		_ = client.ReportEvents([]api.EventRequest{{
+		if err := client.ReportEvents([]api.EventRequest{{
 			Type:       "malware_scan_completed",
 			Severity:   "info",
 			Details:    map[string]string{"result": "no_web_roots"},
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}})
+		}}); err != nil {
+			log.Printf("[malware] failed to report malware_scan_completed (no_web_roots): %v", err)
+		}
 		return
 	}
 
@@ -1953,7 +1983,7 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 	for i, root := range webRoots {
 		if malwareScanCancel.Load() {
 			log.Printf("[malware] scan cancelled by user after %d/%d roots", i, len(webRoots))
-			_ = client.ReportEvents([]api.EventRequest{{
+			if err := client.ReportEvents([]api.EventRequest{{
 				Type: "malware_scan_completed", Severity: "info",
 				Details: map[string]string{
 					"result":        "cancelled",
@@ -1961,7 +1991,9 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 					"web_roots":     fmt.Sprintf("%d/%d", i, len(webRoots)),
 				},
 				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
+			}}); err != nil {
+				log.Printf("[malware] failed to report malware_scan_completed (cancelled): %v", err)
+			}
 			return
 		}
 		log.Printf("[malware] scanning root %d/%d: %s", i+1, len(webRoots), root.Path)
@@ -2049,14 +2081,16 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 
 		// Report progress
 		pct := (i + 1) * 100 / len(webRoots)
-		_ = client.ReportEvents([]api.EventRequest{{
+		if err := client.ReportEvents([]api.EventRequest{{
 			Type: "malware_scan_progress", Severity: "info",
 			Details: map[string]string{
 				"stage": "scanning_files", "percent": fmt.Sprintf("%d", pct),
 				"current_root": root.Path, "files_scanned": fmt.Sprintf("%d", totalFiles),
 			},
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}})
+		}}); err != nil {
+			log.Printf("[malware] failed to report malware_scan_progress (scanning_files): %v", err)
+		}
 	}
 
 	// System-wide checks (not per-root)
@@ -2112,7 +2146,7 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 	log.Printf("[malware] scan complete — %d files scanned, %d malware findings, %d framework issues in %s",
 		totalFiles, malwareCount, len(allFwFindings), duration.Round(time.Second))
 
-	_ = client.ReportEvents([]api.EventRequest{{
+	if err := client.ReportEvents([]api.EventRequest{{
 		Type: "malware_scan_completed", Severity: "info",
 		Details: map[string]string{
 			"files_scanned": fmt.Sprintf("%d", totalFiles), "malware_findings": fmt.Sprintf("%d", malwareCount),
@@ -2120,5 +2154,7 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 			"duration_seconds": fmt.Sprintf("%.1f", duration.Seconds()),
 		},
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
-	}})
+	}}); err != nil {
+		log.Printf("[malware] failed to report malware_scan_completed: %v", err)
+	}
 }
