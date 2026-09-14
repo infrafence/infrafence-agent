@@ -1,0 +1,37 @@
+# InfraFence Agent — Docker Swarm
+# Deploys one agent per node in the cluster (global mode).
+#
+# Deploy:
+#   echo "<your-token>" | docker secret create infrafence_token -
+#   docker stack deploy -c docker-compose.swarm.yml infrafence
+#
+# Each agent auto-registers with the hostname of the Swarm node it runs on.
+# Get your token at: https://infrafence.com/dashboard → Add Server
+
+services:
+  agent:
+    image: ghcr.io/infrafence/infrafence-agent:latest
+    deploy:
+      mode: global
+      restart_policy:
+        condition: any
+        delay: 10s
+    privileged: true
+    network_mode: host
+    pid: host
+    environment:
+      - INFRAFENCE_TOKEN_FILE=/run/secrets/infrafence_token
+      - INFRAFENCE_SERVER_URL=${INFRAFENCE_SERVER_URL:-https://infrafence.com}
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - infrafence-config:/etc/infrafence
+    secrets:
+      - infrafence_token
+
+secrets:
+  infrafence_token:
+    external: true
+
+volumes:
+  infrafence-config:
