@@ -23,6 +23,13 @@ type Client struct {
 	// throughput from API latency and bounds goroutine count under flood.
 	eventCh      chan EventRequest
 	eventDropped uint64
+
+	// eventObserver, if set, is called for every event passed to ReportEvents
+	// (both the QueueEvent batch flush and direct callers funnel through it).
+	// Used for local cross-detector correlation (e.g. Sigma session scoring)
+	// without coupling every call site to that logic. Set once at startup,
+	// before any producer goroutines are launched — not synchronized.
+	eventObserver func(EventRequest)
 }
 
 const (
@@ -99,6 +106,13 @@ func (c *Client) eventConsumerLoop() {
 // SetVersion updates the User-Agent string with the actual agent version.
 func (c *Client) SetVersion(version string) {
 	c.userAgent = "InfraFenceAgent/" + version
+}
+
+// SetEventObserver registers a callback invoked for every event reported via
+// ReportEvents, regardless of whether the HTTP send to the server succeeds.
+// Call once at startup before any producer goroutines are launched.
+func (c *Client) SetEventObserver(fn func(EventRequest)) {
+	c.eventObserver = fn
 }
 
 // RegisterRequest holds the data sent during agent registration.
@@ -477,6 +491,11 @@ type EventRequest struct {
 
 // ReportEvents sends security events to the server.
 func (c *Client) ReportEvents(events []EventRequest) error {
+	if c.eventObserver != nil {
+		for _, e := range events {
+			c.eventObserver(e)
+		}
+	}
 	return c.post("/api/v1/agent/events", c.token, map[string]any{"events": events}, nil)
 }
 
