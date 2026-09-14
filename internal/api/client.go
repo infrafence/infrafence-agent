@@ -1,0 +1,756 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"sync/atomic"
+	"time"
+)
+
+type Client struct {
+	baseURL    string
+	token      string
+	userAgent  string
+	httpClient *http.Client
+
+	// Async event queue: producers (watchers) push via QueueEvent(); a single
+	// consumer goroutine batches and flushes to /events. Decouples detection
+	// throughput from API latency and bounds goroutine count under flood.
+	eventCh      chan EventRequest
+	eventDropped uint64
+}
+
+const (
+	eventQueueSize  = 2000
+	eventBatchSize  = 50
+	eventFlushEvery = 5 * time.Second
+)
+
+func New(baseURL, token string) *Client {
+	return &Client{
+		baseURL:   baseURL,
+		token:     token,
+		userAgent: "DefensiaAgent/1.0",
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+		},
+		eventCh: make(chan EventRequest, eventQueueSize),
+	}
+}
+
+// QueueEvent enqueues an event for async batched delivery. Non-blocking: if the
+// queue is full, the event is dropped and a counter is incremented. Use this
+// from hot paths (watchers, scorer) instead of calling ReportEvents directly.
+func (c *Client) QueueEvent(e EventRequest) {
+	select {
+	case c.eventCh <- e:
+	default:
+		atomic.AddUint64(&c.eventDropped, 1)
+	}
+}
+
+// EventQueueStats returns current queue depth and total dropped count.
+func (c *Client) EventQueueStats() (depth int, dropped uint64) {
+	return len(c.eventCh), atomic.LoadUint64(&c.eventDropped)
+}
+
+// StartEventConsumer launches the background goroutine that drains the event
+// queue and ships events in batches. Call once at agent startup.
+func (c *Client) StartEventConsumer() {
+	go c.eventConsumerLoop()
+}
+
+func (c *Client) eventConsumerLoop() {
+	batch := make([]EventRequest, 0, eventBatchSize)
+	ticker := time.NewTicker(eventFlushEvery)
+	defer ticker.Stop()
+
+	flush := func(reason string) {
+		if len(batch) == 0 {
+			return
+		}
+		if err := c.ReportEvents(batch); err != nil {
+			log.Printf("[api] event flush failed (%s, %d events): %v", reason, len(batch), err)
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case e := <-c.eventCh:
+			batch = append(batch, e)
+			if len(batch) >= eventBatchSize {
+				flush("full")
+			}
+		case <-ticker.C:
+			flush("tick")
+			if dropped := atomic.SwapUint64(&c.eventDropped, 0); dropped > 0 {
+				log.Printf("[api] event queue: %d events dropped in last %s (queue cap=%d)", dropped, eventFlushEvery, eventQueueSize)
+			}
+		}
+	}
+}
+
+// SetVersion updates the User-Agent string with the actual agent version.
+func (c *Client) SetVersion(version string) {
+	c.userAgent = "DefensiaAgent/" + version
+}
+
+// RegisterRequest holds the data sent during agent registration.
+type RegisterRequest struct {
+	InstallToken string `json:"install_token"`
+	Name         string `json:"name"`
+	Hostname     string `json:"hostname"`
+	IPAddress    string `json:"ip_address"`
+	OS           string `json:"os"`
+	OSVersion    string `json:"os_version"`
+	Version      string `json:"version"`
+}
+
+// RegisterResponse is what the server returns after registration.
+type RegisterResponse struct {
+	Token string `json:"token"`
+	Agent struct {
+		ID int64 `json:"id"`
+	} `json:"agent"`
+	Reverb struct {
+		URL          string `json:"url"`
+		AppKey       string `json:"app_key"`
+		AuthEndpoint string `json:"auth_endpoint"`
+	} `json:"reverb"`
+}
+
+// SystemMetrics holds server performance data.
+type SystemMetrics struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryTotal   uint64  `json:"memory_total"`
+	MemoryUsed    uint64  `json:"memory_used"`
+	MemoryPercent float64 `json:"memory_percent"`
+	DiskTotal     uint64  `json:"disk_total"`
+	DiskUsed      uint64  `json:"disk_used"`
+	DiskPercent   float64 `json:"disk_percent"`
+	LoadAvg1      float64 `json:"load_avg_1"`
+	LoadAvg5      float64 `json:"load_avg_5"`
+	LoadAvg15     float64 `json:"load_avg_15"`
+	NetBytesIn    uint64  `json:"net_bytes_in"`
+	NetBytesOut   uint64  `json:"net_bytes_out"`
+}
+
+// HeartbeatRequest is sent every 60s.
+type HeartbeatRequest struct {
+	Status             string         `json:"status"`
+	Version            string         `json:"version"`
+	Timestamp          string         `json:"timestamp"`
+	IPAddress          string         `json:"ip_address,omitempty"`
+	ZombieCount        int            `json:"zombie_count"`
+	WebServer          string         `json:"web_server,omitempty"`
+	WebServerVersion   string         `json:"web_server_version,omitempty"`
+	Metrics            *SystemMetrics `json:"metrics,omitempty"`
+	MonitoredDomains   []string       `json:"monitored_domains,omitempty"`
+	MonitoredLogPaths  []string       `json:"monitored_log_paths,omitempty"`
+	FirewallMode       string         `json:"firewall_mode,omitempty"`
+	BanCapacity        int            `json:"ban_capacity,omitempty"`
+	ActiveBans         int            `json:"active_bans,omitempty"`
+	KubernetesInfo     interface{}    `json:"kubernetes_info,omitempty"`
+	YaraInstalled      bool           `json:"yara_installed,omitempty"`
+	ModsecActive       bool              `json:"modsec_active,omitempty"`
+	RequestsAnalyzed   uint64            `json:"requests_analyzed,omitempty"`
+	ListeningServices  []ListeningService `json:"listening_services,omitempty"`
+	Runtime            *RuntimeStats     `json:"runtime,omitempty"`
+	CSFInstalled       bool           `json:"csf_installed,omitempty"`
+	CSFVersion         string         `json:"csf_version,omitempty"`
+	CSFPortsIn         string         `json:"csf_ports_in,omitempty"`
+	CSFPortsOut        string         `json:"csf_ports_out,omitempty"`
+	CSFDenyCount       int            `json:"csf_deny_count,omitempty"`
+	CSFAllowCount      int            `json:"csf_allow_count,omitempty"`
+	ControlPanel        string         `json:"control_panel,omitempty"`
+	ControlPanelVersion string         `json:"control_panel_version,omitempty"`
+	PanelDomains        []string       `json:"panel_domains,omitempty"`
+}
+
+// RuntimeStats reports the agent's own resource usage so we can detect leaks
+// remotely instead of waiting for the host to OOM.
+type RuntimeStats struct {
+	GoroutineCount int    `json:"goroutine_count"`
+	HeapAllocBytes uint64 `json:"heap_alloc_bytes"`
+	HeapSysBytes   uint64 `json:"heap_sys_bytes"`
+	RSSBytes       uint64 `json:"rss_bytes,omitempty"`
+	UptimeSeconds  int64  `json:"uptime_seconds"`
+	EventQueueLen  int    `json:"event_queue_len,omitempty"`
+	EventDropped   uint64 `json:"event_dropped,omitempty"`
+}
+
+// ListeningService represents a TCP port in LISTEN state with its process.
+type ListeningService struct {
+	Port    int    `json:"port"`
+	Process string `json:"process"`
+	Proto   string `json:"proto"` // "tcp" or "tcp6"
+}
+
+// HeartbeatResponse is the server's reply to a heartbeat.
+type HeartbeatResponse struct {
+	Status              string  `json:"status"`
+	LastSeenAt          string  `json:"last_seen_at"`
+	LatestAgentVersion  *string `json:"latest_agent_version,omitempty"`
+	AgentDownloadBaseURL *string `json:"agent_download_base_url,omitempty"`
+	K8sDomainLimit      int     `json:"k8s_domain_limit,omitempty"`
+}
+
+// BanRequest reports a newly banned IP to the server.
+type BanRequest struct {
+	IPAddress string  `json:"ip_address"`
+	Reason    string  `json:"reason"`
+	BanCount  int     `json:"ban_count"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+}
+
+// AgentUpdateInfo contains version information for auto-updates.
+type AgentUpdateInfo struct {
+	LatestVersion  string `json:"latest_version"`
+	DownloadBaseURL string `json:"download_base_url"`
+}
+
+// WafRule is a dynamic WAF detection pattern synced from the panel.
+// Target: "uri" | "ua" | "referer" | "honeypot"
+// Category maps to an existing eventType (sql_injection, rce_attempt, etc.)
+type WafRule struct {
+	ID       int64  `json:"id"`
+	Category string `json:"category"`
+	Pattern  string `json:"pattern"`
+	Target   string `json:"target"`
+	IsRegex  bool   `json:"is_regex"`
+}
+
+// BotFingerprint describes a known bot pattern synced from the panel.
+type BotFingerprint struct {
+	Slug     string `json:"slug"`
+	Name     string `json:"name"`
+	Pattern  string `json:"ua_pattern"`
+	IsRegex  bool   `json:"is_regex"`
+	Category string `json:"category"`
+	Action   string `json:"action"` // allow, log, block
+}
+
+// ThreatEntry is a blocked IP or CIDR from an external threat feed.
+// Source identifies the feed slug (e.g. "spamhaus-drop", "feodo-tracker").
+type ThreatEntry struct {
+	IP     *string `json:"ip"`
+	CIDR   *string `json:"cidr"`
+	Source string  `json:"source"`
+}
+
+// DetectionRule is a log-based detection pattern synced from the panel.
+type DetectionRule struct {
+	ID      int64  `json:"id"`
+	Service string `json:"service"`
+	Pattern string `json:"pattern"`
+	Reason  string `json:"reason"`
+}
+
+// SyncResponse is the initial state fetched at startup.
+type SyncResponse struct {
+	Config            SyncConfig          `json:"config"`
+	Rules             []Rule              `json:"rules"`
+	Bans              []Ban               `json:"bans"`
+	Whitelists        []WhitelistEntry    `json:"whitelists"`
+	AgentUpdate       *AgentUpdateInfo    `json:"agent_update,omitempty"`
+	DetectionRules    []DetectionRule     `json:"detection_rules"`
+	BotFingerprints   []BotFingerprint    `json:"bot_fingerprints"`
+	WafRules          []WafRule           `json:"waf_rules"`
+	ThreatFeed        []ThreatEntry       `json:"threat_feed"`
+	MalwareAllowlist   []MalwareIgnoreEntry  `json:"malware_allowlist"`
+	MalwareSignatures  []MalwareSyncSignature `json:"malware_signatures"`
+	YaraRules              *YaraRulesSync         `json:"yara_rules,omitempty"`
+	YaraInstallRequested    bool                   `json:"yara_install_requested"`
+	MalwareScanRequested   bool                   `json:"malware_scan_requested"`
+	QuarantinePending      []string               `json:"quarantine_pending"`
+	CSFPortActions         []CSFPortAction        `json:"csf_port_actions"`
+}
+
+// CSFPortAction is a pending CSF port management command from the panel.
+type CSFPortAction struct {
+	Port      int    `json:"port"`
+	Direction string `json:"direction"` // "in" or "out"
+	Action    string `json:"action"`    // "add" or "remove"
+}
+
+// YaraRulesSync is the YARA rules content synced from the backend.
+type YaraRulesSync struct {
+	Rules   string `json:"rules"`
+	Version string `json:"version"`
+}
+
+// MalwareSyncSignature is a dynamic malware signature synced from the backend.
+type MalwareSyncSignature struct {
+	SignatureID string `json:"signature_id"`
+	Name        string `json:"name"`
+	Pattern     string `json:"pattern"`
+	Severity    string `json:"severity"`
+	Type        string `json:"type"`
+	IsRegex     bool   `json:"is_regex"`
+	PHPOnly     bool   `json:"php_only"`
+}
+
+// MalwareIgnoreEntry is a user-ignored malware finding synced from the backend.
+type MalwareIgnoreEntry struct {
+	FilePath    string `json:"file_path"`
+	SignatureID string `json:"signature_id"`
+}
+
+type SyncConfig struct {
+	Suspended         bool              `json:"suspended"`
+	BFThreshold       int               `json:"bf_threshold"`
+	BFWindow          int               `json:"bf_window"`
+	BFBanDuration     *int              `json:"bf_ban_duration"`
+	MonitorMode       bool              `json:"monitor_mode"`
+	WAFConfig         *WAFConfig        `json:"waf_config"`
+	BlockedCountries  []string          `json:"blocked_countries"`
+	MonitorConfig     *MonitorConfig    `json:"monitor_config,omitempty"`
+	MalwareScanConfig *MalwareScanConfig `json:"malware_scan_config,omitempty"`
+	SigmaConfig       *SigmaConfig      `json:"sigma_config,omitempty"`
+	SessionConfig     *SessionConfig    `json:"session_config,omitempty"`
+}
+
+// MonitorConfig holds monitoring settings synced from the panel.
+type MonitorConfig struct {
+	CustomLogPaths []string `json:"custom_log_paths"` // additional access log paths to monitor
+}
+
+// SigmaConfig controls Sigma rule-based detection.
+type SigmaConfig struct {
+	Enabled  bool   `json:"enabled"`
+	MinLevel string `json:"min_level,omitempty"`
+}
+
+// SessionConfig controls SSH session timeline tracking.
+type SessionConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// MalwareScanConfig controls scheduled malware scanning.
+type MalwareScanConfig struct {
+	Enabled         bool     `json:"enabled"`
+	Frequency       string   `json:"frequency"`         // "daily", "weekly", "disabled"
+	Time            string   `json:"time"`               // "03:00" (HH:MM in server local time)
+	Intensity       string   `json:"intensity"`           // "low", "medium", "high"
+	CustomScanPaths []string `json:"custom_scan_paths"`   // additional paths to scan (e.g. "/home/*/public_html")
+}
+
+type WAFConfig struct {
+	EnabledTypes    []string       `json:"enabled_types"`
+	DetectOnlyTypes []string       `json:"detect_only_types"`
+	Thresholds      map[string]int `json:"thresholds"`
+	ScorePoints     map[string]int `json:"score_points"`
+}
+
+type Rule struct {
+	ID          int64   `json:"id"`
+	Type        string  `json:"type"`
+	Protocol    string  `json:"protocol"`
+	IPAddress   *string `json:"ip_address"`
+	IPRange     *string `json:"ip_range"`
+	CountryCode *string `json:"country_code"`
+	Port        *int    `json:"port"`
+	Status      string  `json:"status"`
+	Reason      *string `json:"reason"`
+	Priority    int     `json:"priority"`
+}
+
+type WhitelistEntry struct {
+	ID        int64   `json:"id"`
+	IPAddress *string `json:"ip_address"`
+	IPRange   *string `json:"ip_range"`
+}
+
+// RuleAckRequest is sent by the agent after applying (or failing) a rule.
+type RuleAckRequest struct {
+	Status       string  `json:"status"`
+	ErrorMessage *string `json:"error_message,omitempty"`
+}
+
+type Ban struct {
+	ID        int64   `json:"id"`
+	IPAddress string  `json:"ip_address"`
+	ExpiresAt *string `json:"expires_at"`
+}
+
+func (c *Client) Register(req RegisterRequest) (*RegisterResponse, error) {
+	var resp RegisterResponse
+	if err := c.post("/api/v1/agents/register", "", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) Heartbeat(req HeartbeatRequest) (*HeartbeatResponse, error) {
+	var resp HeartbeatResponse
+	if err := c.post("/api/v1/agent/heartbeat", c.token, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) Sync() (*SyncResponse, error) {
+	var resp SyncResponse
+	if err := c.get("/api/v1/agent/sync", &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) ReportBan(req BanRequest) error {
+	return c.post("/api/v1/agent/bans", c.token, req, nil)
+}
+
+func (c *Client) AckRule(ruleID int64, req RuleAckRequest) error {
+	path := fmt.Sprintf("/api/v1/agent/rules/%d/ack", ruleID)
+	return c.post(path, c.token, req, nil)
+}
+
+// ScanResultRequest sends vulnerability scan findings to the server.
+type ScanResultRequest struct {
+	ScanID   int64         `json:"scan_id"`
+	Findings []ScanFinding `json:"findings"`
+}
+
+type ScanFinding struct {
+	Category       string            `json:"category"`
+	Severity       string            `json:"severity"`
+	CheckID        string            `json:"check_id"`
+	Title          string            `json:"title"`
+	Description    string            `json:"description"`
+	Recommendation string            `json:"recommendation,omitempty"`
+	Details        map[string]string `json:"details,omitempty"`
+	Passed         bool              `json:"passed"`
+}
+
+func (c *Client) SubmitScanResults(req ScanResultRequest) error {
+	return c.post("/api/v1/agent/scan-results", c.token, req, nil)
+}
+
+// ImportedRule represents a single iptables rule to import.
+type ImportedRule struct {
+	RawRule   string `json:"raw_rule"`
+	Type      string `json:"type"`
+	Protocol  string `json:"protocol"`
+	Source    string `json:"source,omitempty"`
+	Port      int    `json:"port,omitempty"`
+}
+
+// ImportRulesRequest sends discovered iptables rules to the server.
+type ImportRulesRequest struct {
+	Rules []ImportedRule `json:"rules"`
+}
+
+// ImportRulesResponse is the server's reply after importing rules.
+type ImportRulesResponse struct {
+	Imported int `json:"imported"`
+	Skipped  int `json:"skipped"`
+	Total    int `json:"total"`
+}
+
+// ImportRules sends discovered iptables rules to the server for import.
+func (c *Client) ImportRules(req ImportRulesRequest) (*ImportRulesResponse, error) {
+	var resp ImportRulesResponse
+	if err := c.post("/api/v1/agent/rules/import", c.token, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// EventRequest represents a security event to report to the server.
+type EventRequest struct {
+	Type       string            `json:"type"`
+	Severity   string            `json:"severity"`
+	SourceIP   string            `json:"source_ip,omitempty"`
+	SourcePort *int              `json:"source_port,omitempty"`
+	TargetPort *int              `json:"target_port,omitempty"`
+	Protocol   string            `json:"protocol,omitempty"`
+	Details    map[string]string `json:"details,omitempty"`
+	OccurredAt string            `json:"occurred_at"`
+}
+
+// ReportEvents sends security events to the server.
+func (c *Client) ReportEvents(events []EventRequest) error {
+	return c.post("/api/v1/agent/events", c.token, map[string]any{"events": events}, nil)
+}
+
+// SoftwareAuditRequest sends software audit results to the server.
+type SoftwareAuditRequest struct {
+	AuditID     int64       `json:"audit_id"`
+	Summary     interface{} `json:"summary"`
+	KeySoftware interface{} `json:"key_software"`
+	Packages    interface{} `json:"packages,omitempty"`
+}
+
+// SubmitSoftwareAudit sends software audit results to the server.
+func (c *Client) SubmitSoftwareAudit(req SoftwareAuditRequest) error {
+	return c.post("/api/v1/agent/software-audit-results", c.token, req, nil)
+}
+
+// MalwareScanResultRequest sends malware scan results to the server.
+type MalwareScanResultRequest struct {
+	WebRoots          []MalwareScanWebRoot    `json:"web_roots"`
+	Findings          []MalwareScanFinding    `json:"findings"`
+	FrameworkFindings []MalwareFrameworkIssue `json:"framework_findings"`
+	FilesScanned      int64                   `json:"files_scanned"`
+	FilesSkipped      int64                   `json:"files_skipped"`
+	DurationSeconds   float64                 `json:"duration_seconds"`
+	SecurityScore     *MalwareSecurityScore   `json:"security_score,omitempty"`
+}
+
+type MalwareSecurityScore struct {
+	Score                int    `json:"score"`
+	Grade                string `json:"grade"`
+	MalwareDeductions    int    `json:"malware_deductions"`
+	FrameworkDeductions  int    `json:"framework_deductions"`
+	CredentialDeductions int    `json:"credential_deductions"`
+	IntegrityDeductions  int    `json:"integrity_deductions"`
+}
+
+type MalwareScanWebRoot struct {
+	Path             string `json:"path"`
+	Domain           string `json:"domain,omitempty"`
+	FrameworkName    string `json:"framework_name"`
+	FrameworkVersion string `json:"framework_version,omitempty"`
+}
+
+type MalwareScanFinding struct {
+	FilePath    string `json:"file_path"`
+	SignatureID string `json:"signature_id"`
+	Name        string `json:"name"`
+	Severity    string `json:"severity"`
+	Type        string `json:"type"`
+	MatchLine   int    `json:"match_line"`
+	MatchText   string `json:"match_text"`
+	Domain      string `json:"domain,omitempty"`
+	Framework   string `json:"framework,omitempty"`
+}
+
+type MalwareFrameworkIssue struct {
+	CheckID     string `json:"check_id"`
+	Title       string `json:"title"`
+	Severity    string `json:"severity"`
+	Description string `json:"description"`
+	FilePath    string `json:"file_path"`
+	Domain      string `json:"domain,omitempty"`
+	Framework   string `json:"framework"`
+}
+
+// SubmitMalwareScanResults sends malware scan results to the server (legacy — full payload).
+func (c *Client) SubmitMalwareScanResults(req MalwareScanResultRequest) error {
+	return c.postLong("/api/v1/agent/malware-scan-results", c.token, req, nil)
+}
+
+// MalwareScanChunkRequest sends results for a single web root (incremental).
+type MalwareScanChunkRequest struct {
+	WebRoot           MalwareScanWebRoot     `json:"web_root"`
+	Findings          []MalwareScanFinding   `json:"findings"`
+	FrameworkFindings []MalwareFrameworkIssue `json:"framework_findings"`
+	FilesScanned      int64                  `json:"files_scanned"`
+	FilesSkipped      int64                  `json:"files_skipped"`
+}
+
+type MalwareScanChunkResponse struct {
+	ScanID        int64 `json:"scan_id"`
+	RootsReceived int   `json:"roots_received"`
+}
+
+// SubmitMalwareScanChunk sends results for one root directory.
+func (c *Client) SubmitMalwareScanChunk(req MalwareScanChunkRequest) (*MalwareScanChunkResponse, error) {
+	var resp MalwareScanChunkResponse
+	if err := c.post("/api/v1/agent/malware-scan-results/chunk", c.token, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// MalwareScanCompleteRequest finalizes an incremental scan.
+type MalwareScanCompleteRequest struct {
+	ScanID          int64                `json:"scan_id"`
+	DurationSeconds float64             `json:"duration_seconds"`
+	SecurityScore   *MalwareSecurityScore `json:"security_score,omitempty"`
+}
+
+// CompleteMalwareScan marks an incremental scan as completed.
+func (c *Client) CompleteMalwareScan(req MalwareScanCompleteRequest) error {
+	return c.post("/api/v1/agent/malware-scan-results/complete", c.token, req, nil)
+}
+
+// HashLookupRequest is a batch of SHA256 hashes to check against known malware.
+type HashLookupRequest struct {
+	Hashes []string `json:"hashes"`
+}
+
+// HashLookupResponse returns which hashes are known malware.
+type HashLookupResponse struct {
+	Matches map[string]HashMatch `json:"matches"`
+	Checked int                  `json:"checked"`
+	Found   int                  `json:"found"`
+}
+
+// HashMatch is a single known malware hash.
+type HashMatch struct {
+	SHA256 string `json:"sha256"`
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Source string `json:"source"`
+	Tags   string `json:"tags"`
+}
+
+// LookupMalwareHashes checks a batch of file hashes against the backend's malware DB.
+func (c *Client) LookupMalwareHashes(hashes []string) (*HashLookupResponse, error) {
+	var resp HashLookupResponse
+	err := c.post("/api/v1/agent/malware-hash-lookup", c.token, HashLookupRequest{Hashes: hashes}, &resp)
+	return &resp, err
+}
+
+// WpInventoryRequest is the payload for WordPress plugin/theme inventory.
+type WpInventoryRequest struct {
+	WpSites []WpSite `json:"wp_sites"`
+}
+
+// WpSite represents a WordPress installation.
+type WpSite struct {
+	WebRoot    string        `json:"web_root"`
+	Domain     string        `json:"domain,omitempty"`
+	WpVersion  string        `json:"wp_version,omitempty"`
+	Components []WpComponent `json:"components"`
+}
+
+// WpComponent represents a plugin or theme.
+type WpComponent struct {
+	Slug     string `json:"slug"`
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Type     string `json:"type"`
+	IsActive bool   `json:"is_active"`
+}
+
+// ReportWpInventory sends WordPress plugin/theme inventory to the panel.
+func (c *Client) ReportWpInventory(req WpInventoryRequest) error {
+	return c.post("/api/v1/agent/wp-inventory", c.token, req, nil)
+}
+
+// MonitorRunRequest is a single monitor scan result.
+type MonitorRunRequest struct {
+	Monitor    string            `json:"monitor"`
+	Detections int               `json:"detections"`
+	Summary    map[string]string `json:"summary"`
+	RanAt      string            `json:"ran_at"`
+}
+
+// ReportMonitorRun sends a background monitor result to the panel.
+func (c *Client) ReportMonitorRun(req MonitorRunRequest) error {
+	return c.post("/api/v1/agent/monitor-runs", c.token, req, nil)
+}
+
+func (c *Client) post(path, token string, body, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+
+	return nil
+}
+
+// postLong is like post but uses a 5-minute timeout for large payloads.
+func (c *Client) postLong(path, token string, body, out any) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[api] postLong %s: payload size %d bytes (%.1f MB)", path, len(data), float64(len(data))/1024/1024)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	// Use a fresh client without the 15s default timeout
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+
+	return nil
+}
+
+func (c *Client) get(path string, out any) error {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("User-Agent", c.userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
+	}
+
+	return json.NewDecoder(resp.Body).Decode(out)
+}

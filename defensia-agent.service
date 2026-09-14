@@ -1,0 +1,28 @@
+[Unit]
+Description=Defensia Security Agent
+Documentation=https://defensia.com/docs/agent
+After=network-online.target
+Wants=network-online.target
+# Disable systemd's start rate-limit so rapid successive auto-updates never
+# leave the service stuck in start-limit-hit state.
+# NOTE: must be in [Unit], not [Service] — older systemd ignores it in [Service].
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/defensia-agent start
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=defensia-agent
+Environment=DEFENSIA_CONFIG=/etc/defensia/config.json
+
+# Needs root for iptables — hardening where possible
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectSystem=false
+ProtectHome=no
+
+[Install]
+WantedBy=multi-user.target
