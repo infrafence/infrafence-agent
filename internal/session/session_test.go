@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -571,5 +572,119 @@ func TestMultipleSessions(t *testing.T) {
 	}
 	if sessionEvents[1]["user"] != "user2" {
 		t.Errorf("expected user2, got %q", sessionEvents[1]["user"])
+	}
+}
+
+// --- Sigma correlation tests ---
+
+func TestNotifySigmaEvent_CreditsOpenSessions(t *testing.T) {
+	var sessionEvents []map[string]string
+	tracker := New(func(eventType, severity string, details map[string]string) {
+		if eventType == "ssh_session" {
+			sessionEvents = append(sessionEvents, details)
+		}
+	})
+	tracker.UpdateConfig(Config{Enabled: true, SigmaEnabled: true, SigmaMinLevel: "warning"})
+
+	tracker.processLine("Aug 18 12:00:00 server sshd[42]: Accepted password for admin from 1.2.3.4 port 22222 ssh2")
+	// A command keeps the session out of the "empty short session" suppression
+	// in closeSession (see TestSessionLifecycle for the same pattern).
+	tracker.processLine("Aug 18 12:00:30 server sudo: admin : TTY=pts/0 ; PWD=/home/admin ; USER=root ; COMMAND=/usr/bin/apt update")
+
+	// An independent detector (e.g. integrity monitor) fires while the session is open.
+	tracker.NotifySigmaEvent("integrity_change", "critical")
+
+	tracker.processLine("Aug 18 12:01:00 server sshd[42]: pam_unix(sshd:session): session closed for user admin")
+
+	if len(sessionEvents) != 1 {
+		t.Fatalf("expected 1 ssh_session event, got %d", len(sessionEvents))
+	}
+	if sessionEvents[0]["risk_factors"] == "" {
+		t.Fatalf("expected risk_factors to be set")
+	}
+	if !strings.Contains(sessionEvents[0]["risk_factors"], "sigma_correlation") {
+		t.Errorf("expected sigma_correlation factor, got %q", sessionEvents[0]["risk_factors"])
+	}
+}
+
+func TestNotifySigmaEvent_DisabledDoesNothing(t *testing.T) {
+	var sessionEvents []map[string]string
+	tracker := New(func(eventType, severity string, details map[string]string) {
+		if eventType == "ssh_session" {
+			sessionEvents = append(sessionEvents, details)
+		}
+	})
+	tracker.UpdateConfig(Config{Enabled: true, SigmaEnabled: false})
+
+	tracker.processLine("Aug 18 12:00:00 server sshd[42]: Accepted password for admin from 1.2.3.4 port 22222 ssh2")
+	tracker.processLine("Aug 18 12:00:30 server sudo: admin : TTY=pts/0 ; PWD=/home/admin ; USER=root ; COMMAND=/usr/bin/apt update")
+	tracker.NotifySigmaEvent("integrity_change", "critical")
+	tracker.processLine("Aug 18 12:01:00 server sshd[42]: pam_unix(sshd:session): session closed for user admin")
+
+	if len(sessionEvents) != 1 {
+		t.Fatalf("expected 1 ssh_session event, got %d", len(sessionEvents))
+	}
+	if strings.Contains(sessionEvents[0]["risk_factors"], "sigma_correlation") {
+		t.Errorf("did not expect sigma_correlation when SigmaEnabled=false, got %q", sessionEvents[0]["risk_factors"])
+	}
+}
+
+func TestNotifySigmaEvent_BelowMinLevelIgnored(t *testing.T) {
+	var sessionEvents []map[string]string
+	tracker := New(func(eventType, severity string, details map[string]string) {
+		if eventType == "ssh_session" {
+			sessionEvents = append(sessionEvents, details)
+		}
+	})
+	tracker.UpdateConfig(Config{Enabled: true, SigmaEnabled: true, SigmaMinLevel: "critical"})
+
+	tracker.processLine("Aug 18 12:00:00 server sshd[42]: Accepted password for admin from 1.2.3.4 port 22222 ssh2")
+	tracker.processLine("Aug 18 12:00:30 server sudo: admin : TTY=pts/0 ; PWD=/home/admin ; USER=root ; COMMAND=/usr/bin/apt update")
+	tracker.NotifySigmaEvent("port_scan", "warning") // below "critical" min level
+	tracker.processLine("Aug 18 12:01:00 server sshd[42]: pam_unix(sshd:session): session closed for user admin")
+
+	if len(sessionEvents) != 1 {
+		t.Fatalf("expected 1 ssh_session event, got %d", len(sessionEvents))
+	}
+	if strings.Contains(sessionEvents[0]["risk_factors"], "sigma_correlation") {
+		t.Errorf("did not expect sigma_correlation below min level, got %q", sessionEvents[0]["risk_factors"])
+	}
+}
+
+func TestNotifySigmaEvent_ExcludesSessionOwnEventTypes(t *testing.T) {
+	tracker := New(func(eventType, severity string, details map[string]string) {})
+	tracker.UpdateConfig(Config{Enabled: true, SigmaEnabled: true, SigmaMinLevel: "info"})
+
+	tracker.processLine("Aug 18 12:00:00 server sshd[42]: Accepted password for admin from 1.2.3.4 port 22222 ssh2")
+	tracker.NotifySigmaEvent("ssh_session", "critical")
+	tracker.NotifySigmaEvent("system_audit", "critical")
+
+	tracker.mu.Lock()
+	sess := tracker.sessions["42"]
+	hits := sess.SigmaHits
+	tracker.mu.Unlock()
+
+	if hits != 0 {
+		t.Errorf("expected session-originated event types to be excluded from correlation, got SigmaHits=%d", hits)
+	}
+}
+
+func TestSeverityAtLeast(t *testing.T) {
+	cases := []struct {
+		severity, min string
+		want          bool
+	}{
+		{"critical", "warning", true},
+		{"warning", "warning", true},
+		{"info", "warning", false},
+		{"critical", "critical", true},
+		{"info", "info", true},
+		{"unknown", "info", true},     // unrecognized severity defaults to info-rank (0)
+		{"critical", "unknown", true}, // unrecognized min defaults to warning-rank (1)
+	}
+	for _, c := range cases {
+		if got := severityAtLeast(c.severity, c.min); got != c.want {
+			t.Errorf("severityAtLeast(%q, %q) = %v, want %v", c.severity, c.min, got, c.want)
+		}
 	}
 }

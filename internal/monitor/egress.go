@@ -17,17 +17,21 @@ const egressCooldown = 30 * time.Minute
 type EgressDetector struct {
 	feed     *ThreatFeedIndex
 	reported map[string]time.Time
+
+	// connSource is overridable in tests; production always uses ParseProcNetTCP.
+	connSource func() ([]TCPConn, error)
 }
 
 func NewEgressDetector(feed *ThreatFeedIndex) *EgressDetector {
 	return &EgressDetector{
-		feed:     feed,
-		reported: make(map[string]time.Time),
+		feed:       feed,
+		reported:   make(map[string]time.Time),
+		connSource: ParseProcNetTCP,
 	}
 }
 
 func (d *EgressDetector) Scan() ScanResult {
-	conns, err := ParseProcNetTCP()
+	conns, err := d.connSource()
 	if err != nil {
 		log.Printf("[egress] error reading /proc/net/tcp: %v", err)
 		return ScanResult{Summary: map[string]string{"error": err.Error()}}
