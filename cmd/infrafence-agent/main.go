@@ -45,6 +45,7 @@ var yaraScanner         *malware.YaraScanner
 var malwareCustomPaths  []string
 var modsecEngine      *modsecurity.Engine
 var sessionTracker    *session.SessionTracker
+var threatFeedIndex   = monitor.NewThreatFeedIndex()
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -1709,21 +1710,22 @@ func runZombieMonitor(client *api.Client) {
 	}
 }
 
-// ── Security Monitors (port scan, flood, file integrity) ─────────────────────
+// ── Security Monitors (port scan, flood, file integrity, egress) ─────────────
 //
 // Execution frequency:
-//   Port scan + Flood: every 60s (time-sensitive, lightweight kernel reads)
-//   File integrity:    every 30 min (changes are persistent, no rush)
+//   Port scan + Flood + Egress: every 60s (time-sensitive, lightweight kernel reads)
+//   File integrity:             every 30 min (changes are persistent, no rush)
 //
 // Reporting strategy (reduce API noise):
 //   Detections > 0 → report immediately (events + monitor run)
-//   Health check    → every 5 min, one combined report for all 3 monitors
+//   Health check    → every 5 min, one combined report for all 4 monitors
 //   No "0 detections" spam — only report when something happens or on health tick
 
 func runSecurityMonitors(client *api.Client) {
 	portScan := monitor.NewPortScanDetector()
 	flood := monitor.NewFloodDetector()
 	integrity := monitor.NewIntegrityDetector()
+	egress := monitor.NewEgressDetector(threatFeedIndex)
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -1733,13 +1735,13 @@ func runSecurityMonitors(client *api.Client) {
 	log.Println("[monitor] file integrity baseline established")
 
 	// Track latest results for health check reporting
-	var lastPS, lastFL, lastFI monitor.ScanResult
+	var lastPS, lastFL, lastFI, lastEG monitor.ScanResult
 	tick := 0
 
 	for range ticker.C {
 		tick++
 
-		// Port scan + flood: every 60s
+		// Port scan + flood + egress: every 60s
 		lastPS = portScan.Scan()
 		if len(lastPS.Events) > 0 {
 			reportScanResult(client, "port_scan", lastPS)
@@ -1750,6 +1752,11 @@ func runSecurityMonitors(client *api.Client) {
 			reportScanResult(client, "flood", lastFL)
 		}
 
+		lastEG = egress.Scan()
+		if len(lastEG.Events) > 0 {
+			reportScanResult(client, "egress_threat_match", lastEG)
+		}
+
 		// File integrity: every 30 min (tick 1800 at 60s interval)
 		if tick%30 == 0 {
 			lastFI = integrity.Scan()
@@ -1758,12 +1765,13 @@ func runSecurityMonitors(client *api.Client) {
 			}
 		}
 
-		// Health check: every 5 min — report latest summary for all 3 monitors
+		// Health check: every 5 min — report latest summary for all 4 monitors
 		// so the panel knows monitors are active (no "no scan runs" message)
 		if tick%5 == 0 {
 			reportHealthCheck(client, "port_scan", lastPS)
 			reportHealthCheck(client, "flood", lastFL)
 			reportHealthCheck(client, "integrity_change", lastFI)
+			reportHealthCheck(client, "egress_threat_match", lastEG)
 		}
 	}
 }
@@ -1806,6 +1814,8 @@ func reportHealthCheck(client *api.Client, monitorType string, result monitor.Sc
 const threatFeedCache = "/etc/infrafence/threat_feed.json"
 
 func applyThreatFeed(entries []api.ThreatEntry) {
+	threatFeedIndex.Update(entries)
+
 	for _, e := range entries {
 		if e.IP != nil && *e.IP != "" {
 			if err := firewall.BanIP(*e.IP); err != nil {
