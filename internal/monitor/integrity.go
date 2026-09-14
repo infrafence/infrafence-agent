@@ -39,12 +39,17 @@ var monitoredFiles = []string{
 	"/etc/hosts",
 	"/etc/resolv.conf",
 	"/root/.ssh/authorized_keys",
+	"/etc/ld.so.preload", // classic userspace rootkit hijack point
 }
 
 var monitoredGlobs = []string{
 	"/home/*/.ssh/authorized_keys",
 	"/etc/sudoers.d/*",
 	"/etc/cron.d/*",
+	"/var/spool/cron/crontabs/*",    // per-user crontabs (Debian/Ubuntu)
+	"/var/spool/cron/*",             // per-user crontabs (RHEL/CentOS)
+	"/etc/systemd/system/*.service", // persistence via systemd unit
+	"/etc/systemd/system/*.timer",   // persistence via systemd timer (cron replacement)
 }
 
 func NewIntegrityDetector() *IntegrityDetector {
@@ -166,17 +171,19 @@ func hashFile(path string) (string, error) {
 func fileSeverity(path string) string {
 	base := filepath.Base(path)
 
-	// Critical: sudoers, authorized_keys
-	if base == "sudoers" || base == "authorized_keys" || strings.Contains(path, "sudoers.d/") {
+	// Critical: sudoers, authorized_keys, LD_PRELOAD hijack
+	if base == "sudoers" || base == "authorized_keys" || base == "ld.so.preload" ||
+		strings.Contains(path, "sudoers.d/") {
 		return "critical"
 	}
 
-	// Warning: shadow, sshd_config, crontab
-	if base == "shadow" || base == "sshd_config" || base == "crontab" || strings.Contains(path, "cron.d/") {
+	// Warning: shadow, sshd_config, crontab (system + per-user), systemd persistence units
+	if base == "shadow" || base == "sshd_config" || base == "crontab" ||
+		strings.Contains(path, "cron.d/") || strings.Contains(path, "/cron/") ||
+		strings.HasSuffix(base, ".service") || strings.HasSuffix(base, ".timer") {
 		return "warning"
 	}
 
 	// Info: passwd, group, hosts, resolv.conf
 	return "info"
 }
-
