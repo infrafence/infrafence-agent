@@ -481,8 +481,8 @@ func (e *AuditEntry) AttackCategory() string {
 	return "unknown"
 }
 
-// MapSeverityToDefensia converts ModSecurity severity to Defensia severity.
-func MapSeverityToDefensia(modSecSeverity string) string {
+// MapSeverityToInfraFence converts ModSecurity severity to InfraFence severity.
+func MapSeverityToInfraFence(modSecSeverity string) string {
 	switch strings.ToUpper(modSecSeverity) {
 	case "CRITICAL":
 		return "critical"
@@ -497,7 +497,7 @@ func MapSeverityToDefensia(modSecSeverity string) string {
 	}
 }
 
-// MapAttackToEventType converts CRS attack tags to Defensia event types.
+// MapAttackToEventType converts CRS attack tags to InfraFence event types.
 func MapAttackToEventType(attackTag string) string {
 	mapping := map[string]string{
 		"attack-sqli":            "sql_injection",

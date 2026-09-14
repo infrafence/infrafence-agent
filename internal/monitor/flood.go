@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/defensia/agent/internal/api"
+	"github.com/infrafence/infrafence-agent/internal/api"
 )
 
 const (

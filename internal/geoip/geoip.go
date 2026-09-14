@@ -10,7 +10,7 @@ import (
 	"github.com/oschwald/maxminddb-golang"
 )
 
-const defaultDBPath = "/etc/defensia/GeoLite2-Country.mmdb"
+const defaultDBPath = "/etc/infrafence/GeoLite2-Country.mmdb"
 
 // Lookup provides country code lookups from MaxMind GeoLite2-Country database.
 type Lookup struct {

@@ -831,20 +831,20 @@ func detectCpanelDomlogs() []LogPathInfo {
 // detectDockerLogInfo finds web server access logs inside Docker containers.
 // Containers are selected for monitoring if they match one of:
 //  1. Image name contains a web keyword (nginx, apache, httpd, caddy, openresty, traefik)
-//  2. Label `defensia.monitor=true` is present (overrides image detection)
+//  2. Label `infrafence.monitor=true` is present (overrides image detection)
 //
 // Log path resolution order:
-//  1. Label `defensia.log-path` — explicit host path(s), comma-separated
+//  1. Label `infrafence.log-path` — explicit host path(s), comma-separated
 //  2. `docker exec nginx -T` — parses nginx config for log directives
 //  3. Fallback: scan bind-mounted directories for *access*.log files
 //
 // Supported labels:
 //
-//	defensia.monitor=true     — force-monitor this container (even if not a web image)
-//	defensia.monitor=false    — skip this container (even if it matches a web image)
-//	defensia.log-path=/path   — explicit host log path(s), comma-separated
-//	defensia.waf=true         — (informational) reported in heartbeat, WAF config comes from panel
-//	defensia.domain=example   — associate domain(s) with this container's logs, comma-separated
+//	infrafence.monitor=true     — force-monitor this container (even if not a web image)
+//	infrafence.monitor=false    — skip this container (even if it matches a web image)
+//	infrafence.log-path=/path   — explicit host log path(s), comma-separated
+//	infrafence.waf=true         — (informational) reported in heartbeat, WAF config comes from panel
+//	infrafence.domain=example   — associate domain(s) with this container's logs, comma-separated
 func detectDockerLogInfo() []LogPathInfo {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil
@@ -875,8 +875,8 @@ func detectDockerLogInfo() []LogPathInfo {
 
 		labels := parseDockerLabels(rawLabels)
 
-		// Label-based override: defensia.monitor=false skips, =true forces
-		if v, ok := labels["defensia.monitor"]; ok {
+		// Label-based override: infrafence.monitor=false skips, =true forces
+		if v, ok := labels["infrafence.monitor"]; ok {
 			if v == "false" || v == "0" || v == "no" {
 				continue
 			}
@@ -884,9 +884,9 @@ func detectDockerLogInfo() []LogPathInfo {
 
 		// Determine if this is a web container
 		isWeb := false
-		if v, ok := labels["defensia.monitor"]; ok && (v == "true" || v == "1" || v == "yes") {
+		if v, ok := labels["infrafence.monitor"]; ok && (v == "true" || v == "1" || v == "yes") {
 			isWeb = true
-			log.Printf("[webwatcher] docker: container %s selected via defensia.monitor label", name)
+			log.Printf("[webwatcher] docker: container %s selected via infrafence.monitor label", name)
 		}
 		if !isWeb {
 			for _, kw := range webKeywords {
@@ -900,9 +900,9 @@ func detectDockerLogInfo() []LogPathInfo {
 			continue
 		}
 
-		// Label: defensia.domain — explicit domain association
+		// Label: infrafence.domain — explicit domain association
 		var labelDomains []string
-		if d, ok := labels["defensia.domain"]; ok && d != "" {
+		if d, ok := labels["infrafence.domain"]; ok && d != "" {
 			for _, dom := range strings.Split(d, ",") {
 				dom = strings.TrimSpace(dom)
 				if dom != "" {
@@ -911,14 +911,14 @@ func detectDockerLogInfo() []LogPathInfo {
 			}
 		}
 
-		// Label: defensia.log-path — explicit host path(s), highest priority
-		if lp, ok := labels["defensia.log-path"]; ok && lp != "" {
+		// Label: infrafence.log-path — explicit host path(s), highest priority
+		if lp, ok := labels["infrafence.log-path"]; ok && lp != "" {
 			for _, p := range strings.Split(lp, ",") {
 				p = strings.TrimSpace(p)
 				if p != "" && !seen[p] {
 					seen[p] = true
 					result = append(result, LogPathInfo{Path: p, Domains: labelDomains})
-					log.Printf("[webwatcher] docker: watching %s from container %s (defensia.log-path label)", p, name)
+					log.Printf("[webwatcher] docker: watching %s from container %s (infrafence.log-path label)", p, name)
 				}
 			}
 			continue // explicit path set — skip auto-detection
@@ -2372,7 +2372,7 @@ type BotFingerprintInput struct {
 }
 
 // UpdateBotFingerprints compiles and stores bot fingerprint rules from the panel.
-// Also persists the raw inputs to /etc/defensia/bot_fingerprints.json for cache reload on restart.
+// Also persists the raw inputs to /etc/infrafence/bot_fingerprints.json for cache reload on restart.
 func (w *WebWatcher) UpdateBotFingerprints(fps []BotFingerprintInput) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2401,9 +2401,9 @@ func (w *WebWatcher) UpdateBotFingerprints(fps []BotFingerprintInput) {
 	log.Printf("[webwatcher] loaded %d bot fingerprints", len(bots))
 
 	// Persist to cache so fingerprints survive agent restarts
-	const cachePath = "/etc/defensia/bot_fingerprints.json"
+	const cachePath = "/etc/infrafence/bot_fingerprints.json"
 	if data, err := json.Marshal(fps); err == nil {
-		if err := os.MkdirAll("/etc/defensia", 0755); err == nil {
+		if err := os.MkdirAll("/etc/infrafence", 0755); err == nil {
 			if err := os.WriteFile(cachePath, data, 0600); err != nil {
 				log.Printf("[webwatcher] failed to save bot fingerprints cache: %v", err)
 			}
@@ -2414,7 +2414,7 @@ func (w *WebWatcher) UpdateBotFingerprints(fps []BotFingerprintInput) {
 // LoadBotFingerprintsCache loads bot fingerprints from the on-disk cache written by
 // UpdateBotFingerprints. Should be called once at startup before the first sync.
 func (w *WebWatcher) LoadBotFingerprintsCache() {
-	const cachePath = "/etc/defensia/bot_fingerprints.json"
+	const cachePath = "/etc/infrafence/bot_fingerprints.json"
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -2443,7 +2443,7 @@ type WafRuleInput struct {
 }
 
 // UpdateWafRules compiles and stores dynamic WAF rules from the panel.
-// Also persists the raw inputs to /etc/defensia/waf_rules.json for cache reload on restart.
+// Also persists the raw inputs to /etc/infrafence/waf_rules.json for cache reload on restart.
 func (w *WebWatcher) UpdateWafRules(rules []WafRuleInput) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2474,9 +2474,9 @@ func (w *WebWatcher) UpdateWafRules(rules []WafRuleInput) {
 	w.dynamicWafRules = compiled
 	log.Printf("[webwatcher] loaded %d dynamic WAF rules", len(compiled))
 
-	const cachePath = "/etc/defensia/waf_rules.json"
+	const cachePath = "/etc/infrafence/waf_rules.json"
 	if data, err := json.Marshal(rules); err == nil {
-		if err := os.MkdirAll("/etc/defensia", 0755); err == nil {
+		if err := os.MkdirAll("/etc/infrafence", 0755); err == nil {
 			if err := os.WriteFile(cachePath, data, 0600); err != nil {
 				log.Printf("[webwatcher] failed to save WAF rules cache: %v", err)
 			}
@@ -2487,7 +2487,7 @@ func (w *WebWatcher) UpdateWafRules(rules []WafRuleInput) {
 // LoadWafRulesCache loads dynamic WAF rules from the on-disk cache written by
 // UpdateWafRules. Should be called once at startup before the first sync.
 func (w *WebWatcher) LoadWafRulesCache() {
-	const cachePath = "/etc/defensia/waf_rules.json"
+	const cachePath = "/etc/infrafence/waf_rules.json"
 	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		if !os.IsNotExist(err) {

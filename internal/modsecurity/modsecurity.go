@@ -12,11 +12,11 @@ import (
 )
 
 const (
-	rulesDir      = "/etc/modsecurity/defensia"
-	staticRules   = "defensia-static.conf"
-	dynamicRules  = "defensia-dynamic.conf"
-	ipBanRules    = "defensia-ipbans.conf"
-	includeMarker = "# Defensia ModSecurity rules"
+	rulesDir      = "/etc/modsecurity/infrafence"
+	staticRules   = "infrafence-static.conf"
+	dynamicRules  = "infrafence-dynamic.conf"
+	ipBanRules    = "infrafence-ipbans.conf"
+	includeMarker = "# InfraFence ModSecurity rules"
 )
 
 // Engine manages ModSecurity rule generation and Apache integration.
@@ -64,7 +64,7 @@ func (e *Engine) Setup() error {
 	for _, f := range []string{dynamicRules, ipBanRules} {
 		path := filepath.Join(rulesDir, f)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
-			os.WriteFile(path, []byte("# Defensia dynamic rules\n"), 0644)
+			os.WriteFile(path, []byte("# InfraFence dynamic rules\n"), 0644)
 		}
 	}
 
@@ -90,7 +90,7 @@ func (e *Engine) UpdateBannedIPs(ips []string) error {
 	defer e.mu.Unlock()
 
 	var rules strings.Builder
-	rules.WriteString("# Defensia banned IPs (synced from dashboard)\n")
+	rules.WriteString("# InfraFence banned IPs (synced from dashboard)\n")
 
 	for i, ip := range ips {
 		if i >= 500 {
@@ -98,7 +98,7 @@ func (e *Engine) UpdateBannedIPs(ips []string) error {
 		}
 		id := 9900000 + i + 1
 		rules.WriteString(fmt.Sprintf(
-			"SecRule REMOTE_ADDR \"@ipMatch %s\" \"id:%d,phase:1,deny,status:403,nolog,msg:'Defensia: Banned IP'\"\n",
+			"SecRule REMOTE_ADDR \"@ipMatch %s\" \"id:%d,phase:1,deny,status:403,nolog,msg:'InfraFence: Banned IP'\"\n",
 			ip, id,
 		))
 	}
@@ -149,60 +149,60 @@ func (e *Engine) detectModSecurity() bool {
 }
 
 func (e *Engine) writeStaticRules() error {
-	rules := `# Defensia ModSecurity Static Rules
+	rules := `# InfraFence ModSecurity Static Rules
 # Auto-generated — do not edit manually
 
 # ─── SQL Injection ───
 SecRule ARGS|ARGS_NAMES|REQUEST_URI "@rx (?i)(union\s+(all\s+)?select|select\s+.*from\s+information_schema|or\s+1\s*=\s*1|'\s*or\s*'|benchmark\s*\(|sleep\s*\(\d)" \
-    "id:9910001,phase:2,deny,status:403,log,msg:'Defensia: SQL Injection',severity:'CRITICAL'"
+    "id:9910001,phase:2,deny,status:403,log,msg:'InfraFence: SQL Injection',severity:'CRITICAL'"
 
 # ─── XSS ───
 SecRule ARGS|REQUEST_URI "@rx (?i)(<script[^>]*>|javascript\s*:|onerror\s*=|onload\s*=|document\.cookie|\.fromCharCode)" \
-    "id:9910002,phase:2,deny,status:403,log,msg:'Defensia: XSS',severity:'CRITICAL'"
+    "id:9910002,phase:2,deny,status:403,log,msg:'InfraFence: XSS',severity:'CRITICAL'"
 
 # ─── RCE ───
 SecRule ARGS|REQUEST_URI "@rx (?i)(eval\s*\(|exec\s*\(|system\s*\(|passthru\s*\(|shell_exec\s*\(|proc_open\s*\(|popen\s*\(|\$\{jndi:|php://filter|php://input)" \
-    "id:9910003,phase:2,deny,status:403,log,msg:'Defensia: RCE',severity:'CRITICAL'"
+    "id:9910003,phase:2,deny,status:403,log,msg:'InfraFence: RCE',severity:'CRITICAL'"
 
 # ─── Path Traversal ───
 SecRule REQUEST_URI "@rx (?:\.\.\/|\.\.\\|%2e%2e%2f|%2e%2e\/|\.\.%2f|%252e%252e)" \
-    "id:9910004,phase:1,deny,status:403,log,msg:'Defensia: Path Traversal',severity:'HIGH'"
+    "id:9910004,phase:1,deny,status:403,log,msg:'InfraFence: Path Traversal',severity:'HIGH'"
 
 # ─── SSRF ───
 SecRule ARGS|REQUEST_URI "@rx (?i)(169\.254\.169\.254|metadata\.google|file:\/\/|gopher:\/\/|dict:\/\/)" \
-    "id:9910005,phase:2,deny,status:403,log,msg:'Defensia: SSRF',severity:'CRITICAL'"
+    "id:9910005,phase:2,deny,status:403,log,msg:'InfraFence: SSRF',severity:'CRITICAL'"
 
 # ─── Shellshock ───
 SecRule REQUEST_HEADERS "@rx \(\)\s*\{" \
-    "id:9910006,phase:1,deny,status:403,log,msg:'Defensia: Shellshock',severity:'CRITICAL'"
+    "id:9910006,phase:1,deny,status:403,log,msg:'InfraFence: Shellshock',severity:'CRITICAL'"
 
 # ─── Web Shell Access ───
 SecRule REQUEST_URI "@rx (?i)(c99\.php|r57\.php|shell\.php|cmd\.php|wso\.php|b374k|alfa\.php)" \
-    "id:9910007,phase:1,deny,status:403,log,msg:'Defensia: Web Shell Access',severity:'CRITICAL'"
+    "id:9910007,phase:1,deny,status:403,log,msg:'InfraFence: Web Shell Access',severity:'CRITICAL'"
 
 # ─── Env File Probe ───
 SecRule REQUEST_URI "@rx (?i)(\.env$|\.env\.local|\.env\.production|\.env\.backup)" \
-    "id:9910008,phase:1,deny,status:403,log,msg:'Defensia: Env Probe',severity:'HIGH'"
+    "id:9910008,phase:1,deny,status:403,log,msg:'InfraFence: Env Probe',severity:'HIGH'"
 
 # ─── Config Probe ───
 SecRule REQUEST_URI "@rx (?i)(wp-config\.php\.bak|\.git/config|web\.config|\.htpasswd|server-status|server-info)" \
-    "id:9910009,phase:1,deny,status:403,log,msg:'Defensia: Config Probe',severity:'HIGH'"
+    "id:9910009,phase:1,deny,status:403,log,msg:'InfraFence: Config Probe',severity:'HIGH'"
 
 # ─── Header Injection ───
 SecRule REQUEST_HEADERS "@rx (\r\n|\n|\r|%0d%0a|%0a|%0d)" \
-    "id:9910010,phase:1,deny,status:403,log,msg:'Defensia: Header Injection',severity:'HIGH'"
+    "id:9910010,phase:1,deny,status:403,log,msg:'InfraFence: Header Injection',severity:'HIGH'"
 
 # ─── Log4Shell ───
 SecRule ARGS|REQUEST_HEADERS "@rx \$\{jndi:" \
-    "id:9910012,phase:1,deny,status:403,log,msg:'Defensia: Log4Shell',severity:'CRITICAL'"
+    "id:9910012,phase:1,deny,status:403,log,msg:'InfraFence: Log4Shell',severity:'CRITICAL'"
 
 # ─── Spring4Shell ───
 SecRule ARGS_NAMES "@rx class\.module\.classLoader" \
-    "id:9910013,phase:2,deny,status:403,log,msg:'Defensia: Spring4Shell',severity:'CRITICAL'"
+    "id:9910013,phase:2,deny,status:403,log,msg:'InfraFence: Spring4Shell',severity:'CRITICAL'"
 
 # ─── Scanner Blocking ───
 SecRule REQUEST_HEADERS:User-Agent "@rx (?i)(sqlmap|nikto|nmap|masscan|dirbuster|gobuster|wpscan|nuclei|acunetix|nessus)" \
-    "id:9910014,phase:1,deny,status:403,nolog,msg:'Defensia: Scanner',severity:'MEDIUM'"
+    "id:9910014,phase:1,deny,status:403,nolog,msg:'InfraFence: Scanner',severity:'MEDIUM'"
 `
 
 	path := filepath.Join(rulesDir, staticRules)
@@ -245,7 +245,7 @@ func (e *Engine) ensureInclude() error {
 	confDirs := []string{"/etc/apache2/conf-enabled", "/etc/httpd/conf.d", "/usr/local/apache/conf/includes"}
 	for _, dir := range confDirs {
 		if _, err := os.Stat(dir); err == nil {
-			confPath := filepath.Join(dir, "defensia-modsec.conf")
+			confPath := filepath.Join(dir, "infrafence-modsec.conf")
 			content := fmt.Sprintf("%s\n<IfModule security2_module>\n    IncludeOptional %s/*.conf\n</IfModule>\n", includeMarker, rulesDir)
 			if err := os.WriteFile(confPath, []byte(content), 0644); err == nil {
 				log.Printf("[modsec] created include conf at %s", confPath)

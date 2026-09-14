@@ -373,7 +373,7 @@ func checkUsers() []Finding {
 func checkFirewall() []Finding {
 	var findings []Finding
 
-	// Check if iptables DEFENSIA chain exists (our chain)
+	// Check if iptables INFRAFENCE chain exists (our chain)
 	_, err := os.Stat("/proc/net/ip_tables_names")
 	hasIptables := err == nil
 

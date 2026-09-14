@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-const defaultPath = "/etc/defensia/config.json"
+const defaultPath = "/etc/infrafence/config.json"
 
 type Config struct {
 	ServerURL    string `json:"server_url"`
@@ -19,7 +19,7 @@ type Config struct {
 }
 
 func path() string {
-	if p := os.Getenv("DEFENSIA_CONFIG"); p != "" {
+	if p := os.Getenv("INFRAFENCE_CONFIG"); p != "" {
 		return p
 	}
 	return defaultPath

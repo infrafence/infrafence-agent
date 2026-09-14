@@ -1,6 +1,6 @@
 package monitor
 
-import "github.com/defensia/agent/internal/api"
+import "github.com/infrafence/infrafence-agent/internal/api"
 
 // ScanResult holds the outcome of a single monitor scan cycle.
 type ScanResult struct {

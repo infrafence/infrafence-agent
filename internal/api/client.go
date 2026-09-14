@@ -35,7 +35,7 @@ func New(baseURL, token string) *Client {
 	return &Client{
 		baseURL:   baseURL,
 		token:     token,
-		userAgent: "DefensiaAgent/1.0",
+		userAgent: "InfraFenceAgent/1.0",
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
@@ -98,7 +98,7 @@ func (c *Client) eventConsumerLoop() {
 
 // SetVersion updates the User-Agent string with the actual agent version.
 func (c *Client) SetVersion(version string) {
-	c.userAgent = "DefensiaAgent/" + version
+	c.userAgent = "InfraFenceAgent/" + version
 }
 
 // RegisterRequest holds the data sent during agent registration.

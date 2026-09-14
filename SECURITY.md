@@ -5,7 +5,7 @@
 If you discover a security vulnerability, please report it responsibly:
 
 1. **Do NOT open a public GitHub issue**
-2. Email **security@defensia.cloud** with details
+2. Email **security@infrafence.com** with details
 3. Include steps to reproduce if possible
 4. We will respond within 48 hours
 
@@ -21,10 +21,10 @@ The agent requires root privileges for two reasons: reading auth logs and managi
 |---|---|---|
 | `/var/log/auth.log` or `/var/log/secure` | Read | SSH brute force detection |
 | Nginx / Apache access logs | Read | WAF attack detection |
-| `iptables` / `ipset` | Read + Write | Apply and remove IP bans (dedicated `DEFENSIA` chain) |
+| `iptables` / `ipset` | Read + Write | Apply and remove IP bans (dedicated `INFRAFENCE` chain) |
 | `/proc/net/tcp` | Read | Port scan detection |
 | `/var/run/docker.sock` | Read (optional) | Container discovery (only if Docker present) |
-| `/etc/defensia/` | Read + Write | Agent configuration and auth token |
+| `/etc/infrafence/` | Read + Write | Agent configuration and auth token |
 
 The agent does **not** access: application source code, databases, environment variables, SSH keys, user files, or any data outside of log files and network state.
 
@@ -55,25 +55,25 @@ Every release is built by [GitHub Actions CI](.github/workflows/release.yml) wit
 
 ```bash
 # Download checksum file from the release
-curl -sL https://github.com/defensia/agent/releases/latest/download/checksums.txt
+curl -sL https://github.com/infrafence/infrafence-agent/releases/latest/download/checksums.txt
 
 # Compare with your installed binary
-sha256sum /usr/local/bin/defensia-agent
+sha256sum /usr/local/bin/infrafence-agent
 ```
 
 ### Verify Cosign signature
 
 ```bash
 cosign verify-blob \
-  --key https://raw.githubusercontent.com/defensia/agent/main/cosign.pub \
-  --signature https://github.com/defensia/agent/releases/latest/download/defensia-agent-linux-amd64.sig \
-  /usr/local/bin/defensia-agent
+  --key https://raw.githubusercontent.com/infrafence/infrafence-agent/main/cosign.pub \
+  --signature https://github.com/infrafence/infrafence-agent/releases/latest/download/infrafence-agent-linux-amd64.sig \
+  /usr/local/bin/infrafence-agent
 ```
 
 ### Verify build provenance
 
 ```bash
-gh attestation verify defensia-agent-linux-amd64 --repo defensia/agent
+gh attestation verify infrafence-agent-linux-amd64 --repo infrafence/infrafence-agent
 ```
 
 ## Uninstall
@@ -81,22 +81,22 @@ gh attestation verify defensia-agent-linux-amd64 --repo defensia/agent
 Complete removal with no residual system changes:
 
 ```bash
-curl -fsSL https://defensia.cloud/install.sh | sudo bash -s -- --uninstall
+curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --uninstall
 ```
 
 Or manually:
 
 ```bash
-sudo systemctl stop defensia-agent
-sudo systemctl disable defensia-agent
-sudo rm /usr/local/bin/defensia-agent
-sudo rm -rf /etc/defensia/
-sudo iptables -F DEFENSIA 2>/dev/null
-sudo iptables -D INPUT -j DEFENSIA 2>/dev/null
-sudo iptables -X DEFENSIA 2>/dev/null
+sudo systemctl stop infrafence-agent
+sudo systemctl disable infrafence-agent
+sudo rm /usr/local/bin/infrafence-agent
+sudo rm -rf /etc/infrafence/
+sudo iptables -F INFRAFENCE 2>/dev/null
+sudo iptables -D INPUT -j INFRAFENCE 2>/dev/null
+sudo iptables -X INFRAFENCE 2>/dev/null
 ```
 
-The agent only creates a dedicated `DEFENSIA` iptables chain. Removing it restores your firewall to its pre-installation state. No cron jobs, no kernel modules, no system-wide configuration changes.
+The agent only creates a dedicated `INFRAFENCE` iptables chain. Removing it restores your firewall to its pre-installation state. No cron jobs, no kernel modules, no system-wide configuration changes.
 
 ## Supported Versions
 

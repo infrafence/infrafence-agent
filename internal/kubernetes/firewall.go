@@ -23,8 +23,8 @@ const (
 	serverSnippetKey = "server-snippet"
 
 	// Markers so we only modify our section, not user's existing snippets
-	markerStart = "# -- defensia-blocked-ips-start --"
-	markerEnd   = "# -- defensia-blocked-ips-end --"
+	markerStart = "# -- infrafence-blocked-ips-start --"
+	markerEnd   = "# -- infrafence-blocked-ips-end --"
 )
 
 // K8sFirewall manages blocked IPs by injecting deny rules into the nginx-ingress
@@ -120,7 +120,7 @@ func (fw *K8sFirewall) syncToIngress() error {
 	endIdx := strings.Index(existing, markerEnd)
 
 	if startIdx >= 0 && endIdx >= 0 {
-		// Replace existing defensia block
+		// Replace existing infrafence block
 		newSnippet = existing[:startIdx] + defBlock + existing[endIdx+len(markerEnd):]
 	} else {
 		// Append our block

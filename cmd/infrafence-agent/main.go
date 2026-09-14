@@ -15,21 +15,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/defensia/agent/internal/api"
-	"github.com/defensia/agent/internal/collector"
-	"github.com/defensia/agent/internal/config"
-	"github.com/defensia/agent/internal/firewall"
-	"github.com/defensia/agent/internal/geoip"
-	"github.com/defensia/agent/internal/kubernetes"
-	"github.com/defensia/agent/internal/malware"
-	"github.com/defensia/agent/internal/modsecurity"
-	"github.com/defensia/agent/internal/monitor"
-	"github.com/defensia/agent/internal/scanner"
-	"github.com/defensia/agent/internal/session"
-	"github.com/defensia/agent/internal/updater"
-	"github.com/defensia/agent/internal/watcher"
-	"github.com/defensia/agent/internal/webserver"
-	"github.com/defensia/agent/internal/ws"
+	"github.com/infrafence/infrafence-agent/internal/api"
+	"github.com/infrafence/infrafence-agent/internal/collector"
+	"github.com/infrafence/infrafence-agent/internal/config"
+	"github.com/infrafence/infrafence-agent/internal/firewall"
+	"github.com/infrafence/infrafence-agent/internal/geoip"
+	"github.com/infrafence/infrafence-agent/internal/kubernetes"
+	"github.com/infrafence/infrafence-agent/internal/malware"
+	"github.com/infrafence/infrafence-agent/internal/modsecurity"
+	"github.com/infrafence/infrafence-agent/internal/monitor"
+	"github.com/infrafence/infrafence-agent/internal/scanner"
+	"github.com/infrafence/infrafence-agent/internal/session"
+	"github.com/infrafence/infrafence-agent/internal/updater"
+	"github.com/infrafence/infrafence-agent/internal/watcher"
+	"github.com/infrafence/infrafence-agent/internal/webserver"
+	"github.com/infrafence/infrafence-agent/internal/ws"
 )
 
 var version = "1.4.57"
@@ -57,7 +57,7 @@ func main() {
 	switch os.Args[1] {
 	case "register":
 		if len(os.Args) < 5 {
-			fmt.Fprintf(os.Stderr, "usage: defensia-agent register <server_url> <agent_name> <install_token>\n")
+			fmt.Fprintf(os.Stderr, "usage: infrafence-agent register <server_url> <agent_name> <install_token>\n")
 			os.Exit(1)
 		}
 		runRegister(os.Args[2], os.Args[3], os.Args[4])
@@ -68,7 +68,7 @@ func main() {
 	case "check":
 		// Pre-flight self-test used by the auto-updater to verify the binary
 		// works before restarting the service. Exits 0 on success.
-		fmt.Printf("defensia-agent v%s OK\n", version)
+		fmt.Printf("infrafence-agent v%s OK\n", version)
 		os.Exit(0)
 
 	default:
@@ -79,9 +79,9 @@ func main() {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  defensia-agent register <server_url> <agent_name> <install_token>")
-	fmt.Println("  defensia-agent start")
-	fmt.Println("  defensia-agent check")
+	fmt.Println("  infrafence-agent register <server_url> <agent_name> <install_token>")
+	fmt.Println("  infrafence-agent start")
+	fmt.Println("  infrafence-agent check")
 }
 
 // runRegister performs first-boot registration and saves the config.
@@ -120,15 +120,15 @@ func runRegister(serverURL, name, installToken string) {
 	}
 
 	log.Printf("Agent registered successfully (id=%d)", resp.Agent.ID)
-	log.Printf("Config saved to %s", os.Getenv("DEFENSIA_CONFIG"))
-	log.Println("Run 'defensia-agent start' to begin monitoring.")
+	log.Printf("Config saved to %s", os.Getenv("INFRAFENCE_CONFIG"))
+	log.Println("Run 'infrafence-agent start' to begin monitoring.")
 }
 
 // runAgent is the main loop.
 func runAgent() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v\nRun 'defensia-agent register' first.", err)
+		log.Fatalf("Failed to load config: %v\nRun 'infrafence-agent register' first.", err)
 	}
 
 	apiClient := api.New(cfg.ServerURL, cfg.AgentToken)
@@ -144,7 +144,7 @@ func runAgent() {
 		}})
 	}
 
-	log.Printf("Starting Defensia agent v%s (agent_id=%d)", version, cfg.AgentID)
+	log.Printf("Starting InfraFence agent v%s (agent_id=%d)", version, cfg.AgentID)
 
 	// Deploy recovery script for systemd ExecStartPre (self-heals corrupted binaries)
 	updater.DeployRecoveryScript()
@@ -190,7 +190,7 @@ func runAgent() {
 	if auditWatcher := modsecurity.NewAuditLogWatcher(func(entry modsecurity.AuditEntry) {
 		attackCat := entry.AttackCategory()
 		eventType := modsecurity.MapAttackToEventType(attackCat)
-		severity := modsecurity.MapSeverityToDefensia(entry.HighestSeverity())
+		severity := modsecurity.MapSeverityToInfraFence(entry.HighestSeverity())
 
 		// Collect rule IDs and messages for details
 		var ruleIDs, ruleMsgs []string
@@ -1803,7 +1803,7 @@ func reportHealthCheck(client *api.Client, monitorType string, result monitor.Sc
 
 // ── Threat Feed ──────────────────────────────────────────────────────────────
 
-const threatFeedCache = "/etc/defensia/threat_feed.json"
+const threatFeedCache = "/etc/infrafence/threat_feed.json"
 
 func applyThreatFeed(entries []api.ThreatEntry) {
 	for _, e := range entries {
@@ -1826,7 +1826,7 @@ func saveThreatFeedCache(entries []api.ThreatEntry) {
 	if err != nil {
 		return
 	}
-	if err := os.MkdirAll("/etc/defensia", 0755); err != nil {
+	if err := os.MkdirAll("/etc/infrafence", 0755); err != nil {
 		return
 	}
 	if err := os.WriteFile(threatFeedCache, data, 0600); err != nil {

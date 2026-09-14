@@ -1,4 +1,4 @@
-module github.com/defensia/agent
+module github.com/infrafence/infrafence-agent
 
 go 1.26
 

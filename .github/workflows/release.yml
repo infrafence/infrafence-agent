@@ -39,34 +39,34 @@ jobs:
           # Bare metal binaries (no client-go, ~7MB)
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags "-s -w -X main.version=${VERSION}" \
-            -o build/defensia-agent-linux-amd64 \
-            ./cmd/defensia-agent
+            -o build/infrafence-agent-linux-amd64 \
+            ./cmd/infrafence-agent
 
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
             -ldflags "-s -w -X main.version=${VERSION}" \
-            -o build/defensia-agent-linux-arm64 \
-            ./cmd/defensia-agent
+            -o build/infrafence-agent-linux-arm64 \
+            ./cmd/infrafence-agent
 
           # K8s binaries (includes client-go, ~33MB)
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -tags kubernetes \
             -ldflags "-s -w -X main.version=${VERSION}" \
-            -o build/defensia-agent-linux-amd64-k8s \
-            ./cmd/defensia-agent
+            -o build/infrafence-agent-linux-amd64-k8s \
+            ./cmd/infrafence-agent
 
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
             -tags kubernetes \
             -ldflags "-s -w -X main.version=${VERSION}" \
-            -o build/defensia-agent-linux-arm64-k8s \
-            ./cmd/defensia-agent
+            -o build/infrafence-agent-linux-arm64-k8s \
+            ./cmd/infrafence-agent
 
       - name: Generate checksums
         working-directory: build
         run: |
-          sha256sum defensia-agent-linux-amd64 > defensia-agent-linux-amd64.sha256
-          sha256sum defensia-agent-linux-arm64 > defensia-agent-linux-arm64.sha256
-          sha256sum defensia-agent-linux-amd64-k8s > defensia-agent-linux-amd64-k8s.sha256
-          sha256sum defensia-agent-linux-arm64-k8s > defensia-agent-linux-arm64-k8s.sha256
+          sha256sum infrafence-agent-linux-amd64 > infrafence-agent-linux-amd64.sha256
+          sha256sum infrafence-agent-linux-arm64 > infrafence-agent-linux-arm64.sha256
+          sha256sum infrafence-agent-linux-amd64-k8s > infrafence-agent-linux-amd64-k8s.sha256
+          sha256sum infrafence-agent-linux-arm64-k8s > infrafence-agent-linux-arm64-k8s.sha256
           cat *.sha256 > checksums.txt
 
       - name: Install Cosign
@@ -79,17 +79,17 @@ jobs:
         working-directory: build
         run: |
           cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
-            --output-signature defensia-agent-linux-amd64.sig \
-            defensia-agent-linux-amd64
+            --output-signature infrafence-agent-linux-amd64.sig \
+            infrafence-agent-linux-amd64
           cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
-            --output-signature defensia-agent-linux-arm64.sig \
-            defensia-agent-linux-arm64
+            --output-signature infrafence-agent-linux-arm64.sig \
+            infrafence-agent-linux-arm64
           cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
-            --output-signature defensia-agent-linux-amd64-k8s.sig \
-            defensia-agent-linux-amd64-k8s
+            --output-signature infrafence-agent-linux-amd64-k8s.sig \
+            infrafence-agent-linux-amd64-k8s
           cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
-            --output-signature defensia-agent-linux-arm64-k8s.sig \
-            defensia-agent-linux-arm64-k8s
+            --output-signature infrafence-agent-linux-arm64-k8s.sig \
+            infrafence-agent-linux-arm64-k8s
           cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
             --output-signature checksums.txt.sig \
             checksums.txt
@@ -98,10 +98,10 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            build/defensia-agent-linux-amd64
-            build/defensia-agent-linux-arm64
-            build/defensia-agent-linux-amd64-k8s
-            build/defensia-agent-linux-arm64-k8s
+            build/infrafence-agent-linux-amd64
+            build/infrafence-agent-linux-arm64
+            build/infrafence-agent-linux-amd64-k8s
+            build/infrafence-agent-linux-arm64-k8s
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -111,11 +111,11 @@ jobs:
           fail_on_unmatched_files: true
           make_latest: true
           body: |
-            ## Defensia Agent ${{ steps.version.outputs.VERSION }}
+            ## InfraFence Agent ${{ steps.version.outputs.VERSION }}
 
             ### Install
             ```bash
-            curl -fsSL https://defensia.cloud/install.sh | sudo bash -s -- --token <YOUR_TOKEN>
+            curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <YOUR_TOKEN>
             ```
 
             ### Docker
@@ -123,31 +123,31 @@ jobs:
             docker run -d --privileged --net=host --pid=host \
               -v /var/log:/var/log:ro \
               -v /var/run/docker.sock:/var/run/docker.sock:ro \
-              -e DEFENSIA_TOKEN=<YOUR_TOKEN> \
-              ghcr.io/defensia/agent:${{ steps.version.outputs.VERSION }}
+              -e INFRAFENCE_TOKEN=<YOUR_TOKEN> \
+              ghcr.io/infrafence/infrafence-agent:${{ steps.version.outputs.VERSION }}
             ```
 
             ### Manual download
             | Platform | Binary |
             |---|---|
-            | Linux x86_64 | `defensia-agent-linux-amd64` |
-            | Linux ARM64  | `defensia-agent-linux-arm64` |
-            | Linux x86_64 (K8s) | `defensia-agent-linux-amd64-k8s` |
-            | Linux ARM64 (K8s)  | `defensia-agent-linux-arm64-k8s` |
+            | Linux x86_64 | `infrafence-agent-linux-amd64` |
+            | Linux ARM64  | `infrafence-agent-linux-arm64` |
+            | Linux x86_64 (K8s) | `infrafence-agent-linux-amd64-k8s` |
+            | Linux ARM64 (K8s)  | `infrafence-agent-linux-arm64-k8s` |
 
           files: |
-            build/defensia-agent-linux-amd64
-            build/defensia-agent-linux-amd64.sha256
-            build/defensia-agent-linux-amd64.sig
-            build/defensia-agent-linux-arm64
-            build/defensia-agent-linux-arm64.sha256
-            build/defensia-agent-linux-arm64.sig
-            build/defensia-agent-linux-amd64-k8s
-            build/defensia-agent-linux-amd64-k8s.sha256
-            build/defensia-agent-linux-amd64-k8s.sig
-            build/defensia-agent-linux-arm64-k8s
-            build/defensia-agent-linux-arm64-k8s.sha256
-            build/defensia-agent-linux-arm64-k8s.sig
+            build/infrafence-agent-linux-amd64
+            build/infrafence-agent-linux-amd64.sha256
+            build/infrafence-agent-linux-amd64.sig
+            build/infrafence-agent-linux-arm64
+            build/infrafence-agent-linux-arm64.sha256
+            build/infrafence-agent-linux-arm64.sig
+            build/infrafence-agent-linux-amd64-k8s
+            build/infrafence-agent-linux-amd64-k8s.sha256
+            build/infrafence-agent-linux-amd64-k8s.sig
+            build/infrafence-agent-linux-arm64-k8s
+            build/infrafence-agent-linux-arm64-k8s.sha256
+            build/infrafence-agent-linux-arm64-k8s.sig
             build/checksums.txt
             build/checksums.txt.sig
             install.sh
@@ -200,21 +200,21 @@ jobs:
             VERSION=${{ steps.version.outputs.VERSION }}
             BUILD_TAGS=kubernetes
           tags: |
-            ghcr.io/defensia/agent:latest
-            ghcr.io/defensia/agent:${{ steps.version.outputs.VERSION }}
-            defensiacloud/agent:latest
-            defensiacloud/agent:${{ steps.version.outputs.VERSION }}
+            ghcr.io/infrafence/infrafence-agent:latest
+            ghcr.io/infrafence/infrafence-agent:${{ steps.version.outputs.VERSION }}
+            infrafencecloud/agent:latest
+            infrafencecloud/agent:${{ steps.version.outputs.VERSION }}
           labels: |
-            org.opencontainers.image.title=Defensia Agent
+            org.opencontainers.image.title=InfraFence Agent
             org.opencontainers.image.description=Real-time attack detection and blocking for Linux servers
-            org.opencontainers.image.vendor=Defensia
-            org.opencontainers.image.source=https://github.com/defensia/agent
+            org.opencontainers.image.vendor=InfraFence
+            org.opencontainers.image.source=https://github.com/infrafence/infrafence-agent
             org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
 
       - name: Attest Docker image provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ghcr.io/defensia/agent
+          subject-name: ghcr.io/infrafence/infrafence-agent
           subject-digest: ${{ steps.docker-build.outputs.digest }}
           push-to-registry: true
 
@@ -228,7 +228,7 @@ jobs:
         run: |
           cosign sign --key env://COSIGN_PRIVATE_KEY \
             --yes \
-            ghcr.io/defensia/agent@${{ steps.docker-build.outputs.digest }}
+            ghcr.io/infrafence/infrafence-agent@${{ steps.docker-build.outputs.digest }}
 
   helm:
     name: Helm Chart
@@ -248,7 +248,7 @@ jobs:
 
       - name: Update Chart appVersion
         run: |
-          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" charts/defensia-agent/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" charts/infrafence-agent/Chart.yaml
 
       - name: Login to GHCR (Helm)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -267,8 +267,8 @@ jobs:
 
       - name: Package chart (signed)
         run: |
-          helm package charts/defensia-agent \
-            --sign --key "Defensia" --keyring /tmp/secring.gpg \
+          helm package charts/infrafence-agent \
+            --sign --key "InfraFence" --keyring /tmp/secring.gpg \
             -d /tmp/charts
 
       - name: Install oras
@@ -280,25 +280,25 @@ jobs:
       - name: Push chart with provenance to GHCR
         id: helm-push
         run: |
-          CHART_VERSION=$(grep '^version:' charts/defensia-agent/Chart.yaml | awk '{print $2}')
-          CHART_TGZ="/tmp/charts/defensia-agent-${CHART_VERSION}.tgz"
+          CHART_VERSION=$(grep '^version:' charts/infrafence-agent/Chart.yaml | awk '{print $2}')
+          CHART_TGZ="/tmp/charts/infrafence-agent-${CHART_VERSION}.tgz"
           CHART_PROV="${CHART_TGZ}.prov"
 
           # Push chart normally (creates correct Helm OCI manifest)
-          OUTPUT=$(helm push "${CHART_TGZ}" oci://ghcr.io/defensia/charts 2>&1)
+          OUTPUT=$(helm push "${CHART_TGZ}" oci://ghcr.io/infrafence/charts 2>&1)
           echo "$OUTPUT"
           DIGEST=$(echo "$OUTPUT" | grep -oP 'sha256:[a-f0-9]+')
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
           # Upload .prov blob to registry
-          PROV_BLOB_OUTPUT=$(oras blob push ghcr.io/defensia/charts/defensia-agent "${CHART_PROV}" 2>&1)
+          PROV_BLOB_OUTPUT=$(oras blob push ghcr.io/infrafence/charts/infrafence-agent "${CHART_PROV}" 2>&1)
           echo "$PROV_BLOB_OUTPUT"
           PROV_DIGEST=$(echo "$PROV_BLOB_OUTPUT" | grep -oP 'sha256:[a-f0-9]+' | head -1)
           PROV_SIZE=$(wc -c < "${CHART_PROV}" | tr -d ' ')
 
           # Fetch manifest, add .prov as layer, re-push
           # (oras attach uses referrers API which GHCR doesn't support)
-          oras manifest fetch ghcr.io/defensia/charts/defensia-agent:${CHART_VERSION} > /tmp/manifest.json
+          oras manifest fetch ghcr.io/infrafence/charts/infrafence-agent:${CHART_VERSION} > /tmp/manifest.json
 
           jq --arg digest "${PROV_DIGEST}" \
              --argjson size ${PROV_SIZE} \
@@ -307,5 +307,5 @@ jobs:
 
           oras manifest push \
             --media-type "application/vnd.oci.image.manifest.v1+json" \
-            ghcr.io/defensia/charts/defensia-agent:${CHART_VERSION} \
+            ghcr.io/infrafence/charts/infrafence-agent:${CHART_VERSION} \
             /tmp/manifest-signed.json

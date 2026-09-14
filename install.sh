@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Defensia Agent Installer
-# Usage: curl -fsSL https://defensia.cloud/install.sh | sudo bash -s -- --token <INSTALL_TOKEN>
-# Non-interactive: DEFENSIA_SERVER_URL=https://... DEFENSIA_AGENT_NAME=web-01 curl -fsSL ... | sudo bash -s -- --token <TOKEN>
+# InfraFence Agent Installer
+# Usage: curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <INSTALL_TOKEN>
+# Non-interactive: INFRAFENCE_SERVER_URL=https://... INFRAFENCE_AGENT_NAME=web-01 curl -fsSL ... | sudo bash -s -- --token <TOKEN>
 # Install only (no registration): curl -fsSL ... | sudo bash -s -- --install-only
 #
 # SSL Error fix (old servers — "Peer's Certificate issuer is not recognized"):
@@ -10,7 +10,7 @@
 #   One-time fix — run these THREE commands, then retry the install:
 #     curl -sk https://letsencrypt.org/certs/isrgrootx1.pem -o /tmp/isrg.pem
 #     export CURL_CA_BUNDLE=/tmp/isrg.pem
-#     curl -fsSL https://defensia.cloud/install.sh | sudo bash -s -- --token <TOKEN>
+#     curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <TOKEN>
 
 set -euo pipefail
 
@@ -23,19 +23,19 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ─── Config ────────────────────────────────────────────────────────────────────
-BINARY_NAME="defensia-agent"
+BINARY_NAME="infrafence-agent"
 INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/defensia"
-SERVICE_NAME="defensia-agent"
+CONFIG_DIR="/etc/infrafence"
+SERVICE_NAME="infrafence-agent"
 INIT_SYSTEM=""
-GITHUB_REPO="${GITHUB_REPO:-defensia/agent}"
+GITHUB_REPO="${GITHUB_REPO:-infrafence/infrafence-agent}"
 RELEASE_BASE="${RELEASE_BASE:-https://github.com/${GITHUB_REPO}/releases/latest/download}"
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
-info()    { echo -e "${CYAN}[defensia]${NC} $*"; }
-success() { echo -e "${GREEN}[defensia]${NC} ✓ $*"; }
-warn()    { echo -e "${YELLOW}[defensia]${NC} ! $*"; }
-error()   { echo -e "${RED}[defensia]${NC} ✗ $*" >&2; exit 1; }
+info()    { echo -e "${CYAN}[infrafence]${NC} $*"; }
+success() { echo -e "${GREEN}[infrafence]${NC} ✓ $*"; }
+warn()    { echo -e "${YELLOW}[infrafence]${NC} ! $*"; }
+error()   { echo -e "${RED}[infrafence]${NC} ✗ $*" >&2; exit 1; }
 
 # Report install progress to the panel (best-effort, never blocks)
 report_status() {
@@ -47,7 +47,7 @@ report_status() {
     os_info="$(collect_system_info 2>/dev/null || echo unknown)"
     local arch
     arch="$(uname -m 2>/dev/null || echo unknown)"
-    local api_url="${DEFENSIA_SERVER_URL:-https://defensia.cloud}"
+    local api_url="${INFRAFENCE_SERVER_URL:-https://infrafence.com}"
     # Escape double quotes in error string for JSON safety
     local err_json="null"
     if [[ -n "$err" ]]; then
@@ -92,7 +92,7 @@ check_root() {
 }
 
 check_os() {
-    [[ "$(uname -s)" == "Linux" ]] || error "Defensia Agent only supports Linux."
+    [[ "$(uname -s)" == "Linux" ]] || error "InfraFence Agent only supports Linux."
 }
 
 detect_init() {
@@ -155,7 +155,7 @@ dep_install_failed() {
     echo -e "    ${CYAN}# Then re-run the installer${NC}"
     echo ""
     echo -e "  ${BOLD}If the problem persists, open a support ticket at:${NC}"
-    echo -e "  ${CYAN}https://defensia.cloud/tickets/create${NC}"
+    echo -e "  ${CYAN}https://infrafence.com/tickets/create${NC}"
     echo ""
     echo -e "  Please include this info:"
     echo -e "  ┌──────────────────────────────────────"
@@ -223,7 +223,7 @@ bootstrap_ssl() {
 
     # Quick SSL test — exit code 60 = CURLE_SSL_CACERT (cert not recognized by curl)
     local curl_exit=0
-    curl -fsSL --max-time 10 -o /dev/null "https://defensia.cloud/" 2>/dev/null \
+    curl -fsSL --max-time 10 -o /dev/null "https://infrafence.com/" 2>/dev/null \
         || curl_exit=$?
 
     # On non-RHEL systems: only bootstrap if curl itself can't verify the cert
@@ -243,7 +243,7 @@ bootstrap_ssl() {
     warn "Bootstrapping Let's Encrypt root CA (Go agent needs ISRG Root X1 in OpenSSL bundle)..."
 
     local ca_tmp
-    ca_tmp="$(mktemp /tmp/defensia-isrg-XXXXXX.pem 2>/dev/null)" || {
+    ca_tmp="$(mktemp /tmp/infrafence-isrg-XXXXXX.pem 2>/dev/null)" || {
         warn "Could not create temp file — install may fail if SSL issues persist."
         return 0
     }
@@ -307,9 +307,9 @@ download_binary() {
     info "Downloading ${BINARY_NAME} (${arch}) from ${url}..."
 
     if ! curl -fsSL --progress-bar -o "$tmp" "$url"; then
-        # Fallback: try downloading from defensia.cloud mirror
-        local fallback_url="https://defensia.cloud/downloads/${BINARY_NAME}-linux-${arch}"
-        warn "GitHub download failed — trying defensia.cloud mirror..."
+        # Fallback: try downloading from infrafence.com mirror
+        local fallback_url="https://infrafence.com/downloads/${BINARY_NAME}-linux-${arch}"
+        warn "GitHub download failed — trying infrafence.com mirror..."
         if ! curl -fsSL --progress-bar -o "$tmp" "$fallback_url"; then
             rm -f "$tmp"
             local os_info
@@ -325,10 +325,10 @@ download_binary() {
             echo -e "  This may be caused by:"
             echo -e "  • No internet connectivity"
             echo -e "  • Outdated CA certificates (try: apt-get install -y ca-certificates)"
-            echo -e "  • Firewall blocking github.com and defensia.cloud"
+            echo -e "  • Firewall blocking github.com and infrafence.com"
             echo ""
             echo -e "  ${BOLD}If the problem persists, open a support ticket at:${NC}"
-            echo -e "  ${CYAN}https://defensia.cloud/tickets/create${NC}"
+            echo -e "  ${CYAN}https://infrafence.com/tickets/create${NC}"
             echo ""
             echo -e "  Please include this info:"
             echo -e "  ┌──────────────────────────────────────"
@@ -342,7 +342,7 @@ download_binary() {
             exit 1
         fi
         # Use mirror for checksum too
-        RELEASE_BASE="https://defensia.cloud/downloads"
+        RELEASE_BASE="https://infrafence.com/downloads"
     fi
 
     # Verify checksum if available
@@ -364,12 +364,12 @@ download_binary() {
 
 # ─── Registration ──────────────────────────────────────────────────────────────
 prompt_config() {
-    local server_url="${DEFENSIA_SERVER_URL:-}"
-    local agent_name="${DEFENSIA_AGENT_NAME:-}"
+    local server_url="${INFRAFENCE_SERVER_URL:-}"
+    local agent_name="${INFRAFENCE_AGENT_NAME:-}"
 
     if [[ -z "$server_url" ]]; then
         echo ""
-        read -rp "$(echo -e "${BOLD}Defensia server URL${NC} [e.g. https://panel.example.com]: ")" server_url
+        read -rp "$(echo -e "${BOLD}InfraFence server URL${NC} [e.g. https://panel.example.com]: ")" server_url
     fi
 
     [[ -n "$server_url" ]] || error "Server URL is required."
@@ -393,7 +393,7 @@ register_agent() {
 
     info "Registering agent '${agent_name}' with ${server_url}..."
 
-    if ! DEFENSIA_CONFIG="${CONFIG_DIR}/config.json" \
+    if ! INFRAFENCE_CONFIG="${CONFIG_DIR}/config.json" \
         "${INSTALL_DIR}/${BINARY_NAME}" register "$server_url" "$agent_name" "$install_token"; then
         local os_info
         os_info="$(collect_system_info)"
@@ -409,7 +409,7 @@ register_agent() {
         echo -e "  • Server limit reached for your plan"
         echo ""
         echo -e "  ${BOLD}If the problem persists, open a support ticket at:${NC}"
-        echo -e "  ${CYAN}https://defensia.cloud/tickets/create${NC}"
+        echo -e "  ${CYAN}https://infrafence.com/tickets/create${NC}"
         echo ""
         echo -e "  Please include this info:"
         echo -e "  ┌──────────────────────────────────────"
@@ -453,25 +453,25 @@ install_service() {
 
 install_recovery_script() {
     info "Installing recovery script..."
-    cat > "${INSTALL_DIR}/defensia-agent-recover.sh" <<'RECOVEREOF'
+    cat > "${INSTALL_DIR}/infrafence-agent-recover.sh" <<'RECOVEREOF'
 #!/usr/bin/env bash
-# Defensia Agent Recovery Script
+# InfraFence Agent Recovery Script
 # Called by systemd ExecStartPre to verify the binary before starting.
 # If the binary is corrupted or missing, attempts recovery:
 #   1. Restore from backup (.bak)
 #   2. Download fresh binary from GitHub releases
 
-BINARY="/usr/local/bin/defensia-agent"
-BACKUP="/usr/local/bin/defensia-agent.bak"
-GITHUB_REPO="defensia/agent"
+BINARY="/usr/local/bin/infrafence-agent"
+BACKUP="/usr/local/bin/infrafence-agent.bak"
+GITHUB_REPO="infrafence/infrafence-agent"
 RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/latest/download"
-MARKER="/tmp/defensia-agent-recovered"
+MARKER="/tmp/infrafence-agent-recovered"
 
 log_msg() {
     if command -v systemd-cat >/dev/null 2>&1; then
-        echo "[defensia-recover] $*" | systemd-cat -t defensia-agent -p info
+        echo "[infrafence-recover] $*" | systemd-cat -t infrafence-agent -p info
     fi
-    echo "[defensia-recover] $*"
+    echo "[infrafence-recover] $*"
 }
 
 detect_arch() {
@@ -499,7 +499,7 @@ restore_from_backup() {
         if verify_binary "$BINARY"; then
             log_msg "backup restore successful"
             echo "backup" > "$MARKER"
-            rm -f /tmp/defensia-agent-crash-count
+            rm -f /tmp/infrafence-agent-crash-count
             return 0
         fi
     fi
@@ -510,7 +510,7 @@ download_fresh() {
     command -v curl >/dev/null 2>&1 || return 1
     local arch
     arch="$(detect_arch)"
-    local url="${RELEASE_URL}/defensia-agent-linux-${arch}"
+    local url="${RELEASE_URL}/infrafence-agent-linux-${arch}"
     local checksum_url="${url}.sha256"
     local tmp
     tmp="$(mktemp)"
@@ -548,7 +548,7 @@ download_fresh() {
     mv "$tmp" "$BINARY"
     log_msg "fresh binary installed successfully"
     echo "download" > "$MARKER"
-    rm -f /tmp/defensia-agent-crash-count
+    rm -f /tmp/infrafence-agent-crash-count
     return 0
 }
 
@@ -572,8 +572,8 @@ log_msg "all recovery methods failed — manual intervention needed"
 exit 0
 RECOVEREOF
 
-    chmod +x "${INSTALL_DIR}/defensia-agent-recover.sh"
-    success "Recovery script installed at ${INSTALL_DIR}/defensia-agent-recover.sh"
+    chmod +x "${INSTALL_DIR}/infrafence-agent-recover.sh"
+    success "Recovery script installed at ${INSTALL_DIR}/infrafence-agent-recover.sh"
 }
 
 install_service_systemd() {
@@ -587,21 +587,21 @@ install_service_systemd() {
 
     cat > "$service_file" <<EOF
 [Unit]
-Description=Defensia Security Agent
-Documentation=https://defensia.com/docs/agent
+Description=InfraFence Security Agent
+Documentation=https://infrafence.com/docs/agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=${INSTALL_DIR}/defensia-agent-recover.sh
+ExecStartPre=${INSTALL_DIR}/infrafence-agent-recover.sh
 ExecStart=${INSTALL_DIR}/${BINARY_NAME} start
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=${SERVICE_NAME}
-Environment=DEFENSIA_CONFIG=${CONFIG_DIR}/config.json
+Environment=INFRAFENCE_CONFIG=${CONFIG_DIR}/config.json
 Environment=AUTH_LOG_PATH=${auth_log}
 ${ssl_ca_env}
 
@@ -632,7 +632,7 @@ install_service_upstart() {
     info "Installing Upstart service..."
 
     cat > "$conf_file" <<EOF
-description "Defensia Security Agent"
+description "InfraFence Security Agent"
 
 start on runlevel [2345]
 stop on runlevel [!2345]
@@ -640,7 +640,7 @@ stop on runlevel [!2345]
 respawn
 respawn limit 10 30
 
-env DEFENSIA_CONFIG=${CONFIG_DIR}/config.json
+env INFRAFENCE_CONFIG=${CONFIG_DIR}/config.json
 env AUTH_LOG_PATH=${auth_log}
 
 exec ${INSTALL_DIR}/${BINARY_NAME} start
@@ -662,26 +662,26 @@ install_service_sysvinit() {
     cat > "$init_script" <<'INITEOF'
 #!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          defensia-agent
+# Provides:          infrafence-agent
 # Required-Start:    $network $remote_fs
 # Required-Stop:     $network $remote_fs
 # Default-Start:     2 3 4 5
 # Default-Stop:      0 1 6
-# Description:       Defensia Security Agent
+# Description:       InfraFence Security Agent
 ### END INIT INFO
 
-DAEMON=INSTALL_DIR_PLACEHOLDER/defensia-agent
-PIDFILE=/var/run/defensia-agent.pid
-export DEFENSIA_CONFIG=CONFIG_DIR_PLACEHOLDER/config.json
+DAEMON=INSTALL_DIR_PLACEHOLDER/infrafence-agent
+PIDFILE=/var/run/infrafence-agent.pid
+export INFRAFENCE_CONFIG=CONFIG_DIR_PLACEHOLDER/config.json
 export AUTH_LOG_PATH=AUTH_LOG_PLACEHOLDER
 
 case "$1" in
     start)
-        echo "Starting defensia-agent..."
+        echo "Starting infrafence-agent..."
         start-stop-daemon --start --background --make-pidfile --pidfile "$PIDFILE" --exec "$DAEMON" -- start
         ;;
     stop)
-        echo "Stopping defensia-agent..."
+        echo "Stopping infrafence-agent..."
         start-stop-daemon --stop --pidfile "$PIDFILE" --retry 10
         rm -f "$PIDFILE"
         ;;
@@ -691,9 +691,9 @@ case "$1" in
         ;;
     status)
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-            echo "defensia-agent is running (PID $(cat "$PIDFILE"))"
+            echo "infrafence-agent is running (PID $(cat "$PIDFILE"))"
         else
-            echo "defensia-agent is not running"
+            echo "infrafence-agent is not running"
             exit 1
         fi
         ;;
@@ -761,7 +761,7 @@ check_service() {
 
 # ─── Uninstall ─────────────────────────────────────────────────────────────────
 uninstall() {
-    info "Uninstalling Defensia Agent..."
+    info "Uninstalling InfraFence Agent..."
 
     # Try all init systems — safe even if only one is present
     if command -v systemctl &>/dev/null; then
@@ -782,12 +782,12 @@ uninstall() {
 
     rm -f "${INSTALL_DIR}/${BINARY_NAME}"
     rm -f "${INSTALL_DIR}/${BINARY_NAME}.bak"
-    rm -f "${INSTALL_DIR}/defensia-agent-recover.sh"
-    rm -f /tmp/defensia-agent-crash-count
-    rm -f /tmp/defensia-agent-recovered
+    rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
+    rm -f /tmp/infrafence-agent-crash-count
+    rm -f /tmp/infrafence-agent-recovered
     rm -rf "$CONFIG_DIR"
 
-    success "Defensia Agent uninstalled."
+    success "InfraFence Agent uninstalled."
 }
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
@@ -800,7 +800,7 @@ main() {
     fi
 
     echo ""
-    echo -e "${BOLD}  Defensia Agent Installer${NC}"
+    echo -e "${BOLD}  InfraFence Agent Installer${NC}"
     echo    "  ─────────────────────────"
     echo ""
 
@@ -827,17 +827,17 @@ main() {
     if [[ "$INSTALL_ONLY" == true ]]; then
         install_service
         echo ""
-        echo -e "${GREEN}${BOLD}  Defensia Agent installed (binary only).${NC}"
+        echo -e "${GREEN}${BOLD}  InfraFence Agent installed (binary only).${NC}"
         echo ""
-        echo "  To activate, register with your Defensia token:"
-        echo "    ${BINARY_NAME} register https://defensia.cloud <AGENT_NAME> <TOKEN>"
+        echo "  To activate, register with your InfraFence token:"
+        echo "    ${BINARY_NAME} register https://infrafence.com <AGENT_NAME> <TOKEN>"
         case "$INIT_SYSTEM" in
             systemd)  echo "    systemctl start ${SERVICE_NAME}" ;;
             upstart)  echo "    initctl start ${SERVICE_NAME}" ;;
             sysvinit) echo "    /etc/init.d/${SERVICE_NAME} start" ;;
         esac
         echo ""
-        echo "  Get your token at: https://defensia.cloud/dashboard"
+        echo "  Get your token at: https://infrafence.com/dashboard"
         echo ""
         exit 0
     fi
@@ -870,7 +870,7 @@ main() {
     check_service
 
     echo ""
-    echo -e "${GREEN}${BOLD}  Defensia Agent installed successfully!${NC}"
+    echo -e "${GREEN}${BOLD}  InfraFence Agent installed successfully!${NC}"
     echo ""
     echo "  Useful commands:"
     case "$INIT_SYSTEM" in

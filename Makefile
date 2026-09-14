@@ -1,6 +1,6 @@
-BINARY     = defensia-agent
+BINARY     = infrafence-agent
 BUILD_DIR  = build
-CMD_PATH   = ./cmd/defensia-agent
+CMD_PATH   = ./cmd/infrafence-agent
 VERSION    = 0.1.0
 LDFLAGS    = -ldflags "-s -w -X main.version=$(VERSION)"
 

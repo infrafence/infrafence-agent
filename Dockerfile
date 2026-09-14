@@ -13,8 +13,8 @@ ARG BUILD_TAGS=""
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -tags "${BUILD_TAGS}" \
     -ldflags "-s -w -X main.version=${VERSION}" \
-    -o /defensia-agent \
-    ./cmd/defensia-agent
+    -o /infrafence-agent \
+    ./cmd/infrafence-agent
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM alpine:3.20
@@ -27,13 +27,13 @@ RUN apk add --no-cache \
     curl \
     bash
 
-COPY --from=builder /defensia-agent /usr/local/bin/defensia-agent
+COPY --from=builder /infrafence-agent /usr/local/bin/infrafence-agent
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/defensia-agent
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/infrafence-agent
 
 ARG VERSION
-ENV DEFENSIA_CONFIG=/etc/defensia/config.json
-ENV DEFENSIA_SERVER_URL=https://defensia.cloud
-ENV DEFENSIA_VERSION=${VERSION}
+ENV INFRAFENCE_CONFIG=/etc/infrafence/config.json
+ENV INFRAFENCE_SERVER_URL=https://infrafence.com
+ENV INFRAFENCE_VERSION=${VERSION}
 
 ENTRYPOINT ["docker-entrypoint.sh"]

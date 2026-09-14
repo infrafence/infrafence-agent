@@ -23,7 +23,7 @@ type GeoBlocker struct {
 }
 
 // NewGeoBlocker creates a GeoBlocker with the given CIDR provider.
-// panelURL is the Defensia panel URL (e.g. "https://api.defensia.cloud") —
+// panelURL is the InfraFence panel URL (e.g. "https://api.infrafence.com") —
 // its IP will always be whitelisted in iptables before any geo DROP rules.
 func NewGeoBlocker(provider CIDRProvider, panelURL string) *GeoBlocker {
 	gb := &GeoBlocker{

@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Defensia Agent.
+All notable changes to the InfraFence Agent.
 
 ## v1.4.51
 - **fix: false positive CORE_FILE_MODIFIED on wp-includes/version.php** — this file changes on every WordPress update and is not a useful injection target. Now excluded from core file integrity checks.
@@ -24,13 +24,13 @@ All notable changes to the Defensia Agent.
 - **fix: iptables rule ordering** — geo DROP rules now use -A (append) instead of -I (insert first), ensuring ACCEPT rules for panel IP and whitelisted IPs always take precedence
 
 ## v1.4.24
-- **fix: geoblocking never blocks panel IP** — resolves Defensia panel URL to IP and inserts iptables ACCEPT rule before any geo DROP rules. Also protects all whitelisted IPs from geoblocking.
+- **fix: geoblocking never blocks panel IP** — resolves InfraFence panel URL to IP and inserts iptables ACCEPT rule before any geo DROP rules. Also protects all whitelisted IPs from geoblocking.
 
 ## v1.4.23
 - **fix: WAF disable toggle** — empty `enabled_types` array from panel now correctly disables WAF detection (previously treated as "use all defaults")
 
 ## v1.4.22
-- **ipset for ALL bans** — BanIP/UnbanIP use `defensia-bans` hash:ip set (65K capacity)
+- **ipset for ALL bans** — BanIP/UnbanIP use `infrafence-bans` hash:ip set (65K capacity)
 - Eliminates iptables "Memory allocation problem" — from 1,200+ rules to 3
 - Batch `ipset restore` for ApplyBans (sub-second for 1,000+ IPs)
 - CleanupStaleBans works with ipset members
@@ -191,22 +191,22 @@ All notable changes to the Defensia Agent.
 - CI: Docker Hub push fixes and repo setup
 
 ## v0.9.65
-- **Docker Hub dual-push** (`defensiacloud/agent`) + fix GHCR tags
+- **Docker Hub dual-push** (`infrafencecloud/agent`) + fix GHCR tags
 
 ## v0.9.64
 - **Kubernetes Helm chart** — DaemonSet deployment + OCI chart published to GHCR
 
 ## v0.9.63
 - **Docker Swarm support** — `docker-compose.swarm.yml` with `deploy: mode: global` (1 agent per node)
-- Docker secrets support (`DEFENSIA_TOKEN_FILE`) for secure multi-node deployments
+- Docker secrets support (`INFRAFENCE_TOKEN_FILE`) for secure multi-node deployments
 
 ## v0.9.62
-- **Docker labels autoconf** — `defensia.monitor`, `defensia.log-path`, `defensia.domain`, `defensia.waf`
+- **Docker labels autoconf** — `infrafence.monitor`, `infrafence.log-path`, `infrafence.domain`, `infrafence.waf`
 - Configure monitoring per container via Docker labels without agent restart
 
 ## v0.9.61
-- **Docker image published to GHCR** (`ghcr.io/defensia/agent`) — multi-arch (amd64 + arm64)
-- Auto-register via `DEFENSIA_TOKEN` env var, docker-compose snippet included
+- **Docker image published to GHCR** (`ghcr.io/infrafence/infrafence-agent`) — multi-arch (amd64 + arm64)
+- Auto-register via `INFRAFENCE_TOKEN` env var, docker-compose snippet included
 - Automated build + push on every release tag
 
 ## v0.9.60
@@ -236,7 +236,7 @@ All notable changes to the Defensia Agent.
 - `bot_unknown` events for unrecognized bot User-Agents — surfaces unknown crawlers in dashboard
 
 ## v0.9.53
-- **Restore ipset firewall backend** — `defensia-bans` hash:ip set (65K capacity)
+- **Restore ipset firewall backend** — `infrafence-bans` hash:ip set (65K capacity)
 - Automatic FIFO rotation at 500 bans when ipset absent
 - Migrates existing DROP rules on first run
 
@@ -263,7 +263,7 @@ All notable changes to the Defensia Agent.
 - Fix: remove duplicate `EventFunc` declaration
 
 ## v0.9.45
-- User-Agent `DefensiaAgent/{version}` header on all API calls
+- User-Agent `InfraFenceAgent/{version}` header on all API calls
 - Allowed bots reported as `bot_crawl` events
 
 ## v0.9.44

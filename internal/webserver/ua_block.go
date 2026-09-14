@@ -11,12 +11,12 @@ import (
 )
 
 const (
-	nginxSentinel  = "/etc/defensia/.nginx-ua-ready"
-	apacheSentinel = "/etc/defensia/.apache-ua-ready"
-	nginxMapConf   = "/etc/nginx/conf.d/defensia-ua-block.conf"
-	nginxBlocklist = "/etc/defensia/ua-blocklist.conf"
-	apacheUAConf   = "/etc/apache2/conf-available/defensia-ua-block.conf"
-	defensiaDir    = "/etc/defensia"
+	nginxSentinel  = "/etc/infrafence/.nginx-ua-ready"
+	apacheSentinel = "/etc/infrafence/.apache-ua-ready"
+	nginxMapConf   = "/etc/nginx/conf.d/infrafence-ua-block.conf"
+	nginxBlocklist = "/etc/infrafence/ua-blocklist.conf"
+	apacheUAConf   = "/etc/apache2/conf-available/infrafence-ua-block.conf"
+	infrafenceDir    = "/etc/infrafence"
 )
 
 // EventReporter is called when a config error must be reported to the panel.
@@ -29,18 +29,18 @@ type UAFingerprint struct {
 }
 
 // SetupNginxUABlock performs one-time nginx UA blocking setup:
-//   - Writes /etc/nginx/conf.d/defensia-ua-block.conf (map + include)
-//   - Creates /etc/defensia/ua-blocklist.conf (empty)
-//   - Injects "if ($defensia_blocked_ua) { return 444; }" into every server block
+//   - Writes /etc/nginx/conf.d/infrafence-ua-block.conf (map + include)
+//   - Creates /etc/infrafence/ua-blocklist.conf (empty)
+//   - Injects "if ($infrafence_blocked_ua) { return 444; }" into every server block
 //   - Runs nginx -t + nginx -s reload; rolls back on failure
-//   - Writes sentinel /etc/defensia/.nginx-ua-ready so this runs only once
+//   - Writes sentinel /etc/infrafence/.nginx-ua-ready so this runs only once
 func SetupNginxUABlock(report EventReporter) error {
 	if _, err := os.Stat(nginxSentinel); err == nil {
 		return nil // already done
 	}
 
-	if err := os.MkdirAll(defensiaDir, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", defensiaDir, err)
+	if err := os.MkdirAll(infrafenceDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", infrafenceDir, err)
 	}
 
 	// Create empty blocklist first so the map include never references a missing file
@@ -51,9 +51,9 @@ func SetupNginxUABlock(report EventReporter) error {
 	}
 
 	// Write the map+include conf (goes into http context via conf.d)
-	mapConf := "map $http_user_agent $defensia_blocked_ua {\n" +
+	mapConf := "map $http_user_agent $infrafence_blocked_ua {\n" +
 		"    default 0;\n" +
-		"    include /etc/defensia/ua-blocklist.conf;\n" +
+		"    include /etc/infrafence/ua-blocklist.conf;\n" +
 		"}\n"
 	if err := os.WriteFile(nginxMapConf, []byte(mapConf), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", nginxMapConf, err)
@@ -122,12 +122,12 @@ func SetupNginxUABlock(report EventReporter) error {
 	return nil
 }
 
-// UpdateNginxUABlocklist regenerates /etc/defensia/ua-blocklist.conf and does nginx -s reload.
+// UpdateNginxUABlocklist regenerates /etc/infrafence/ua-blocklist.conf and does nginx -s reload.
 // If setup has not completed yet (sentinel absent), writes the file only — reload happens at setup time.
 // Skips reload if the generated config is identical to the current file.
 func UpdateNginxUABlocklist(fps []UAFingerprint, report EventReporter) error {
-	if err := os.MkdirAll(defensiaDir, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", defensiaDir, err)
+	if err := os.MkdirAll(infrafenceDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", infrafenceDir, err)
 	}
 
 	content := generateNginxBlocklist(fps)
@@ -192,8 +192,8 @@ func SetupApacheUABlock(report EventReporter) error {
 		return nil // already done
 	}
 
-	if err := os.MkdirAll(defensiaDir, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", defensiaDir, err)
+	if err := os.MkdirAll(infrafenceDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", infrafenceDir, err)
 	}
 
 	confPath, useA2enconf := apacheConfPath()
@@ -204,7 +204,7 @@ func SetupApacheUABlock(report EventReporter) error {
 	}
 
 	if useA2enconf {
-		if out, err := exec.Command("a2enconf", "defensia-ua-block").CombinedOutput(); err != nil {
+		if out, err := exec.Command("a2enconf", "infrafence-ua-block").CombinedOutput(); err != nil {
 			os.Remove(confPath)
 			return fmt.Errorf("a2enconf: %s: %w", strings.TrimSpace(string(out)), err)
 		}
@@ -212,7 +212,7 @@ func SetupApacheUABlock(report EventReporter) error {
 
 	if out, err := exec.Command("apachectl", "-t").CombinedOutput(); err != nil {
 		if useA2enconf {
-			exec.Command("a2disconf", "defensia-ua-block").Run() //nolint:errcheck
+			exec.Command("a2disconf", "infrafence-ua-block").Run() //nolint:errcheck
 		}
 		os.Remove(confPath)
 		if report != nil {
@@ -227,7 +227,7 @@ func SetupApacheUABlock(report EventReporter) error {
 
 	if err := apacheGraceful(); err != nil {
 		if useA2enconf {
-			exec.Command("a2disconf", "defensia-ua-block").Run() //nolint:errcheck
+			exec.Command("a2disconf", "infrafence-ua-block").Run() //nolint:errcheck
 		}
 		os.Remove(confPath)
 		if report != nil {
@@ -332,7 +332,7 @@ func generateNginxBlocklist(fps []UAFingerprint) string {
 
 func generateApacheConf(fps []UAFingerprint) string {
 	var sb strings.Builder
-	sb.WriteString("# Defensia UA blocking — managed automatically, do not edit\n")
+	sb.WriteString("# InfraFence UA blocking — managed automatically, do not edit\n")
 	for _, fp := range fps {
 		var pat string
 		if fp.IsRegex {
@@ -342,10 +342,10 @@ func generateApacheConf(fps []UAFingerprint) string {
 			pat = strings.ReplaceAll(regexp.QuoteMeta(fp.Pattern), `"`, `\"`)
 		}
 		// SetEnvIfNoCase does case-insensitive matching
-		fmt.Fprintf(&sb, "SetEnvIfNoCase User-Agent \"%s\" defensia_blocked_ua=1\n", pat)
+		fmt.Fprintf(&sb, "SetEnvIfNoCase User-Agent \"%s\" infrafence_blocked_ua=1\n", pat)
 	}
 	if len(fps) > 0 {
-		sb.WriteString("<If \"reqenv('defensia_blocked_ua') == '1'\">\n    Require all denied\n</If>\n")
+		sb.WriteString("<If \"reqenv('infrafence_blocked_ua') == '1'\">\n    Require all denied\n</If>\n")
 	}
 	return sb.String()
 }
@@ -355,16 +355,16 @@ func generateApacheConf(fps []UAFingerprint) string {
 var serverBlockRe = regexp.MustCompile(`(?m)^\s*server\s*\{`)
 
 // injectIfIntoServerBlock inserts the UA check inside each server block.
-// Idempotent: if defensia_blocked_ua already appears in the file, returns unchanged.
+// Idempotent: if infrafence_blocked_ua already appears in the file, returns unchanged.
 func injectIfIntoServerBlock(content string) string {
-	if strings.Contains(content, "defensia_blocked_ua") {
+	if strings.Contains(content, "infrafence_blocked_ua") {
 		return content
 	}
 	return serverBlockRe.ReplaceAllStringFunc(content, func(match string) string {
 		// Preserve original indentation level
 		trimmed := strings.TrimLeft(match, " \t")
 		indent := match[:len(match)-len(trimmed)]
-		return match + "\n" + indent + "    if ($defensia_blocked_ua) { return 444; } # defensia"
+		return match + "\n" + indent + "    if ($infrafence_blocked_ua) { return 444; } # infrafence"
 	})
 }
 
@@ -417,7 +417,7 @@ func apacheConfPath() (path string, useA2enconf bool) {
 		return apacheUAConf, true
 	}
 	// RHEL/CentOS: files in conf.d are auto-included
-	return "/etc/httpd/conf.d/defensia-ua-block.conf", false
+	return "/etc/httpd/conf.d/infrafence-ua-block.conf", false
 }
 
 // ─── Command wrappers ────────────────────────────────────────────────────────

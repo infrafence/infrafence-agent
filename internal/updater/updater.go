@@ -18,10 +18,10 @@ import (
 
 var updateMu sync.Mutex
 
-const targetPath = "/usr/local/bin/defensia-agent"
-const backupPath = "/usr/local/bin/defensia-agent.bak"
-const crashMarkerPath = "/tmp/defensia-agent-crash-count"
-const updateAttemptMarker = "/etc/defensia/.last-update-attempt"
+const targetPath = "/usr/local/bin/infrafence-agent"
+const backupPath = "/usr/local/bin/infrafence-agent.bak"
+const crashMarkerPath = "/tmp/infrafence-agent-crash-count"
+const updateAttemptMarker = "/etc/infrafence/.last-update-attempt"
 const maxCrashesBeforeRollback = 3
 
 // EventReporter is a callback to send events to the server without
@@ -142,14 +142,14 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	log.Printf("[updater] new version available: %s -> %s", currentVersion, latestVersion)
 
 	arch := runtime.GOARCH // amd64 or arm64
-	binaryName := fmt.Sprintf("defensia-agent-linux-%s", arch)
+	binaryName := fmt.Sprintf("infrafence-agent-linux-%s", arch)
 	checksumName := fmt.Sprintf("%s.sha256", binaryName)
 
 	binaryURL := fmt.Sprintf("%s/%s", strings.TrimRight(downloadBaseURL, "/"), binaryName)
 	checksumURL := fmt.Sprintf("%s/%s", strings.TrimRight(downloadBaseURL, "/"), checksumName)
 
 	// Fallback mirror when GitHub is unreachable
-	fallbackBase := "https://defensia.cloud/downloads"
+	fallbackBase := "https://infrafence.com/downloads"
 	fallbackBinaryURL := fmt.Sprintf("%s/%s", fallbackBase, binaryName)
 	fallbackChecksumURL := fmt.Sprintf("%s/%s", fallbackBase, checksumName)
 
@@ -163,7 +163,7 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	// Report update_started so we know an attempt was made even if process dies mid-update
 	reportEvent("update_started", "info", versionDetails)
 
-	// 1. Download checksum (with fallback to defensia.cloud mirror)
+	// 1. Download checksum (with fallback to infrafence.com mirror)
 	expectedHash, err := downloadText(checksumURL)
 	if err != nil {
 		log.Printf("[updater] GitHub checksum download failed, trying mirror: %v", err)
@@ -177,14 +177,14 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 		}
 		// Switch to mirror for binary too
 		binaryURL = fallbackBinaryURL
-		log.Printf("[updater] using defensia.cloud mirror for download")
+		log.Printf("[updater] using infrafence.com mirror for download")
 	}
 	expectedHash = strings.TrimSpace(strings.Fields(expectedHash)[0])
 
 	// 2. Download binary to temp file.
-	// Use /etc/defensia/ instead of /tmp — some systems mount /tmp with noexec
+	// Use /etc/infrafence/ instead of /tmp — some systems mount /tmp with noexec
 	// which prevents the pre-flight check from running the downloaded binary.
-	tmpFile, err := os.CreateTemp("/etc/defensia", "defensia-agent-update-*")
+	tmpFile, err := os.CreateTemp("/etc/infrafence", "infrafence-agent-update-*")
 	if err != nil {
 		log.Printf("[updater] failed to create temp file: %v", err)
 		return
@@ -294,7 +294,7 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	log.Printf("[updater] updated to v%s, restarting service...", latestVersion)
 
 	// Remember this attempt so we don't loop if the filesystem is non-persistent.
-	// Written to /etc/defensia/ which survives service restarts.
+	// Written to /etc/infrafence/ which survives service restarts.
 	os.WriteFile(updateAttemptMarker, []byte(latestVersion), 0644)
 
 	// 9. Report success BEFORE restart (restart kills the current process)
@@ -359,7 +359,7 @@ func rollback() {
 func restartService() error {
 	// systemd
 	if _, err := exec.LookPath("systemctl"); err == nil {
-		if err := exec.Command("systemctl", "restart", "defensia-agent").Run(); err == nil {
+		if err := exec.Command("systemctl", "restart", "infrafence-agent").Run(); err == nil {
 			return nil
 		} else {
 			log.Printf("[updater] systemctl restart failed: %v", err)
@@ -368,7 +368,7 @@ func restartService() error {
 
 	// upstart
 	if _, err := exec.LookPath("initctl"); err == nil {
-		if err := exec.Command("initctl", "restart", "defensia-agent").Run(); err == nil {
+		if err := exec.Command("initctl", "restart", "infrafence-agent").Run(); err == nil {
 			return nil
 		} else {
 			log.Printf("[updater] initctl restart failed: %v", err)
@@ -376,7 +376,7 @@ func restartService() error {
 	}
 
 	// sysvinit
-	initScript := "/etc/init.d/defensia-agent"
+	initScript := "/etc/init.d/infrafence-agent"
 	if _, err := os.Stat(initScript); err == nil {
 		if err := exec.Command(initScript, "restart").Run(); err == nil {
 			return nil
@@ -489,7 +489,7 @@ func recentLogs(lines int) string {
 	if _, err := exec.LookPath("journalctl"); err != nil {
 		return ""
 	}
-	out, err := exec.Command("journalctl", "-u", "defensia-agent", "--no-pager",
+	out, err := exec.Command("journalctl", "-u", "infrafence-agent", "--no-pager",
 		"-n", fmt.Sprintf("%d", lines), "--output", "short-iso").CombinedOutput()
 	if err != nil {
 		return ""
@@ -560,8 +560,8 @@ func systemResources() string {
 		}
 	}
 
-	// Disk usage for / and /etc/defensia
-	for _, path := range []string{"/", "/etc/defensia"} {
+	// Disk usage for / and /etc/infrafence
+	for _, path := range []string{"/", "/etc/infrafence"} {
 		out, err := exec.Command("df", "-h", path).CombinedOutput()
 		if err == nil {
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")

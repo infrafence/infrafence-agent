@@ -8,27 +8,27 @@ import (
 	"strings"
 )
 
-const recoveryScriptPath = "/usr/local/bin/defensia-agent-recover.sh"
-const recoveryMarkerPath = "/tmp/defensia-agent-recovered"
+const recoveryScriptPath = "/usr/local/bin/infrafence-agent-recover.sh"
+const recoveryMarkerPath = "/tmp/infrafence-agent-recovered"
 
 const recoveryScript = `#!/usr/bin/env bash
-# Defensia Agent Recovery Script
+# InfraFence Agent Recovery Script
 # Called by systemd ExecStartPre to verify the binary before starting.
 # If the binary is corrupted or missing, attempts recovery:
 #   1. Restore from backup (.bak)
 #   2. Download fresh binary from GitHub releases
 
-BINARY="/usr/local/bin/defensia-agent"
-BACKUP="/usr/local/bin/defensia-agent.bak"
-GITHUB_REPO="defensia/agent"
+BINARY="/usr/local/bin/infrafence-agent"
+BACKUP="/usr/local/bin/infrafence-agent.bak"
+GITHUB_REPO="infrafence/infrafence-agent"
 RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/latest/download"
-MARKER="/tmp/defensia-agent-recovered"
+MARKER="/tmp/infrafence-agent-recovered"
 
 log_msg() {
     if command -v systemd-cat >/dev/null 2>&1; then
-        echo "[defensia-recover] $*" | systemd-cat -t defensia-agent -p info
+        echo "[infrafence-recover] $*" | systemd-cat -t infrafence-agent -p info
     fi
-    echo "[defensia-recover] $*"
+    echo "[infrafence-recover] $*"
 }
 
 detect_arch() {
@@ -56,7 +56,7 @@ restore_from_backup() {
         if verify_binary "$BINARY"; then
             log_msg "backup restore successful"
             echo "backup" > "$MARKER"
-            rm -f /tmp/defensia-agent-crash-count
+            rm -f /tmp/infrafence-agent-crash-count
             return 0
         fi
     fi
@@ -67,7 +67,7 @@ download_fresh() {
     command -v curl >/dev/null 2>&1 || return 1
     local arch
     arch="$(detect_arch)"
-    local url="${RELEASE_URL}/defensia-agent-linux-${arch}"
+    local url="${RELEASE_URL}/infrafence-agent-linux-${arch}"
     local checksum_url="${url}.sha256"
     local tmp
     tmp="$(mktemp)"
@@ -105,7 +105,7 @@ download_fresh() {
     mv "$tmp" "$BINARY"
     log_msg "fresh binary installed successfully"
     echo "download" > "$MARKER"
-    rm -f /tmp/defensia-agent-crash-count
+    rm -f /tmp/infrafence-agent-crash-count
     return 0
 }
 
@@ -156,7 +156,7 @@ func DeployRecoveryScript() {
 	}
 
 	// Check if systemd service already has ExecStartPre
-	serviceFile := "/etc/systemd/system/defensia-agent.service"
+	serviceFile := "/etc/systemd/system/infrafence-agent.service"
 	data, err := os.ReadFile(serviceFile)
 	if err != nil {
 		return

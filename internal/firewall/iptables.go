@@ -10,10 +10,10 @@ import (
 	"sync"
 )
 
-const banSetName = "defensia-bans"
+const banSetName = "infrafence-bans"
 
 // Init initializes the firewall backend: detects ipset availability
-// and creates the defensia-bans hash:ip set if ipset is present.
+// and creates the infrafence-bans hash:ip set if ipset is present.
 func Init() {
 	if !checkIpset() {
 		return
@@ -167,7 +167,7 @@ func source(spec RuleSpec) string {
 // protectedIPs holds additional IPs that must never be banned (e.g. the API server).
 var protectedIPs = make(map[string]bool)
 
-// AddProtectedIPs registers IPs that must never be banned (e.g. the Defensia API server).
+// AddProtectedIPs registers IPs that must never be banned (e.g. the InfraFence API server).
 func AddProtectedIPs(ips ...string) {
 	for _, ip := range ips {
 		if parsed := net.ParseIP(ip); parsed != nil {
@@ -223,7 +223,7 @@ func isSafeIP(ip net.IP) bool {
 }
 
 // BanIP adds a DROP rule for the given IP address.
-// When ipset is available, adds to the defensia-bans hash:ip set (O(1), 65K capacity).
+// When ipset is available, adds to the infrafence-bans hash:ip set (O(1), 65K capacity).
 // Otherwise falls back to individual iptables rules.
 func BanIP(ip string) error {
 	parsed := net.ParseIP(ip)
@@ -361,7 +361,7 @@ type ParsedRule struct {
 }
 
 // ListRules reads existing INPUT chain rules via `iptables -S INPUT`
-// and returns only simple rules Defensia can manage.
+// and returns only simple rules InfraFence can manage.
 func ListRules() ([]ParsedRule, error) {
 	out, err := exec.Command("iptables", "-S", "INPUT").CombinedOutput()
 	if err != nil {
@@ -389,7 +389,7 @@ func ListRules() ([]ParsedRule, error) {
 }
 
 // parseLine parses a single iptables -S line into a ParsedRule.
-// Returns false if the rule is too complex for Defensia to manage.
+// Returns false if the rule is too complex for InfraFence to manage.
 func parseLine(line string) (ParsedRule, bool) {
 	fields := strings.Fields(line)
 

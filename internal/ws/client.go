@@ -150,7 +150,7 @@ func (c *Client) Run() {
 
 func (c *Client) connect() error {
 	// Append Pusher protocol query params
-	wsURL := fmt.Sprintf("%s?protocol=7&client=defensia-agent&version=0.1.0", c.reverbURL)
+	wsURL := fmt.Sprintf("%s?protocol=7&client=infrafence-agent&version=0.1.0", c.reverbURL)
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {

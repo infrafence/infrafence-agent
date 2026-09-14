@@ -1,41 +1,41 @@
-# Defensia Agent — Helm Chart
+# InfraFence Agent — Helm Chart
 
-Deploy the [Defensia](https://defensia.cloud) security agent as a DaemonSet on your Kubernetes cluster. Each node gets an agent that provides brute-force protection, WAF, bot detection, vulnerability scanning, malware scanning, and real-time firewall management.
+Deploy the [InfraFence](https://infrafence.com) security agent as a DaemonSet on your Kubernetes cluster. Each node gets an agent that provides brute-force protection, WAF, bot detection, vulnerability scanning, malware scanning, and real-time firewall management.
 
 ## Prerequisites
 
 - Kubernetes 1.22+
 - Helm 3+
-- A Defensia account with an install token from [defensia.cloud](https://defensia.cloud)
+- A InfraFence account with an install token from [infrafence.com](https://infrafence.com)
 
 ## Install
 
 ```bash
-helm install defensia-agent oci://ghcr.io/defensia/charts/defensia-agent \
+helm install infrafence-agent oci://ghcr.io/infrafence/charts/infrafence-agent \
   --set apiKey="YOUR_API_KEY"
 ```
 
 ## Upgrade
 
 ```bash
-helm upgrade defensia-agent oci://ghcr.io/defensia/charts/defensia-agent \
+helm upgrade infrafence-agent oci://ghcr.io/infrafence/charts/infrafence-agent \
   --version 0.6.0
 ```
 
 ## Uninstall
 
 ```bash
-helm uninstall defensia-agent
+helm uninstall infrafence-agent
 ```
 
 ## Configuration
 
 | Parameter | Description | Default |
 |---|---|---|
-| `apiKey` | API key from Defensia panel | `""` (required) |
-| `serverUrl` | Defensia panel URL | `https://defensia.cloud` |
+| `apiKey` | API key from InfraFence panel | `""` (required) |
+| `serverUrl` | InfraFence panel URL | `https://infrafence.com` |
 | `clusterName` | Cluster name (auto-detected if not set) | `""` |
-| `image.repository` | Container image | `ghcr.io/defensia/agent` |
+| `image.repository` | Container image | `ghcr.io/infrafence/infrafence-agent` |
 | `image.tag` | Image tag (defaults to chart `appVersion`) | `""` |
 | `image.pullPolicy` | Image pull policy | `Always` |
 | `autoUpdate.enabled` | Agent patches its own DaemonSet for rolling updates. **Disable if using GitOps (ArgoCD, Flux).** | `true` |
@@ -104,7 +104,7 @@ extraEnv:
 | Logs | `/var/log` | read-only |
 | Docker socket | `/var/run/docker.sock` | read-only |
 | Containerd socket | `/run/containerd/containerd.sock` | read-only |
-| Agent config | `/etc/defensia` | read-write |
+| Agent config | `/etc/infrafence` | read-write |
 
 ## Agent capabilities
 
@@ -122,6 +122,6 @@ extraEnv:
 
 ## Links
 
-- [Defensia Dashboard](https://defensia.cloud)
-- [Agent Documentation](https://github.com/defensia/agent#readme)
-- [Report Issues](https://github.com/defensia/agent/issues)
+- [InfraFence Dashboard](https://infrafence.com)
+- [Agent Documentation](https://github.com/infrafence/infrafence-agent#readme)
+- [Report Issues](https://github.com/infrafence/infrafence-agent/issues)

@@ -33,7 +33,7 @@ func HasIpset() bool {
 
 // ipsetSetName returns the ipset set name for a country code.
 func ipsetSetName(countryCode string) string {
-	return fmt.Sprintf("defensia-geo-%s", strings.ToLower(countryCode))
+	return fmt.Sprintf("infrafence-geo-%s", strings.ToLower(countryCode))
 }
 
 // createIpsetHashNet creates an ipset hash:net set if it doesn't exist.

@@ -58,8 +58,8 @@ func K8sRollingUpdate(currentVersion, latestVersion string, reportEvent EventRep
 			"template": map[string]interface{}{
 				"metadata": map[string]interface{}{
 					"annotations": map[string]string{
-						"defensia.cloud/updated-at":     time.Now().UTC().Format(time.RFC3339),
-						"defensia.cloud/target-version": latestVersion,
+						"infrafence.com/updated-at":     time.Now().UTC().Format(time.RFC3339),
+						"infrafence.com/target-version": latestVersion,
 					},
 				},
 			},

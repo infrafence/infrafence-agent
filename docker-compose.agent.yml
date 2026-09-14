@@ -1,25 +1,25 @@
-# Defensia Agent — Docker Compose snippet
+# InfraFence Agent — Docker Compose snippet
 # Add this to your existing docker-compose.yml or run standalone:
-#   DEFENSIA_TOKEN=<your-token> docker compose -f docker-compose.agent.yml up -d
+#   INFRAFENCE_TOKEN=<your-token> docker compose -f docker-compose.agent.yml up -d
 #
-# Get your token at: https://defensia.cloud/dashboard → Add Server
+# Get your token at: https://infrafence.com/dashboard → Add Server
 
 services:
-  defensia-agent:
-    image: ghcr.io/defensia/agent:latest
-    container_name: defensia-agent
+  infrafence-agent:
+    image: ghcr.io/infrafence/infrafence-agent:latest
+    container_name: infrafence-agent
     restart: unless-stopped
     privileged: true
     network_mode: host
     pid: host
     environment:
-      - DEFENSIA_TOKEN=${DEFENSIA_TOKEN}
-      - DEFENSIA_SERVER_URL=${DEFENSIA_SERVER_URL:-https://defensia.cloud}
-      - DEFENSIA_AGENT_NAME=${DEFENSIA_AGENT_NAME:-}
+      - INFRAFENCE_TOKEN=${INFRAFENCE_TOKEN}
+      - INFRAFENCE_SERVER_URL=${INFRAFENCE_SERVER_URL:-https://infrafence.com}
+      - INFRAFENCE_AGENT_NAME=${INFRAFENCE_AGENT_NAME:-}
     volumes:
       - /var/log:/var/log:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - defensia-config:/etc/defensia
+      - infrafence-config:/etc/infrafence
 
 volumes:
-  defensia-config:
+  infrafence-config:

@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "defensia-agent.fullname" . }}
+  name: {{ include "infrafence-agent.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "defensia-agent.labels" . | nindent 4 }}
+    {{- include "infrafence-agent.labels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      {{- include "defensia-agent.selectorLabels" . | nindent 6 }}
+      {{- include "infrafence-agent.selectorLabels" . | nindent 6 }}
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -16,9 +16,9 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "defensia-agent.selectorLabels" . | nindent 8 }}
+        {{- include "infrafence-agent.selectorLabels" . | nindent 8 }}
     spec:
-      serviceAccountName: {{ include "defensia-agent.serviceAccountName" . }}
+      serviceAccountName: {{ include "infrafence-agent.serviceAccountName" . }}
       hostNetwork: true
       hostPID: true
       dnsPolicy: ClusterFirstWithHostNet
@@ -34,26 +34,36 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: defensia-agent
+        - name: infrafence-agent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             privileged: true
           env:
-            - name: DEFENSIA_TOKEN
+            - name: INFRAFENCE_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "defensia-agent.fullname" . }}
+                  name: {{ include "infrafence-agent.fullname" . }}
                   key: api-key
-            - name: DEFENSIA_SERVER_URL
+            - name: INFRAFENCE_SERVER_URL
               value: {{ .Values.serverUrl | quote }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DAEMONSET_NAME
+              value: {{ include "infrafence-agent.fullname" . | quote }}
             {{- if .Values.clusterName }}
             - name: CLUSTER_NAME
               value: {{ .Values.clusterName | quote }}
+            {{- end }}
+            {{- if not .Values.autoUpdate.enabled }}
+            - name: DISABLE_K8S_AUTO_UPDATE
+              value: "true"
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -71,7 +81,7 @@ spec:
               mountPath: /run/containerd/containerd.sock
               readOnly: true
             - name: agent-config
-              mountPath: /etc/defensia
+              mountPath: /etc/infrafence
       volumes:
         - name: host-log
           hostPath:
@@ -80,10 +90,10 @@ spec:
         - name: docker-sock
           hostPath:
             path: /var/run/docker.sock
-            type: FileOrCreate
         - name: containerd-sock
           hostPath:
             path: /run/containerd/containerd.sock
-            type: FileOrCreate
         - name: agent-config
-          emptyDir: {}
+          hostPath:
+            path: /etc/infrafence
+            type: DirectoryOrCreate

@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "defensia-agent.name" -}}
+{{- define "infrafence-agent.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "defensia-agent.fullname" -}}
+{{- define "infrafence-agent.fullname" -}}
 {{- $name := default .Chart.Name .Values.nameOverride }}
 {{- if contains $name .Release.Name }}
 {{- .Release.Name | trunc 63 | trimSuffix "-" }}
@@ -20,9 +20,9 @@ Create a default fully qualified app name.
 {{/*
 Common labels
 */}}
-{{- define "defensia-agent.labels" -}}
+{{- define "infrafence-agent.labels" -}}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
-{{ include "defensia-agent.selectorLabels" . }}
+{{ include "infrafence-agent.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
@@ -30,17 +30,17 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{/*
 Selector labels
 */}}
-{{- define "defensia-agent.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "defensia-agent.name" . }}
+{{- define "infrafence-agent.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "infrafence-agent.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
 Service account name
 */}}
-{{- define "defensia-agent.serviceAccountName" -}}
+{{- define "infrafence-agent.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "defensia-agent.fullname" .) .Values.serviceAccount.name }}
+{{- default (include "infrafence-agent.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}

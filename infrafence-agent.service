@@ -1,6 +1,6 @@
 [Unit]
-Description=Defensia Security Agent
-Documentation=https://defensia.com/docs/agent
+Description=InfraFence Security Agent
+Documentation=https://infrafence.com/docs/agent
 After=network-online.target
 Wants=network-online.target
 # Disable systemd's start rate-limit so rapid successive auto-updates never
@@ -10,13 +10,13 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/defensia-agent start
+ExecStart=/usr/local/bin/infrafence-agent start
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=defensia-agent
-Environment=DEFENSIA_CONFIG=/etc/defensia/config.json
+SyslogIdentifier=infrafence-agent
+Environment=INFRAFENCE_CONFIG=/etc/infrafence/config.json
 
 # Needs root for iptables — hardening where possible
 NoNewPrivileges=no

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/defensia/agent/internal/monitor"
+	"github.com/infrafence/infrafence-agent/internal/monitor"
 )
 
 // AuditResult is the payload sent to the server.
