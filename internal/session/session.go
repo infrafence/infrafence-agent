@@ -207,7 +207,14 @@ func (t *SessionTracker) Run() {
 					return
 				}
 				log.Printf("[session] error tailing %s: %v — retrying in 5s", logPath, err)
-				time.Sleep(5 * time.Second)
+				// A plain time.Sleep here would ignore ctx cancellation for
+				// up to 5s, delaying Stop() and briefly overlapping this
+				// goroutine with a new one if Run() is called again quickly.
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
 			}
 		}
 	}()
