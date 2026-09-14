@@ -553,6 +553,19 @@ func TestMultipleSessions(t *testing.T) {
 	tracker.processLine("Aug 18 12:00:00 server sshd[100]: Accepted password for user1 from 1.1.1.1 port 11111 ssh2")
 	tracker.processLine("Aug 18 12:00:05 server sshd[200]: Accepted publickey for user2 from 2.2.2.2 port 22222 ssh2")
 
+	// LoginAt is set to time.Now() when the line is processed (accurate for a
+	// live tail, since real time elapses between login and logout on an actual
+	// server), not parsed from the log line's own timestamp. Back-date both
+	// sessions here to simulate that elapsed time — otherwise processLine runs
+	// login and logout back-to-back with ~0 real duration, and closeSession's
+	// "empty short session" suppression (see TestSessionTimeout for the same
+	// pattern) would drop the events this test is checking for.
+	tracker.mu.Lock()
+	for _, sess := range tracker.sessions {
+		sess.LoginAt = time.Now().Add(-30 * time.Second)
+	}
+	tracker.mu.Unlock()
+
 	// Logout session 100
 	tracker.processLine("Aug 18 12:01:00 server sshd[100]: pam_unix(sshd:session): session closed for user user1")
 
