@@ -1,0 +1,59 @@
+# InfraFence Agent Helm Chart — values.yaml
+
+# Required: your organization API key from infrafence.com
+apiKey: ""
+
+# InfraFence server URL (change only for self-hosted)
+serverUrl: "https://infrafence.com"
+
+# Optional: cluster name (auto-detected if not set)
+clusterName: ""
+
+image:
+  repository: ghcr.io/infrafence/infrafence-agent
+  tag: ""  # Defaults to appVersion
+  pullPolicy: Always
+
+# Resource limits for the agent container
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# DaemonSet tolerations — run on ALL nodes (including masters)
+tolerations:
+  - operator: Exists
+
+# Node selector (optional — restrict to specific nodes)
+nodeSelector: {}
+
+# Priority class (optional — ensure agent isn't evicted first)
+priorityClassName: ""
+
+# Extra environment variables
+extraEnv: []
+#  - name: GEOIP_DB_PATH
+#    value: /etc/infrafence/GeoLite2-Country.mmdb
+
+# Auto-update: agent patches its own DaemonSet to trigger rolling updates.
+# Disable if using GitOps (ArgoCD, Flux) to manage updates externally.
+autoUpdate:
+  enabled: true
+
+# Ingress-level firewall (nginx-ingress only).
+# Patches the ingress controller's ConfigMap with deny rules.
+# Disable if not using nginx-ingress (e.g. Traefik, Istio).
+# IP blocking still works at the iptables/host level regardless.
+ingressFirewall:
+  enabled: false
+  namespace: "ingress-nginx"
+  configMapName: "ingress-nginx-controller"
+
+# Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

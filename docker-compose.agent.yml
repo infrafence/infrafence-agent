@@ -1,0 +1,25 @@
+# InfraFence Agent — Docker Compose snippet
+# Add this to your existing docker-compose.yml or run standalone:
+#   INFRAFENCE_TOKEN=<your-token> docker compose -f docker-compose.agent.yml up -d
+#
+# Get your token at: https://infrafence.com/dashboard → Add Server
+
+services:
+  infrafence-agent:
+    image: ghcr.io/infrafence/infrafence-agent:latest
+    container_name: infrafence-agent
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    pid: host
+    environment:
+      - INFRAFENCE_TOKEN=${INFRAFENCE_TOKEN}
+      - INFRAFENCE_SERVER_URL=${INFRAFENCE_SERVER_URL:-https://infrafence.com}
+      - INFRAFENCE_AGENT_NAME=${INFRAFENCE_AGENT_NAME:-}
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - infrafence-config:/etc/infrafence
+
+volumes:
+  infrafence-config:
