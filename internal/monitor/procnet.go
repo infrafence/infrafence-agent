@@ -23,14 +23,37 @@ type TCPConn struct {
 	State      uint8
 }
 
-func ParseProcNetTCP() ([]TCPConn, error) {
-	data, err := os.ReadFile("/proc/net/tcp")
+// UDPFlow is a UDP socket entry from /proc/net/udp. UDP is connectionless,
+// so State reflects the kernel's internal socket state rather than a real
+// connection — kept for completeness but not meaningful the way TCP's is.
+type UDPFlow struct {
+	LocalIP    net.IP
+	RemoteIP   net.IP
+	LocalPort  uint16
+	RemotePort uint16
+	State      uint8
+}
+
+// procNetEntry is the shared row shape of /proc/net/tcp and /proc/net/udp —
+// both kernel files use the identical "sl local_address rem_address st ..."
+// column layout, only the socket semantics differ.
+type procNetEntry struct {
+	LocalIP    net.IP
+	RemoteIP   net.IP
+	LocalPort  uint16
+	RemotePort uint16
+	State      uint8
+}
+
+// parseProcNet parses a /proc/net/{tcp,udp}-formatted file at path.
+func parseProcNet(path string) ([]procNetEntry, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read /proc/net/tcp: %w", err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 
 	lines := strings.Split(string(data), "\n")
-	var conns []TCPConn
+	var entries []procNetEntry
 
 	for i, line := range lines {
 		if i == 0 {
@@ -61,7 +84,7 @@ func ParseProcNetTCP() ([]TCPConn, error) {
 			continue
 		}
 
-		conns = append(conns, TCPConn{
+		entries = append(entries, procNetEntry{
 			LocalIP:    localIP,
 			RemoteIP:   remoteIP,
 			LocalPort:  localPort,
@@ -70,7 +93,47 @@ func ParseProcNetTCP() ([]TCPConn, error) {
 		})
 	}
 
+	return entries, nil
+}
+
+// ParseProcNetTCP reads active TCP connections from /proc/net/tcp.
+func ParseProcNetTCP() ([]TCPConn, error) {
+	entries, err := parseProcNet("/proc/net/tcp")
+	if err != nil {
+		return nil, err
+	}
+
+	conns := make([]TCPConn, 0, len(entries))
+	for _, e := range entries {
+		conns = append(conns, TCPConn{
+			LocalIP:    e.LocalIP,
+			RemoteIP:   e.RemoteIP,
+			LocalPort:  e.LocalPort,
+			RemotePort: e.RemotePort,
+			State:      e.State,
+		})
+	}
 	return conns, nil
+}
+
+// ParseProcNetUDP reads UDP socket entries from /proc/net/udp.
+func ParseProcNetUDP() ([]UDPFlow, error) {
+	entries, err := parseProcNet("/proc/net/udp")
+	if err != nil {
+		return nil, err
+	}
+
+	flows := make([]UDPFlow, 0, len(entries))
+	for _, e := range entries {
+		flows = append(flows, UDPFlow{
+			LocalIP:    e.LocalIP,
+			RemoteIP:   e.RemoteIP,
+			LocalPort:  e.LocalPort,
+			RemotePort: e.RemotePort,
+			State:      e.State,
+		})
+	}
+	return flows, nil
 }
 
 func parseHexAddr(s string) (net.IP, uint16, error) {

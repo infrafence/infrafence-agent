@@ -17,6 +17,39 @@ import (
 // Config holds session tracker configuration.
 type Config struct {
 	Enabled bool
+
+	// Sigma correlation: while a session is open, an independent detector
+	// (integrity, malware, port scan, egress, WAF...) firing at or above
+	// SigmaMinLevel counts as one correlated hit against every open session,
+	// via NotifySigmaEvent. Feeds SigmaHits -> SessionData.SigmaAlerts in
+	// CalculateRisk (see risk.go).
+	SigmaEnabled  bool
+	SigmaMinLevel string // "info" | "warning" | "critical"; default "warning"
+}
+
+// severityRank orders the severity vocabulary used across the agent's event
+// types, so NotifySigmaEvent can compare an incoming event against the
+// configured minimum level.
+var severityRank = map[string]int{"info": 0, "warning": 1, "critical": 2}
+
+func severityAtLeast(severity, min string) bool {
+	s, ok := severityRank[severity]
+	if !ok {
+		s = severityRank["info"]
+	}
+	m, ok := severityRank[min]
+	if !ok {
+		m = severityRank["warning"]
+	}
+	return s >= m
+}
+
+// sigmaExcludedTypes are event types the session tracker itself emits.
+// Excluded from correlation so a session's own activity doesn't count as
+// "an independent signal fired during this session" against itself.
+var sigmaExcludedTypes = map[string]bool{
+	"ssh_session":  true,
+	"system_audit": true,
 }
 
 // noisyUsers are service accounts that generate massive SSH session spam.
@@ -118,6 +151,38 @@ func (t *SessionTracker) UpdateConfig(cfg Config) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.config = cfg
+}
+
+// NotifySigmaEvent is called (via the API client's event observer) whenever
+// the agent reports any security event. If Sigma correlation is enabled and
+// the event meets the configured minimum severity, every currently open
+// session is credited with one correlated hit — a cross-signal indicator
+// that something suspicious happened elsewhere on the host while that
+// session was active. Session-originated event types are excluded (see
+// sigmaExcludedTypes) to avoid a session scoring itself.
+func (t *SessionTracker) NotifySigmaEvent(eventType, severity string) {
+	if sigmaExcludedTypes[eventType] {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !t.config.SigmaEnabled || len(t.sessions) == 0 {
+		return
+	}
+
+	minLevel := t.config.SigmaMinLevel
+	if minLevel == "" {
+		minLevel = "warning"
+	}
+	if !severityAtLeast(severity, minLevel) {
+		return
+	}
+
+	for _, sess := range t.sessions {
+		sess.SigmaHits++
+	}
 }
 
 // Run starts tailing auth.log. Blocks until Stop() is called.

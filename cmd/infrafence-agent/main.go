@@ -664,6 +664,13 @@ func runAgent() {
 	})
 	log.Printf("[session] tracker initialized (waiting for panel activation)")
 
+	// Sigma correlation: any security event reported anywhere in the agent
+	// (WAF, integrity, malware, port scan, egress, DNS...) is also fed to the
+	// session tracker, which credits open SSH sessions with a correlated hit.
+	apiClient.SetEventObserver(func(e api.EventRequest) {
+		sessionTracker.NotifySigmaEvent(e.Type, e.Severity)
+	})
+
 	// Initial sync (applies config, whitelists, rules, bans)
 	if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
 		log.Printf("[sync] initial sync failed: %v", err)
@@ -1273,21 +1280,27 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 
 	// Session tracking — activate/deactivate per panel config or env override
+	sigmaEnabled, sigmaMinLevel := false, ""
+	if sync.Config.SigmaConfig != nil {
+		sigmaEnabled = sync.Config.SigmaConfig.Enabled
+		sigmaMinLevel = sync.Config.SigmaConfig.MinLevel
+	}
+
 	if os.Getenv("SESSION_ENABLED") == "true" && sessionTracker != nil {
-		sessionTracker.UpdateConfig(session.Config{Enabled: true})
+		sessionTracker.UpdateConfig(session.Config{Enabled: true, SigmaEnabled: sigmaEnabled, SigmaMinLevel: sigmaMinLevel})
 		if !sessionTracker.IsRunning() {
 			go sessionTracker.Run()
 			log.Printf("[session] tracker started via SESSION_ENABLED env (monitor-only)")
 		}
 	} else if sessionTracker != nil {
 		if sync.Config.SessionConfig != nil && sync.Config.SessionConfig.Enabled {
-			sessionTracker.UpdateConfig(session.Config{Enabled: true})
+			sessionTracker.UpdateConfig(session.Config{Enabled: true, SigmaEnabled: sigmaEnabled, SigmaMinLevel: sigmaMinLevel})
 			if !sessionTracker.IsRunning() {
 				go sessionTracker.Run()
 				log.Printf("[session] tracker started (monitor-only, per-server activation)")
 			}
 		} else {
-			sessionTracker.UpdateConfig(session.Config{Enabled: false})
+			sessionTracker.UpdateConfig(session.Config{Enabled: false, SigmaEnabled: sigmaEnabled, SigmaMinLevel: sigmaMinLevel})
 		}
 	}
 
@@ -1710,15 +1723,15 @@ func runZombieMonitor(client *api.Client) {
 	}
 }
 
-// ── Security Monitors (port scan, flood, file integrity, egress) ─────────────
+// ── Security Monitors (port scan, flood, file integrity, egress, DNS) ────────
 //
 // Execution frequency:
-//   Port scan + Flood + Egress: every 60s (time-sensitive, lightweight kernel reads)
-//   File integrity:             every 30 min (changes are persistent, no rush)
+//   Port scan + Flood + Egress + DNS: every 60s (time-sensitive, lightweight kernel reads)
+//   File integrity:                   every 30 min (changes are persistent, no rush)
 //
 // Reporting strategy (reduce API noise):
 //   Detections > 0 → report immediately (events + monitor run)
-//   Health check    → every 5 min, one combined report for all 4 monitors
+//   Health check    → every 5 min, one combined report for all 5 monitors
 //   No "0 detections" spam — only report when something happens or on health tick
 
 func runSecurityMonitors(client *api.Client) {
@@ -1726,6 +1739,7 @@ func runSecurityMonitors(client *api.Client) {
 	flood := monitor.NewFloodDetector()
 	integrity := monitor.NewIntegrityDetector()
 	egress := monitor.NewEgressDetector(threatFeedIndex)
+	dns := monitor.NewDNSDetector(threatFeedIndex)
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -1735,13 +1749,13 @@ func runSecurityMonitors(client *api.Client) {
 	log.Println("[monitor] file integrity baseline established")
 
 	// Track latest results for health check reporting
-	var lastPS, lastFL, lastFI, lastEG monitor.ScanResult
+	var lastPS, lastFL, lastFI, lastEG, lastDNS monitor.ScanResult
 	tick := 0
 
 	for range ticker.C {
 		tick++
 
-		// Port scan + flood + egress: every 60s
+		// Port scan + flood + egress + DNS: every 60s
 		lastPS = portScan.Scan()
 		if len(lastPS.Events) > 0 {
 			reportScanResult(client, "port_scan", lastPS)
@@ -1757,6 +1771,11 @@ func runSecurityMonitors(client *api.Client) {
 			reportScanResult(client, "egress_threat_match", lastEG)
 		}
 
+		lastDNS = dns.Scan()
+		if len(lastDNS.Events) > 0 {
+			reportScanResult(client, "dns_watch", lastDNS)
+		}
+
 		// File integrity: every 30 min (tick 1800 at 60s interval)
 		if tick%30 == 0 {
 			lastFI = integrity.Scan()
@@ -1765,13 +1784,14 @@ func runSecurityMonitors(client *api.Client) {
 			}
 		}
 
-		// Health check: every 5 min — report latest summary for all 4 monitors
+		// Health check: every 5 min — report latest summary for all 5 monitors
 		// so the panel knows monitors are active (no "no scan runs" message)
 		if tick%5 == 0 {
 			reportHealthCheck(client, "port_scan", lastPS)
 			reportHealthCheck(client, "flood", lastFL)
 			reportHealthCheck(client, "integrity_change", lastFI)
 			reportHealthCheck(client, "egress_threat_match", lastEG)
+			reportHealthCheck(client, "dns_watch", lastDNS)
 		}
 	}
 }
