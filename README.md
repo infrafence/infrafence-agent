@@ -1,4 +1,10 @@
 <p align="center">
+  <a href="README.md">English</a> ·
+  <a href="README.it.md">Italiano</a> ·
+  <a href="README.pt-br.md">Português (BR)</a>
+</p>
+
+<p align="center">
   <img src="https://infrafence.com/img/logo.svg" alt="InfraFence" width="200">
 </p>
 
