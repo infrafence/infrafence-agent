@@ -21,7 +21,6 @@
   <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
   <a href="https://github.com/infrafence/infrafence-agent"><img src="https://img.shields.io/badge/Platform-Linux-orange?logo=linux&logoColor=white" alt="Platform"></a>
   <a href="https://github.com/infrafence/infrafence-agent/pkgs/container/infrafence-agent"><img src="https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white" alt="Docker"></a>
-  <a href="https://artifacthub.io/packages/helm/infrafence/infrafence-agent"><img src="https://img.shields.io/badge/Helm-Artifact_Hub-0F1689?logo=helm&logoColor=white" alt="Helm"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/infrafence/infrafence-agent"><img src="https://api.securityscorecards.dev/projects/github.com/infrafence/infrafence-agent/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
@@ -313,7 +312,7 @@ helm install infrafence-agent \
 
 </details>
 
-**Chart:** [Artifact Hub](https://artifacthub.io/packages/helm/infrafence/infrafence-agent) · Immagini firmate con [Cosign](https://github.com/sigstore/cosign) · Helm chart con provenance GPG
+**Chart:** `oci://ghcr.io/infrafence/charts/infrafence-agent` · Immagini firmate con [Cosign](https://github.com/sigstore/cosign) · Helm chart con provenance GPG
 
 ### Disinstallazione
 
