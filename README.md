@@ -37,13 +37,13 @@
 
 ## The problem
 
-The average Linux VPS receives its first automated attack **within 4 minutes** of going online. SSH brute force, web exploits, bot scraping, port scans.
+Spin up a fresh Linux VPS and the clock starts immediately — automated bots are scanning it, brute-forcing SSH, and probing for exploits within minutes, often before you've even finished the initial setup.
 
-Most developers find out when it's already too late — or never.
+Most of that activity goes unnoticed. Nobody's watching the logs as it happens.
 
-**fail2ban** blocks after the fact, with no visibility. **CrowdSec** requires complex setup. Enterprise tools cost $20-200+/host.
+**fail2ban** only reacts after the fact and tells you nothing about what happened. **CrowdSec** is capable but takes real effort to configure properly. The enterprise tools that give you both visibility and automation start at $20-200+ per host.
 
-InfraFence fills the gap: **one command to install, real-time dashboard, automatic blocking, €9/server**.
+InfraFence sits in between: **install with one command, watch everything live from a dashboard, and let it block automatically — for €9/server**.
 
 ## Quick start
 
@@ -518,7 +518,7 @@ Recent highlights:
 
 ## Security & trust
 
-We know we're asking for privileged access to your server. Here's why engineers trust this agent on production:
+Running this agent means granting it privileged access to your server — that's a real ask, and we don't take it lightly. Here's exactly what backs that trust in production:
 
 | | Detail |
 |---|---|
@@ -545,12 +545,6 @@ go build -o infrafence-agent ./cmd/infrafence-agent
 # Run locally
 ./infrafence-agent start
 ```
-
----
-
-## Blog
-
-- [I analyzed 250,000 attacks on my Linux servers. Here's what I found.](https://dev.to/infrafence/i-analyzed-250000-attacks-on-my-linux-servers-heres-what-i-found-20o8) — Real data from 14 production servers: SSH brute force, RCE, env probing, path traversal, and more.
 
 ---
 
