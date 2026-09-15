@@ -11,8 +11,8 @@
 <h3 align="center">Sicurezza server che si installa in 30 secondi</h3>
 
 <p align="center">
-  Agente Go leggero che rileva gli attacchi in tempo reale e li blocca automaticamente.<br>
-  Brute force SSH, WAF, gestione bot, Docker e Kubernetes — zero configurazione.
+  Agente Go leggero che rileva gli attacchi in tempo reale e li blocca automaticamente — in entrata e in uscita.<br>
+  Brute force SSH, WAF, scansione malware, gestione bot, rilevamento minacce egress & DNS, Docker e Kubernetes — zero configurazione.
 </p>
 
 <p align="center">

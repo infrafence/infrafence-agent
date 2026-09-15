@@ -11,8 +11,8 @@
 <h3 align="center">Server security that installs in 30 seconds</h3>
 
 <p align="center">
-  Lightweight Go agent that detects attacks in real time and blocks them automatically.<br>
-  SSH brute force, WAF, bot management, Docker and Kubernetes — zero configuration.
+  Lightweight Go agent that detects attacks in real time and blocks them automatically — inbound and outbound.<br>
+  SSH brute force, WAF, malware scanning, bot management, egress & DNS threat detection, Docker and Kubernetes — zero configuration.
 </p>
 
 <p align="center">

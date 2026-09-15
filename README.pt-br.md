@@ -11,8 +11,8 @@
 <h3 align="center">Segurança de servidor que se instala em 30 segundos</h3>
 
 <p align="center">
-  Agente Go leve que detecta ataques em tempo real e os bloqueia automaticamente.<br>
-  Força bruta SSH, WAF, gestão de bots, Docker e Kubernetes — zero configuração.
+  Agente Go leve que detecta ataques em tempo real e os bloqueia automaticamente — de entrada e de saída.<br>
+  Força bruta SSH, WAF, varredura de malware, gestão de bots, detecção de ameaças egress & DNS, Docker e Kubernetes — zero configuração.
 </p>
 
 <p align="center">
