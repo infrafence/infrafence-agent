@@ -77,9 +77,11 @@ helm install infrafence-agent \
 | Dashboard in tempo reale | — | A pagamento ($2K+/anno) | Sì | **Sì** |
 | Installazione con un comando | — | — | Solo cPanel | **Sì** |
 | Rilevamento SSH | Sì | Sì | Sì | **Sì (15 pattern)** |
+| Punteggio di rischio sessione SSH (comportamento post-login) | — | — | — | **Sì** |
 | Web Application Firewall | — | Parziale | Sì | **Sì (15 tipi OWASP)** |
 | Gestione bot | — | — | Sì | **Sì (70+ fingerprint)** |
 | Scansione malware | — | — | Sì | **Sì (YARA + database hash + quarantena)** |
+| File integrity & monitoraggio persistenza | — | — | Solo core WP | **Sì (system-wide)** |
 | Consapevolezza container Docker | — | — | — | **Sì** |
 | Kubernetes / Helm | — | Sì | — | **Sì (DaemonSet)** |
 | Rilevamento minacce in uscita (egress & DNS) | — | — | — | **Sì** |
