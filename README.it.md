@@ -79,6 +79,7 @@ helm install infrafence-agent \
 | Rilevamento SSH | Sì | Sì | Sì | **Sì (15 pattern)** |
 | Web Application Firewall | — | Parziale | Sì | **Sì (15 tipi OWASP)** |
 | Gestione bot | — | — | Sì | **Sì (70+ fingerprint)** |
+| Scansione malware | — | — | Sì | **Sì (YARA + database hash + quarantena)** |
 | Consapevolezza container Docker | — | — | — | **Sì** |
 | Kubernetes / Helm | — | Sì | — | **Sì (DaemonSet)** |
 | Rilevamento minacce in uscita (egress & DNS) | — | — | — | **Sì** |
