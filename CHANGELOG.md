@@ -191,7 +191,7 @@ All notable changes to the InfraFence Agent.
 - CI: Docker Hub push fixes and repo setup
 
 ## v0.9.65
-- **Docker Hub dual-push** (`infrafencecloud/agent`) + fix GHCR tags
+- **Docker Hub dual-push** (`infrafence/infrafence-agent`) + fix GHCR tags
 
 ## v0.9.64
 - **Kubernetes Helm chart** — DaemonSet deployment + OCI chart published to GHCR

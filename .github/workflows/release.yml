@@ -202,8 +202,8 @@ jobs:
           tags: |
             ghcr.io/infrafence/infrafence-agent:latest
             ghcr.io/infrafence/infrafence-agent:${{ steps.version.outputs.VERSION }}
-            infrafencecloud/agent:latest
-            infrafencecloud/agent:${{ steps.version.outputs.VERSION }}
+            infrafence/infrafence-agent:latest
+            infrafence/infrafence-agent:${{ steps.version.outputs.VERSION }}
           labels: |
             org.opencontainers.image.title=InfraFence Agent
             org.opencontainers.image.description=Real-time attack detection and blocking for Linux servers
