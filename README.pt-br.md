@@ -37,13 +37,13 @@
 
 ## O problema
 
-O VPS Linux médio recebe seu primeiro ataque automatizado **em até 4 minutos** depois de entrar no ar. Força bruta SSH, exploits web, scraping por bots, varreduras de porta.
+Assim que você coloca um VPS Linux novo no ar, a contagem já começa — bots automatizados o escaneiam, tentam força bruta em SSH e sondam exploits em questão de minutos, muitas vezes antes mesmo de você terminar a configuração inicial.
 
-A maioria dos desenvolvedores só descobre quando já é tarde demais — ou nunca descobre.
+A maior parte dessa atividade passa despercebida. Ninguém está olhando os logs em tempo real enquanto isso acontece.
 
-O **fail2ban** bloqueia depois do fato, sem visibilidade. O **CrowdSec** exige configuração complexa. Ferramentas enterprise custam $20-200+/host.
+O **fail2ban** só reage depois do fato e não te conta nada sobre o que aconteceu. O **CrowdSec** é capaz, mas exige um esforço real de configuração. As ferramentas enterprise que oferecem visibilidade e automação juntas começam em $20-200+ por host.
 
-O InfraFence preenche essa lacuna: **um comando para instalar, dashboard em tempo real, bloqueio automático, €9/servidor**.
+O InfraFence fica no meio do caminho: **instalação com um comando, tudo visível ao vivo em um dashboard, bloqueio automático — por €9/servidor**.
 
 ## Início rápido
 
@@ -518,7 +518,7 @@ Destaques recentes:
 
 ## Segurança & confiança
 
-Sabemos que estamos pedindo acesso privilegiado ao seu servidor. Veja por que engenheiros confiam neste agente em produção:
+Rodar este agente significa conceder a ele acesso privilegiado ao seu servidor — é um pedido sério, e não o levamos de ânimo leve. Veja exatamente o que sustenta essa confiança em produção:
 
 | | Detalhe |
 |---|---|
@@ -545,12 +545,6 @@ go build -o infrafence-agent ./cmd/infrafence-agent
 # Executar localmente
 ./infrafence-agent start
 ```
-
----
-
-## Blog
-
-- [I analyzed 250,000 attacks on my Linux servers. Here's what I found.](https://dev.to/infrafence/i-analyzed-250000-attacks-on-my-linux-servers-heres-what-i-found-20o8) — Dados reais de 14 servidores em produção: força bruta SSH, RCE, sondagem de arquivos env, path traversal e mais.
 
 ---
 

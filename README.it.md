@@ -37,13 +37,13 @@
 
 ## Il problema
 
-Il VPS Linux medio riceve il primo attacco automatizzato **entro 4 minuti** dalla messa online. Brute force SSH, exploit web, scraping da bot, port scan.
+Appena metti online un VPS Linux nuovo, il countdown parte subito — bot automatizzati lo scansionano, tentano brute force su SSH e sondano exploit nel giro di minuti, spesso prima ancora che tu abbia finito la configurazione iniziale.
 
-La maggior parte degli sviluppatori se ne accorge quando è già troppo tardi — o mai.
+La maggior parte di questa attività passa inosservata. Nessuno controlla i log in tempo reale mentre succede.
 
-**fail2ban** blocca a cose fatte, senza visibilità. **CrowdSec** richiede una configurazione complessa. Gli strumenti enterprise costano $20-200+/host.
+**fail2ban** reagisce solo a cose già accadute e non ti dice nulla su cosa è successo. **CrowdSec** è capace ma richiede un vero sforzo di configurazione. Gli strumenti enterprise che offrono sia visibilità che automazione partono da $20-200+ per host.
 
-InfraFence colma il vuoto: **un comando per installare, dashboard in tempo reale, blocco automatico, €9/server**.
+InfraFence si posiziona nel mezzo: **installazione con un comando, tutto visibile in diretta da una dashboard, blocco automatico — a €9/server**.
 
 ## Avvio rapido
 
@@ -518,7 +518,7 @@ Novità recenti:
 
 ## Sicurezza & fiducia
 
-Sappiamo di chiedere accesso privilegiato al tuo server. Ecco perché gli ingegneri si fidano di questo agente in produzione:
+Far girare questo agente significa concedergli accesso privilegiato al tuo server — è una richiesta seria, e non la prendiamo alla leggera. Ecco esattamente cosa sostiene quella fiducia in produzione:
 
 | | Dettaglio |
 |---|---|
@@ -545,12 +545,6 @@ go build -o infrafence-agent ./cmd/infrafence-agent
 # Esecuzione locale
 ./infrafence-agent start
 ```
-
----
-
-## Blog
-
-- [I analyzed 250,000 attacks on my Linux servers. Here's what I found.](https://dev.to/infrafence/i-analyzed-250000-attacks-on-my-linux-servers-heres-what-i-found-20o8) — Dati reali da 14 server in produzione: brute force SSH, RCE, probing di file env, path traversal e altro.
 
 ---
 
