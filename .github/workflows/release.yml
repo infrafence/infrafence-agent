@@ -95,6 +95,11 @@ jobs:
             checksums.txt
 
       - name: Attest build provenance
+        # Artifact attestations are blocked on private repos for user (non-org)
+        # accounts: "Feature not available for user-owned private repositories.
+        # To enable this feature, please make this repository public." Remove
+        # this `if: false` once infrafence/infrafence-agent goes public.
+        if: false
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
@@ -212,6 +217,8 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
 
       - name: Attest Docker image provenance
+        # Same private-repo restriction as the binary attestation step above.
+        if: false
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ghcr.io/infrafence/infrafence-agent
