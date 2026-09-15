@@ -76,6 +76,15 @@ cosign verify-blob \
 gh attestation verify infrafence-agent-linux-amd64 --repo infrafence/infrafence-agent
 ```
 
+### Verify the Helm chart signature
+
+The Helm chart is signed with a dedicated GPG key (separate from the Cosign key used for binaries and container images):
+
+```bash
+curl -sL https://raw.githubusercontent.com/infrafence/infrafence-agent/main/infrafence-helm-signing-key.asc | gpg --import
+helm verify infrafence-agent-<version>.tgz
+```
+
 ## Uninstall
 
 Complete removal with no residual system changes:
