@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://infrafence.com/img/logo.svg" alt="InfraFence" width="200">
+  <img src="docs/logo.png" alt="InfraFence" width="200">
 </p>
 
 <h3 align="center">Segurança de servidor que se instala em 30 segundos</h3>
