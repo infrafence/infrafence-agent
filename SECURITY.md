@@ -72,6 +72,11 @@ cosign verify-blob \
 
 ### Verify build provenance
 
+> Temporarily unavailable while the repo is private — GitHub's artifact
+> attestations require a public repository for user-owned accounts. Re-enabled
+> automatically once the repo goes public; Cosign signature verification above
+> covers binary authenticity in the meantime.
+
 ```bash
 gh attestation verify infrafence-agent-linux-amd64 --repo infrafence/infrafence-agent
 ```
