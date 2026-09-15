@@ -104,7 +104,7 @@ jobs:
             build/infrafence-agent-linux-arm64-k8s
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           name: ${{ steps.version.outputs.VERSION }}
