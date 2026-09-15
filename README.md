@@ -130,6 +130,23 @@ Each detection adds points to a per-IP score. Scores decay at -5 pts/min. Action
 - **Zero config** — automatically writes rules, configures Include, graceful reload (no downtime)
 - **No impact** on servers without ModSecurity — falls back to iptables-only blocking
 
+### Outbound threat detection (egress & DNS)
+Most tools only watch traffic coming *in*. InfraFence also watches what an already-compromised host does *out* — the same threat feed used for inbound bans (Spamhaus DROP, Feodo Tracker, and more) is checked against outbound activity too:
+- **Egress threat matching** — flags established outbound connections to any IP on your threat feed, catching a compromised host beaconing out to C2 infrastructure that inbound-only firewall rules never see
+- **DNS resolver monitoring** — flags outbound DNS traffic (UDP/53) to threat-feed IPs, to resolvers outside your configured `/etc/resolv.conf`, and to "resolver hopping" (many distinct external resolvers in a short window) — an early signal of DNS tunneling
+- Poll-based on the same cycle as the other monitors: reliably catches *sustained* traffic — tunneling, repeated beaconing — rather than a single one-off query
+
+### File integrity & persistence monitoring
+SHA-256 baseline hashing with instant alerts on change, covering both classic tripwire targets and common persistence techniques:
+- Core system files — `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers` (+ `sudoers.d/*`), `/etc/ssh/sshd_config`, `/etc/hosts`, `/etc/resolv.conf`
+- Scheduled-task persistence — `/etc/crontab`, `/etc/cron.d/*`, and **per-user crontabs** (`/var/spool/cron/crontabs/*` on Debian, `/var/spool/cron/*` on RHEL)
+- SSH persistence — `authorized_keys` for root and every user under `/home/*`
+- Rootkit / hijack points — `/etc/ld.so.preload` (classic userspace LD_PRELOAD hijack)
+- Systemd persistence — `/etc/systemd/system/*.service` and `*.timer` (a common cron replacement for planting persistence)
+
+### SSH session risk scoring
+Tracks every SSH session end-to-end — auth method, source IP reputation, login hour, privileged commands (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — and scores it 0-100 on close. **Sigma correlation**: if any other detector (WAF, integrity, malware, port scan, egress, DNS) fires while a session is open, that session's risk score jumps — turning scattered low-confidence signals into one high-confidence alert tied to exactly who was logged in when it happened.
+
 ### And more
 - **Mail & FTP protection** — Postfix, Dovecot, Pure-FTPD, MySQL brute force detection
 - **Docker-aware** — auto-detects web containers, reads logs via bind mounts and volumes
