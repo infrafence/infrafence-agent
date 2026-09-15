@@ -497,6 +497,7 @@ Recent highlights:
 
 | Version | Highlight |
 |---|---|
+| v1.0.0 | First official InfraFence release — Sigma session risk correlation, egress/DNS threat detection, extended persistence monitoring, signed releases |
 | v0.9.80+ | Kubernetes DaemonSet support, Helm chart, ingress WAF |
 | v0.9.63 | Docker Swarm global service, Docker secrets |
 | v0.9.62 | Docker labels (`infrafence.monitor`, `infrafence.log-path`, `infrafence.domain`) |

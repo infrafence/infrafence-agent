@@ -2,6 +2,13 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.0
+- **First official InfraFence release.** This agent was forked and fully rebranded from an MIT-licensed upstream codebase (previously versioned up to v1.4.57 under its original name). Version numbering restarts at 1.0.0 for the InfraFence project — entries below this line predate the rebrand and describe the codebase under its original name.
+- **Sigma correlation wired up** — cross-detector session risk scoring (WAF, integrity, malware, port scan, egress, DNS signals now credit open SSH sessions with a correlated risk hit; previously a synced config field with no effect).
+- **Egress & DNS threat detection** — outbound connections and DNS resolvers are now checked against the same threat feed used for inbound bans, catching an already-compromised host beaconing out.
+- **Extended persistence monitoring** — file integrity baseline now also covers `/etc/ld.so.preload`, per-user crontabs, and systemd `.service`/`.timer` units.
+- **Release signing** — binaries, container images, and the Helm chart are now signed with InfraFence's own Cosign and GPG keys.
+
 ## v1.4.51
 - **fix: false positive CORE_FILE_MODIFIED on wp-includes/version.php** — this file changes on every WordPress update and is not a useful injection target. Now excluded from core file integrity checks.
 
