@@ -561,5 +561,5 @@ go build -o infrafence-agent ./cmd/infrafence-agent
 ---
 
 <p align="center">
-  <a href="https://infrafence.com">infrafence.com</a> · Built for developers who run their own servers
+  <a href="https://infrafence.com">infrafence.com</a> · Live Security Operations
 </p>
