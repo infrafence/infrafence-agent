@@ -81,6 +81,7 @@ helm install infrafence-agent \
 | Bot management | — | — | Yes | **Yes (70+ fingerprints)** |
 | Docker container awareness | — | — | — | **Yes** |
 | Kubernetes / Helm | — | Yes | — | **Yes (DaemonSet)** |
+| Outbound threat detection (egress & DNS) | — | — | — | **Yes** |
 | Monitor mode (detect only) | — | — | — | **Yes** |
 | Works on any Linux | Yes | Yes | cPanel/Plesk | **Yes** |
 | Price | Free | Free / $2K+ | €14-52/srv | **€9/srv** |
