@@ -273,41 +273,14 @@ jobs:
             --sign --key "InfraFence" --keyring /tmp/secring.gpg \
             -d /tmp/charts
 
-      - name: Install oras
-        run: |
-          curl -sLO https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz
-          tar xzf oras_1.2.2_linux_amd64.tar.gz -C /usr/local/bin oras
-          rm oras_1.2.2_linux_amd64.tar.gz
-
       - name: Push chart with provenance to GHCR
-        id: helm-push
         run: |
           CHART_VERSION=$(grep '^version:' charts/infrafence-agent/Chart.yaml | awk '{print $2}')
           CHART_TGZ="/tmp/charts/infrafence-agent-${CHART_VERSION}.tgz"
-          CHART_PROV="${CHART_TGZ}.prov"
 
-          # Push chart normally (creates correct Helm OCI manifest)
-          OUTPUT=$(helm push "${CHART_TGZ}" oci://ghcr.io/infrafence/charts 2>&1)
-          echo "$OUTPUT"
-          DIGEST=$(echo "$OUTPUT" | grep -oP 'sha256:[a-f0-9]+')
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-
-          # Upload .prov blob to registry
-          PROV_BLOB_OUTPUT=$(oras blob push ghcr.io/infrafence/charts/infrafence-agent "${CHART_PROV}" 2>&1)
-          echo "$PROV_BLOB_OUTPUT"
-          PROV_DIGEST=$(echo "$PROV_BLOB_OUTPUT" | grep -oP 'sha256:[a-f0-9]+' | head -1)
-          PROV_SIZE=$(wc -c < "${CHART_PROV}" | tr -d ' ')
-
-          # Fetch manifest, add .prov as layer, re-push
-          # (oras attach uses referrers API which GHCR doesn't support)
-          oras manifest fetch ghcr.io/infrafence/charts/infrafence-agent:${CHART_VERSION} > /tmp/manifest.json
-
-          jq --arg digest "${PROV_DIGEST}" \
-             --argjson size ${PROV_SIZE} \
-             '.layers += [{"mediaType": "application/vnd.cncf.helm.chart.provenance.v1.prov", "digest": $digest, "size": $size}]' \
-             /tmp/manifest.json > /tmp/manifest-signed.json
-
-          oras manifest push \
-            --media-type "application/vnd.oci.image.manifest.v1+json" \
-            ghcr.io/infrafence/charts/infrafence-agent:${CHART_VERSION} \
-            /tmp/manifest-signed.json
+          # helm push already detects and attaches the co-located .tgz.prov
+          # file (produced by `helm package --sign` above) as a layer on its
+          # own — do not also upload it separately and append it to the
+          # manifest by hand, that produces a manifest with the provenance
+          # layer listed twice (verified: this is what was happening).
+          helm push "${CHART_TGZ}" oci://ghcr.io/infrafence/charts
