@@ -47,6 +47,8 @@ All communication uses HTTPS (TLS 1.2+).
 
 No data is shared with third parties by default.
 
+**Exception — AI incident analysis (opt-in, dashboard-only):** the dashboard offers an optional feature letting an operator submit incident details — and optionally free-text notes or log excerpts they choose to paste in — to get an AI-generated summary of likely cause, risk, and recommended actions. This is a manual action taken by a human operator in the dashboard, never something the agent does automatically. Anything submitted through it, including any text an operator chooses to paste, is sent to a third-party AI provider to generate the response. The dashboard shows this notice every time the feature is used. Nothing about the agent's own reporting changes — it still only ever transmits parsed attack metadata (see above), never raw log contents.
+
 ## Binary Verification
 
 Every release is built by [GitHub Actions CI](.github/workflows/release.yml) with full build provenance attestation. Binaries are signed with [Cosign](https://github.com/sigstore/cosign).
