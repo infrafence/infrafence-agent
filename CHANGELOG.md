@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.6
+- **fix: re-running the installer to update an already-running agent never actually restarted it.** Confirmed live on a real server after the v1.0.5 fix: the binary on disk was replaced correctly, but `install_service` called `systemctl start` (and the equivalent for Upstart/SysVinit), which is a no-op on a unit that's already active — the old process kept running in memory, unchanged, indefinitely. All three init systems now force an actual restart (`systemctl restart`, stop-then-start for Upstart, the init script's own `restart` case for SysVinit), so re-running the one-liner now genuinely takes effect.
+
 ## v1.0.5
 - **fix: the documented one-liner still required `--token` when updating an already-registered server.** The v1.0.4 fix stopped the re-register prompt from hanging the script, but the token requirement check ran before that logic and didn't know about it — so re-running the exact same install command to pick up a new release (with no `--token`, since install tokens are single-use and typically long gone by then) still failed immediately with "Install token is required," before ever reaching the code that would have skipped registration anyway. The token is now only required for a genuinely new registration (no existing config, or `--force-register`).
 

@@ -622,7 +622,11 @@ EOF
     if [[ "$INSTALL_ONLY" == true ]]; then
         success "Service installed and enabled (not started — no token configured)."
     else
-        systemctl start "${SERVICE_NAME}"
+        # restart, not start: on a server that's already running this service
+        # (the update path), `start` on an already-active unit is a no-op —
+        # the binary on disk gets replaced but the running process, still the
+        # old one in memory, never picks it up. restart is safe either way.
+        systemctl restart "${SERVICE_NAME}"
         success "Service enabled and started."
     fi
 }
@@ -650,7 +654,12 @@ EOF
     if [[ "$INSTALL_ONLY" == true ]]; then
         success "Service installed (not started — no token configured)."
     else
-        initctl start "${SERVICE_NAME}" || true
+        # stop-then-start, not a bare start: on the update path the job is
+        # already running, and `initctl start` on an already-running job
+        # fails outright (which the old `|| true` just silently swallowed,
+        # leaving the old binary running in memory indefinitely).
+        initctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+        initctl start "${SERVICE_NAME}"
         success "Service started."
     fi
 }
@@ -716,7 +725,10 @@ INITEOF
     if [[ "$INSTALL_ONLY" == true ]]; then
         success "Service installed (not started — no token configured)."
     else
-        "$init_script" start
+        # restart, not start: on the update path the daemon is already
+        # running, and the init script's own `start` case doesn't check for
+        # that — it would leave the old binary running in memory untouched.
+        "$init_script" restart
         success "Service started."
     fi
 }
