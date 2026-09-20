@@ -2,6 +2,10 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.3
+- **fix: heartbeat never reported listening ports or agent runtime stats.** `DetectListeningServices()` and the whole `RuntimeStats` payload (uptime, goroutine count, heap, RSS, event queue depth/drops) were fully implemented but never actually called from the heartbeat loop — the dashboard always showed "0 porte" and a blank uptime regardless of what was really running. Both are now populated on every heartbeat.
+- **fix: websocket client retried forever with a noisy dial error when the server has no Reverb URL.** Some backends intentionally never implement the Reverb push channel (the agent works fine without it via heartbeat/sync). The agent now skips starting the websocket client entirely in that case instead of logging a reconnect failure every 30s.
+
 ## v1.0.2
 - **fix: install.sh could hang waiting for input on a real interactive install.** The v1.0.1 fix made the server-URL prompt actually work when a real terminal is attached (reading from `/dev/tty`) — but that meant it now *always* paused to ask, even though a sensible default exists, which contradicts "one command, zero configuration" and was caught immediately on the next real-server test (an operator running the documented one-liner over SSH has a real tty, so it always paused). Removed the interactive prompt entirely: `INFRAFENCE_SERVER_URL` / `INFRAFENCE_AGENT_NAME` env vars still override, otherwise it silently uses the default — never waits for input.
 
