@@ -1,7 +1,7 @@
 BINARY     = infrafence-agent
 BUILD_DIR  = build
 CMD_PATH   = ./cmd/infrafence-agent
-VERSION    = 1.0.9
+VERSION    = 1.0.10
 LDFLAGS    = -ldflags "-s -w -X main.version=$(VERSION)"
 
 .PHONY: all build build-linux tidy test clean
