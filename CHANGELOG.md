@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.2
+- **fix: install.sh could hang waiting for input on a real interactive install.** The v1.0.1 fix made the server-URL prompt actually work when a real terminal is attached (reading from `/dev/tty`) — but that meant it now *always* paused to ask, even though a sensible default exists, which contradicts "one command, zero configuration" and was caught immediately on the next real-server test (an operator running the documented one-liner over SSH has a real tty, so it always paused). Removed the interactive prompt entirely: `INFRAFENCE_SERVER_URL` / `INFRAFENCE_AGENT_NAME` env vars still override, otherwise it silently uses the default — never waits for input.
+
 ## v1.0.1
 - **fix: `install.sh` failed with "Server URL is required" on every real install.** Found during the first real-server test: the documented one-liner (`curl ... | sudo bash -s -- --token <TOKEN>`, no env var) tried to interactively prompt for the server URL, but `read` was reading from stdin — which is the piped script itself when run via `curl | bash`, not the operator's keyboard — so the prompt got nothing and the install aborted immediately. `server_url` now defaults to `https://infrafence.com` (matching the pattern already used elsewhere in the script), and the interactive prompt (still available for custom/self-hosted servers) now reads from `/dev/tty` so it actually works when a real terminal is attached.
 

@@ -365,34 +365,17 @@ download_binary() {
 
 # ─── Registration ──────────────────────────────────────────────────────────────
 prompt_config() {
-    local server_url="${INFRAFENCE_SERVER_URL:-}"
-    local agent_name="${INFRAFENCE_AGENT_NAME:-}"
+    # Always non-interactive — this install is documented and marketed as
+    # "one command, zero configuration", so it must never pause waiting for
+    # input, even when a real terminal is attached (an operator pasting the
+    # one-liner over SSH has a real tty, and would hit an unexpected pause
+    # here otherwise — confirmed on a real install). Override via
+    # INFRAFENCE_SERVER_URL / INFRAFENCE_AGENT_NAME if you need something
+    # other than the defaults; there is no interactive fallback.
+    local server_url="${INFRAFENCE_SERVER_URL:-https://infrafence.com}"
+    server_url="${server_url%/}" # strip trailing slash
 
-    # `read` here needs to come from the controlling terminal explicitly:
-    # when this script is run the documented way (curl | sudo bash), stdin
-    # is the piped script itself, not the operator's keyboard, so a plain
-    # `read -rp` silently gets nothing and server_url stays empty. Only
-    # attempt the interactive prompt if a real terminal is actually
-    # attached (/dev/tty exists) — otherwise fall through to the default.
-    if [[ -z "$server_url" ]] && [[ -t 0 || -r /dev/tty ]]; then
-        echo ""
-        read -rp "$(echo -e "${BOLD}InfraFence server URL${NC} [https://infrafence.com]: ")" server_url < /dev/tty || true
-    fi
-
-    # Default to the production server — this is what makes the documented
-    # one-liner (no env var) work for real customers out of the box.
-    server_url="${server_url:-https://infrafence.com}"
-    # Strip trailing slash
-    server_url="${server_url%/}"
-
-    if [[ -z "$agent_name" ]]; then
-        local default_name
-        default_name="$(hostname -s)"
-        if [[ -t 0 || -r /dev/tty ]]; then
-            read -rp "$(echo -e "${BOLD}Agent name${NC} [${default_name}]: ")" agent_name < /dev/tty || true
-        fi
-        agent_name="${agent_name:-$default_name}"
-    fi
+    local agent_name="${INFRAFENCE_AGENT_NAME:-$(hostname -s)}"
 
     echo "$server_url"$'\n'"$agent_name"
 }
