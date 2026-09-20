@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.8
+- **cleanup: `go vet ./...` now passes clean across the whole module.** Two pre-existing issues surfaced while testing: `internal/scanner/scanner.go`'s `isPortOpen` built its address with `fmt.Sprintf("%s:%d", host, port)`, which breaks on IPv6 hosts — now uses `net.JoinHostPort`. `internal/malware/wp_database.go`'s `queryForMalware` had a leftover `append([]string{...})` call with nothing actually appended (its result was immediately discarded by the next line, which rebuilt the full arg list by hand) — rewritten to build the mysql args in one straight line without the dead step. Both are behavior-preserving; no functional change.
+
 ## v1.0.7
 - **fix: the agent could ban its own public IP.** Reproduced live during testing: SSHing into a server from a shell already on that same server (targeting its own public IP) can get logged by sshd with the source IP being the server's own public address — depending on the provider's routing, this doesn't always land on a directly interface-bound address, so `collectLocalIPs()`'s self-protection (which only enumerates local network interfaces) didn't recognize it as "self" and banned the server's own IP after 5 failed attempts. The agent now also explicitly protects its own detected outbound IP (the same one it reports in `agents.ip_address`), the same mechanism already used to protect the InfraFence API server's IP.
 
