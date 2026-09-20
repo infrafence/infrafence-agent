@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.5
+- **fix: the documented one-liner still required `--token` when updating an already-registered server.** The v1.0.4 fix stopped the re-register prompt from hanging the script, but the token requirement check ran before that logic and didn't know about it — so re-running the exact same install command to pick up a new release (with no `--token`, since install tokens are single-use and typically long gone by then) still failed immediately with "Install token is required," before ever reaching the code that would have skipped registration anyway. The token is now only required for a genuinely new registration (no existing config, or `--force-register`).
+
 ## v1.0.4
 - **fix: install.sh could hang (again) when re-running on an already-registered server.** The "Existing config found — re-register?" prompt used a plain `read`, which reads from the piped script itself (not the operator's keyboard) in the documented `curl | sudo bash` flow — with `set -e` active, the failed read killed the script silently right after printing the warning, with the binary already updated but the service never restarted. The prompt is gone: re-running now always keeps the existing registration, updates the binary, and restarts the service, with a new `--force-register` flag for the rare case you actually want to re-register.
 

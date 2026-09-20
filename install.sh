@@ -795,9 +795,16 @@ uninstall() {
 main() {
     parse_args "$@"
 
-    # Require install token unless --install-only
+    # Require install token unless --install-only, or this server is already
+    # registered and --force-register wasn't passed (re-running the same
+    # one-liner to update just reinstalls the binary/service and keeps the
+    # existing registration — no token needed for that path).
+    local already_registered=false
+    [[ -f "${CONFIG_DIR}/config.json" ]] && already_registered=true
     if [[ "$INSTALL_ONLY" != true ]] && [[ -z "$INSTALL_TOKEN" ]]; then
-        error "Install token is required. Usage: curl -fsSL .../install.sh | sudo bash -s -- --token <TOKEN>"
+        if [[ "$already_registered" != true ]] || [[ "$FORCE_REGISTER" == true ]]; then
+            error "Install token is required. Usage: curl -fsSL .../install.sh | sudo bash -s -- --token <TOKEN>"
+        fi
     fi
 
     echo ""
