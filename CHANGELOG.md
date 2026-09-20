@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.4
+- **fix: install.sh could hang (again) when re-running on an already-registered server.** The "Existing config found — re-register?" prompt used a plain `read`, which reads from the piped script itself (not the operator's keyboard) in the documented `curl | sudo bash` flow — with `set -e` active, the failed read killed the script silently right after printing the warning, with the binary already updated but the service never restarted. The prompt is gone: re-running now always keeps the existing registration, updates the binary, and restarts the service, with a new `--force-register` flag for the rare case you actually want to re-register.
+
 ## v1.0.3
 - **fix: heartbeat never reported listening ports or agent runtime stats.** `DetectListeningServices()` and the whole `RuntimeStats` payload (uptime, goroutine count, heap, RSS, event queue depth/drops) were fully implemented but never actually called from the heartbeat loop — the dashboard always showed "0 porte" and a blank uptime regardless of what was really running. Both are now populated on every heartbeat.
 - **fix: websocket client retried forever with a noisy dial error when the server has no Reverb URL.** Some backends intentionally never implement the Reverb push channel (the agent works fine without it via heartbeat/sync). The agent now skips starting the websocket client entirely in that case instead of logging a reconnect failure every 30s.
