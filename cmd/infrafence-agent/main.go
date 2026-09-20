@@ -34,7 +34,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/ws"
 )
 
-var version = "1.0.8"
+var version = "1.0.9"
 
 // Global malware scanner state (initialized in runAgent, used in syncAndApply + runMalwareScan)
 var malwareScanRunning atomic.Bool
@@ -399,13 +399,15 @@ func runAgent() {
 				}
 			},
 			func(ip, eventType, severity string, details map[string]string) {
-				apiClient.ReportEvents([]api.EventRequest{{
+				if err := apiClient.ReportEvents([]api.EventRequest{{
 					Type:       eventType,
 					Severity:   severity,
 					SourceIP:   ip,
 					Details:    details,
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
-				}})
+				}}); err != nil {
+					log.Printf("[webwatcher] failed to report %s event for %s: %v", eventType, ip, err)
+				}
 			},
 		)
 		webW.SetCheckIP(func(ip string) string {
