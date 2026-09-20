@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.10
+- **fix: dashboard "Uptime" reset on every agent update.** It was computed from the agent process's own start time, so any routine agent restart (an update, a crash-restart, a manual `systemctl restart`) reset it to zero — reported live as confusing since it happens frequently and made the field look broken. Now reads the server's real OS uptime from `/proc/uptime`, independent of the agent process's own lifetime — only a genuine server reboot resets it, matching what "Uptime" means on an operations dashboard.
+
 ## v1.0.9
 - **diagnostics: WAF score/event decisions and event-reporting failures are now logged.** Investigating a live report of WAF test requests (clear SQLi/XSS payloads, correctly reaching nginx and matching the built-in patterns by inspection) never showing up as events in the dashboard — the code path looked correct end to end but had zero visibility into where it was actually going wrong. `addScore` now logs every scored match and whether it crossed the observe threshold to report an event; the webwatcher's event-reporting callback now logs `ReportEvents` failures instead of silently swallowing them (every other callback already did this — this one was the exception). No behavior change, purely for diagnosing this live.
 

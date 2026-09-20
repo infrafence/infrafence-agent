@@ -34,7 +34,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/ws"
 )
 
-var version = "1.0.9"
+var version = "1.0.10"
 
 // Global malware scanner state (initialized in runAgent, used in syncAndApply + runMalwareScan)
 var malwareScanRunning atomic.Bool
@@ -900,7 +900,7 @@ func runAgent() {
 					HeapAllocBytes: memStats.HeapAlloc,
 					HeapSysBytes:   memStats.HeapSys,
 					RSSBytes:       readSelfRSS(),
-					UptimeSeconds:  int64(time.Since(startTime).Seconds()),
+					UptimeSeconds:  readSystemUptime(startTime),
 					EventQueueLen:  eventQueueLen,
 					EventDropped:   eventDropped,
 				},
@@ -1593,6 +1593,27 @@ func readSelfRSS() uint64 {
 		return kb * 1024
 	}
 	return 0
+}
+
+// readSystemUptime returns how long this server (not the agent process) has
+// been up, in seconds, parsed from /proc/uptime. Deliberately independent of
+// the agent's own process lifetime — an agent restart (routine, happens on
+// every update) must not reset what the dashboard shows as server uptime.
+// Falls back to the agent's own process uptime (via startTime) if unreadable.
+func readSystemUptime(startTime time.Time) int64 {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return int64(time.Since(startTime).Seconds())
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return int64(time.Since(startTime).Seconds())
+	}
+	seconds, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return int64(time.Since(startTime).Seconds())
+	}
+	return int64(seconds)
 }
 
 func splitLines(s string) []string {
