@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.1
+- **fix: `install.sh` failed with "Server URL is required" on every real install.** Found during the first real-server test: the documented one-liner (`curl ... | sudo bash -s -- --token <TOKEN>`, no env var) tried to interactively prompt for the server URL, but `read` was reading from stdin — which is the piped script itself when run via `curl | bash`, not the operator's keyboard — so the prompt got nothing and the install aborted immediately. `server_url` now defaults to `https://infrafence.com` (matching the pattern already used elsewhere in the script), and the interactive prompt (still available for custom/self-hosted servers) now reads from `/dev/tty` so it actually works when a real terminal is attached.
+
 ## v1.0.0
 - **First official InfraFence release.** This agent was forked and fully rebranded from an MIT-licensed upstream codebase (previously versioned up to v1.4.57 under its original name). Version numbering restarts at 1.0.0 for the InfraFence project — entries below this line predate the rebrand and describe the codebase under its original name.
 - **Sigma correlation wired up** — cross-detector session risk scoring (WAF, integrity, malware, port scan, egress, DNS signals now credit open SSH sessions with a correlated risk hit; previously a synced config field with no effect).

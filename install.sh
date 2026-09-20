@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # InfraFence Agent Installer
 # Usage: curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <INSTALL_TOKEN>
-# Non-interactive: INFRAFENCE_SERVER_URL=https://... INFRAFENCE_AGENT_NAME=web-01 curl -fsSL ... | sudo bash -s -- --token <TOKEN>
+#   (registers against https://infrafence.com by default)
+# Custom/self-hosted server: INFRAFENCE_SERVER_URL=https://... INFRAFENCE_AGENT_NAME=web-01 curl -fsSL ... | sudo bash -s -- --token <TOKEN>
 # Install only (no registration): curl -fsSL ... | sudo bash -s -- --install-only
 #
 # SSL Error fix (old servers — "Peer's Certificate issuer is not recognized"):
@@ -367,19 +368,29 @@ prompt_config() {
     local server_url="${INFRAFENCE_SERVER_URL:-}"
     local agent_name="${INFRAFENCE_AGENT_NAME:-}"
 
-    if [[ -z "$server_url" ]]; then
+    # `read` here needs to come from the controlling terminal explicitly:
+    # when this script is run the documented way (curl | sudo bash), stdin
+    # is the piped script itself, not the operator's keyboard, so a plain
+    # `read -rp` silently gets nothing and server_url stays empty. Only
+    # attempt the interactive prompt if a real terminal is actually
+    # attached (/dev/tty exists) — otherwise fall through to the default.
+    if [[ -z "$server_url" ]] && [[ -t 0 || -r /dev/tty ]]; then
         echo ""
-        read -rp "$(echo -e "${BOLD}InfraFence server URL${NC} [e.g. https://panel.example.com]: ")" server_url
+        read -rp "$(echo -e "${BOLD}InfraFence server URL${NC} [https://infrafence.com]: ")" server_url < /dev/tty || true
     fi
 
-    [[ -n "$server_url" ]] || error "Server URL is required."
+    # Default to the production server — this is what makes the documented
+    # one-liner (no env var) work for real customers out of the box.
+    server_url="${server_url:-https://infrafence.com}"
     # Strip trailing slash
     server_url="${server_url%/}"
 
     if [[ -z "$agent_name" ]]; then
         local default_name
         default_name="$(hostname -s)"
-        read -rp "$(echo -e "${BOLD}Agent name${NC} [${default_name}]: ")" agent_name
+        if [[ -t 0 || -r /dev/tty ]]; then
+            read -rp "$(echo -e "${BOLD}Agent name${NC} [${default_name}]: ")" agent_name < /dev/tty || true
+        fi
         agent_name="${agent_name:-$default_name}"
     fi
 
