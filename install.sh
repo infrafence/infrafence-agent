@@ -4,6 +4,8 @@
 #   (registers against https://infrafence.com by default)
 # Custom/self-hosted server: INFRAFENCE_SERVER_URL=https://... INFRAFENCE_AGENT_NAME=web-01 curl -fsSL ... | sudo bash -s -- --token <TOKEN>
 # Install only (no registration): curl -fsSL ... | sudo bash -s -- --install-only
+# Re-run on an already-registered server: updates the binary and restarts the
+#   service, keeps the existing registration. Add --force-register to re-register.
 #
 # SSL Error fix (old servers — "Peer's Certificate issuer is not recognized"):
 #   This happens on CentOS 7 / RHEL 7 and systems with ca-certificates older than 2024.
@@ -64,6 +66,7 @@ report_status() {
 parse_args() {
     INSTALL_TOKEN=""
     INSTALL_ONLY=false
+    FORCE_REGISTER=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token)
@@ -73,6 +76,10 @@ parse_args() {
                 ;;
             --install-only)
                 INSTALL_ONLY=true
+                shift
+                ;;
+            --force-register)
+                FORCE_REGISTER=true
                 shift
                 ;;
             --uninstall)
@@ -836,15 +843,16 @@ main() {
         exit 0
     fi
 
-    # Already installed? Re-register?
-    if [[ -f "${CONFIG_DIR}/config.json" ]]; then
-        warn "Existing config found at ${CONFIG_DIR}/config.json"
-        read -rp "Re-register agent? [y/N]: " answer
-        if [[ "${answer,,}" != "y" ]]; then
-            install_service
-            check_service
-            exit 0
-        fi
+    # Already installed? Keep the existing registration by default — this
+    # script is documented and marketed as "one command, zero configuration"
+    # and must never pause waiting for input, even with a real terminal
+    # attached (see the non-interactive prompt_config fix above for the same
+    # reasoning). Re-registering requires an explicit --force-register flag.
+    if [[ -f "${CONFIG_DIR}/config.json" ]] && [[ "$FORCE_REGISTER" != true ]]; then
+        warn "Existing config found at ${CONFIG_DIR}/config.json — keeping current registration (pass --force-register to re-register)."
+        install_service
+        check_service
+        exit 0
     fi
 
     # Get server URL and agent name
