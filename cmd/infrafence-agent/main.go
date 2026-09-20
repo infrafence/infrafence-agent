@@ -34,7 +34,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/ws"
 )
 
-var version = "1.0.6"
+var version = "1.0.7"
 
 // Global malware scanner state (initialized in runAgent, used in syncAndApply + runMalwareScan)
 var malwareScanRunning atomic.Bool
@@ -170,6 +170,17 @@ func runAgent() {
 		} else {
 			log.Printf("[main] warning: could not resolve API host %s: %v", host, err)
 		}
+	}
+
+	// Protect this server's own public IP. collectLocalIPs() (self-protection
+	// in internal/firewall) only sees IPs bound to local interfaces, which on
+	// most cloud providers is the private IP — the public IP is NAT'd. A
+	// connection that loops out through the provider's NAT and back in (e.g.
+	// an operator SSHing into the server's own public IP from a shell already
+	// on that server) gets logged by sshd with the public IP as the source,
+	// so without this the agent can end up banning itself.
+	if selfIP := detectOutboundIP(); selfIP != "" && selfIP != "0.0.0.0" {
+		firewall.AddProtectedIPs(selfIP)
 	}
 
 	// Initialize firewall backend (detects ipset, falls back to iptables)

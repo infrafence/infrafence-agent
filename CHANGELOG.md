@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.7
+- **fix: the agent could ban its own public IP.** Reproduced live during testing: SSHing into a server from a shell already on that same server (targeting its own public IP) can get logged by sshd with the source IP being the server's own public address — depending on the provider's routing, this doesn't always land on a directly interface-bound address, so `collectLocalIPs()`'s self-protection (which only enumerates local network interfaces) didn't recognize it as "self" and banned the server's own IP after 5 failed attempts. The agent now also explicitly protects its own detected outbound IP (the same one it reports in `agents.ip_address`), the same mechanism already used to protect the InfraFence API server's IP.
+
 ## v1.0.6
 - **fix: re-running the installer to update an already-running agent never actually restarted it.** Confirmed live on a real server after the v1.0.5 fix: the binary on disk was replaced correctly, but `install_service` called `systemctl start` (and the equivalent for Upstart/SysVinit), which is a no-op on a unit that's already active — the old process kept running in memory, unchanged, indefinitely. All three init systems now force an actual restart (`systemctl restart`, stop-then-start for Upstart, the init script's own `restart` case for SysVinit), so re-running the one-liner now genuinely takes effect.
 
