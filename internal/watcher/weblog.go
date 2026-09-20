@@ -2311,7 +2311,10 @@ func (w *WebWatcher) addScore(ip, eventType, logPath, line string, details map[s
 
 	// Always report the event when score reaches observe level (30+)
 	if score >= thresholdObserve {
+		log.Printf("[webwatcher] %s matched %s (score=%d, action=%s) — reporting event", ip, eventType, score, action)
 		go w.onEvent(ip, eventType, severity, details)
+	} else {
+		log.Printf("[webwatcher] %s matched %s (score=%d) — below observe threshold, not reported", ip, eventType, score)
 	}
 
 	// Monitor mode: never ban, just observe everything

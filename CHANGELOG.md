@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.9
+- **diagnostics: WAF score/event decisions and event-reporting failures are now logged.** Investigating a live report of WAF test requests (clear SQLi/XSS payloads, correctly reaching nginx and matching the built-in patterns by inspection) never showing up as events in the dashboard — the code path looked correct end to end but had zero visibility into where it was actually going wrong. `addScore` now logs every scored match and whether it crossed the observe threshold to report an event; the webwatcher's event-reporting callback now logs `ReportEvents` failures instead of silently swallowing them (every other callback already did this — this one was the exception). No behavior change, purely for diagnosing this live.
+
 ## v1.0.8
 - **cleanup: `go vet ./...` now passes clean across the whole module.** Two pre-existing issues surfaced while testing: `internal/scanner/scanner.go`'s `isPortOpen` built its address with `fmt.Sprintf("%s:%d", host, port)`, which breaks on IPv6 hosts — now uses `net.JoinHostPort`. `internal/malware/wp_database.go`'s `queryForMalware` had a leftover `append([]string{...})` call with nothing actually appended (its result was immediately discarded by the next line, which rebuilt the full arg list by hand) — rewritten to build the mysql args in one straight line without the dead step. Both are behavior-preserving; no functional change.
 
