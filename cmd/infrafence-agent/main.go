@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -35,17 +37,17 @@ import (
 var version = "1.0.2"
 
 // Global malware scanner state (initialized in runAgent, used in syncAndApply + runMalwareScan)
-var malwareScanRunning  atomic.Bool
-var malwareScanCancel   atomic.Bool
-var malwareScheduler    *malware.Scheduler
-var malwareAllowList    *malware.AllowList
-var malwareScanner      *malware.Scanner
-var malwareRTWatcher    *malware.RealtimeWatcher
-var yaraScanner         *malware.YaraScanner
-var malwareCustomPaths  []string
-var modsecEngine      *modsecurity.Engine
-var sessionTracker    *session.SessionTracker
-var threatFeedIndex   = monitor.NewThreatFeedIndex()
+var malwareScanRunning atomic.Bool
+var malwareScanCancel atomic.Bool
+var malwareScheduler *malware.Scheduler
+var malwareAllowList *malware.AllowList
+var malwareScanner *malware.Scanner
+var malwareRTWatcher *malware.RealtimeWatcher
+var yaraScanner *malware.YaraScanner
+var malwareCustomPaths []string
+var modsecEngine *modsecurity.Engine
+var sessionTracker *session.SessionTracker
+var threatFeedIndex = monitor.NewThreatFeedIndex()
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -127,6 +129,8 @@ func runRegister(serverURL, name, installToken string) {
 
 // runAgent is the main loop.
 func runAgent() {
+	startTime := time.Now()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v\nRun 'infrafence-agent register' first.", err)
@@ -207,12 +211,12 @@ func runAgent() {
 		}
 
 		details := map[string]string{
-			"source":       "modsecurity",
-			"attack_type":  attackCat,
-			"rule_ids":     strings.Join(ruleIDs, ","),
-			"uri":          entry.URI,
-			"action":       entry.Action,
-			"engine_mode":  entry.EngineMode,
+			"source":      "modsecurity",
+			"attack_type": attackCat,
+			"rule_ids":    strings.Join(ruleIDs, ","),
+			"uri":         entry.URI,
+			"action":      entry.Action,
+			"engine_mode": entry.EngineMode,
 		}
 		if entry.Host != "" {
 			details["domain"] = entry.Host
@@ -812,7 +816,11 @@ func runAgent() {
 			},
 		},
 	)
-	go wsClient.Run()
+	if cfg.ReverbURL != "" {
+		go wsClient.Run()
+	} else {
+		log.Println("[reverb] no websocket URL from server — real-time push disabled, relying on heartbeat/sync only")
+	}
 
 	// Metrics collector
 	metricsCollector := monitor.NewMetricsCollector()
@@ -831,6 +839,16 @@ func runAgent() {
 				reqAnalyzed = webW.RequestsAnalyzed()
 			}
 
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			eventQueueLen, eventDropped := apiClient.EventQueueStats()
+
+			listeningRaw := monitor.DetectListeningServices()
+			listening := make([]api.ListeningService, len(listeningRaw))
+			for i, s := range listeningRaw {
+				listening[i] = api.ListeningService{Port: s.Port, Process: s.Process, Proto: s.Proto}
+			}
+
 			fwStatus := firewall.FirewallStatus()
 			hbReq := api.HeartbeatRequest{
 				Status:            "online",
@@ -846,18 +864,33 @@ func runAgent() {
 				BanCapacity:       fwStatus.Capacity,
 				ActiveBans:        fwStatus.ActiveBans,
 				KubernetesInfo:    collectK8sInfo(k8sClient),
-				YaraInstalled:    func() bool { if yaraScanner != nil { yaraScanner.Recheck() }; return yaraScanner != nil && yaraScanner.IsAvailable() }(),
-				ModsecActive:     modsecEngine != nil && modsecEngine.IsAvailable(),
-				RequestsAnalyzed: reqAnalyzed,
-				CSFInstalled:     fwStatus.CSF.Installed,
-				CSFVersion:       fwStatus.CSF.Version,
-				CSFPortsIn:       fwStatus.CSF.PortsIn,
-				CSFPortsOut:      fwStatus.CSF.PortsOut,
-				CSFDenyCount:     fwStatus.CSF.DenyCount,
-				CSFAllowCount:    fwStatus.CSF.AllowCount,
+				YaraInstalled: func() bool {
+					if yaraScanner != nil {
+						yaraScanner.Recheck()
+					}
+					return yaraScanner != nil && yaraScanner.IsAvailable()
+				}(),
+				ModsecActive:        modsecEngine != nil && modsecEngine.IsAvailable(),
+				RequestsAnalyzed:    reqAnalyzed,
+				CSFInstalled:        fwStatus.CSF.Installed,
+				CSFVersion:          fwStatus.CSF.Version,
+				CSFPortsIn:          fwStatus.CSF.PortsIn,
+				CSFPortsOut:         fwStatus.CSF.PortsOut,
+				CSFDenyCount:        fwStatus.CSF.DenyCount,
+				CSFAllowCount:       fwStatus.CSF.AllowCount,
 				ControlPanel:        cpName,
 				ControlPanelVersion: cpVersion,
 				PanelDomains:        panelDomains,
+				ListeningServices:   listening,
+				Runtime: &api.RuntimeStats{
+					GoroutineCount: runtime.NumGoroutine(),
+					HeapAllocBytes: memStats.HeapAlloc,
+					HeapSysBytes:   memStats.HeapSys,
+					RSSBytes:       readSelfRSS(),
+					UptimeSeconds:  int64(time.Since(startTime).Seconds()),
+					EventQueueLen:  eventQueueLen,
+					EventDropped:   eventDropped,
+				},
 				Metrics: &api.SystemMetrics{
 					CPUPercent:    sysMetrics.CPUPercent,
 					MemoryTotal:   sysMetrics.MemoryTotal,
@@ -1216,9 +1249,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			if _, err := malware.QuarantineFile(filePath); err != nil {
 				log.Printf("[quarantine] failed to quarantine %s: %v", filePath, err)
 				if reportErr := client.ReportEvents([]api.EventRequest{{
-					Type:     "quarantine_failed",
-					Severity: "warning",
-					Details:  map[string]string{"file": filePath, "error": err.Error()},
+					Type:       "quarantine_failed",
+					Severity:   "warning",
+					Details:    map[string]string{"file": filePath, "error": err.Error()},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
 				}}); reportErr != nil {
 					log.Printf("[quarantine] failed to report quarantine_failed for %s: %v", filePath, reportErr)
@@ -1226,9 +1259,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			} else {
 				log.Printf("[quarantine] moved %s to quarantine", filePath)
 				if err := client.ReportEvents([]api.EventRequest{{
-					Type:     "quarantine_completed",
-					Severity: "info",
-					Details:  map[string]string{"file": filePath},
+					Type:       "quarantine_completed",
+					Severity:   "info",
+					Details:    map[string]string{"file": filePath},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
 				}}); err != nil {
 					log.Printf("[quarantine] failed to report quarantine_completed for %s: %v", filePath, err)
@@ -1285,16 +1318,16 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			if err := firewall.CSFPortAction(action.Port, action.Direction, action.Action); err != nil {
 				log.Printf("[csf] port action failed: %v", err)
 				client.ReportEvents([]api.EventRequest{{
-					Type:     "csf_port_error",
-					Severity: "warning",
-					Details:  map[string]string{"port": fmt.Sprintf("%d", action.Port), "direction": action.Direction, "action": action.Action, "error": err.Error()},
+					Type:       "csf_port_error",
+					Severity:   "warning",
+					Details:    map[string]string{"port": fmt.Sprintf("%d", action.Port), "direction": action.Direction, "action": action.Action, "error": err.Error()},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
 				}})
 			} else {
 				client.ReportEvents([]api.EventRequest{{
-					Type:     "csf_port_changed",
-					Severity: "info",
-					Details:  map[string]string{"port": fmt.Sprintf("%d", action.Port), "direction": action.Direction, "action": action.Action},
+					Type:       "csf_port_changed",
+					Severity:   "info",
+					Details:    map[string]string{"port": fmt.Sprintf("%d", action.Port), "direction": action.Direction, "action": action.Action},
 					OccurredAt: time.Now().UTC().Format(time.RFC3339),
 				}})
 			}
@@ -1350,11 +1383,11 @@ func importExistingRules(client *api.Client) {
 	imported := make([]api.ImportedRule, len(rules))
 	for i, r := range rules {
 		imported[i] = api.ImportedRule{
-			RawRule:   r.RawRule,
-			Type:      r.Type,
-			Protocol:  r.Protocol,
-			Source:    r.Source,
-			Port:      r.Port,
+			RawRule:  r.RawRule,
+			Type:     r.Type,
+			Protocol: r.Protocol,
+			Source:   r.Source,
+			Port:     r.Port,
 		}
 	}
 
@@ -1525,6 +1558,30 @@ func detectOutboundIP() string {
 	return "0.0.0.0"
 }
 
+// readSelfRSS returns the agent's own resident set size in bytes, parsed
+// from /proc/self/status. Returns 0 (omitted from the heartbeat) if unreadable.
+func readSelfRSS() uint64 {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "VmRSS:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return 0
+		}
+		kb, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return 0
+		}
+		return kb * 1024
+	}
+	return 0
+}
+
 func splitLines(s string) []string {
 	var lines []string
 	start := 0
@@ -1604,7 +1661,6 @@ func parseApacheVersion(output string) string {
 	}
 	return ""
 }
-
 
 // detectControlPanel detects hosting control panels (Plesk, cPanel, DirectAdmin).
 // Runs once at startup — checks for well-known paths and binaries.
@@ -1706,6 +1762,7 @@ func collectPanelDomains(panel string) []string {
 	}
 	return domains
 }
+
 // runZombieMonitor periodically scans for zombie processes and reports events when threshold is exceeded.
 func runZombieMonitor(client *api.Client) {
 	const threshold = 5 // report event when zombies exceed this
