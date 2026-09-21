@@ -2,6 +2,10 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.11
+- **fix: Helm chart never got a new version, so Artifact Hub stopped picking up updates.** The release workflow bumped `appVersion` in `Chart.yaml` on every release but never `version` — and `version` is the OCI tag Helm charts get published under, so every release silently overwrote the same "0.6.0" tag with different content underneath. Confirmed on Artifact Hub: its security scanner kept running normally, but its version tracker had been stuck for days, since (from its point of view) there was never a new version to index. `version` now tracks the release tag exactly like `appVersion` already did, so every release is a genuinely new, unique chart version.
+- **cleanup: removed a stray, fully orphaned `charts/charts/infrafence-agent/` directory** — a duplicate, unrelated-to-the-real-one chart nested a level too deep, referenced by no workflow or Chart.yaml dependency, just confusing dead weight sitting in the repo.
+
 ## v1.0.10
 - **fix: dashboard "Uptime" reset on every agent update.** It was computed from the agent process's own start time, so any routine agent restart (an update, a crash-restart, a manual `systemctl restart`) reset it to zero — reported live as confusing since it happens frequently and made the field look broken. Now reads the server's real OS uptime from `/proc/uptime`, independent of the agent process's own lifetime — only a genuine server reboot resets it, matching what "Uptime" means on an operations dashboard.
 

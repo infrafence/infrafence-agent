@@ -248,8 +248,17 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Update Chart appVersion
+      - name: Update Chart version and appVersion
         run: |
+          # `version` was never bumped here before — every release re-pushed the
+          # same OCI tag (chart version is the OCI tag for Helm charts) with
+          # different content underneath, which is exactly what a chart
+          # repository's version-immutability assumption forbids. Artifact
+          # Hub's tracker saw "already indexed this version" every time and
+          # never picked up anything new (confirmed: last_tracking_ts stuck
+          # days behind while last_scanning_ts kept advancing normally).
+          # Chart version now simply tracks the agent's own version.
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.VERSION }}/" charts/infrafence-agent/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" charts/infrafence-agent/Chart.yaml
 
       - name: Login to GHCR (Helm)
