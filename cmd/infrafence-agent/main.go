@@ -1303,7 +1303,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Apply malware scan schedule config + realtime watcher
 	if sync.Config.MalwareScanConfig != nil {
 		cfg := sync.Config.MalwareScanConfig
-		malwareScheduler.UpdateConfig(cfg.Enabled, cfg.Frequency, cfg.Time, cfg.Intensity)
+		malwareScheduler.UpdateConfig(cfg.Enabled, cfg.IntervalHours, cfg.Intensity)
 		malwareCustomPaths = cfg.CustomScanPaths
 
 		// Start/stop realtime watcher based on malware scan being enabled

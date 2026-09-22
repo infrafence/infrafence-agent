@@ -358,10 +358,9 @@ type SessionConfig struct {
 // MalwareScanConfig controls scheduled malware scanning.
 type MalwareScanConfig struct {
 	Enabled         bool     `json:"enabled"`
-	Frequency       string   `json:"frequency"`         // "daily", "weekly", "disabled"
-	Time            string   `json:"time"`               // "03:00" (HH:MM in server local time)
-	Intensity       string   `json:"intensity"`           // "low", "medium", "high"
-	CustomScanPaths []string `json:"custom_scan_paths"`   // additional paths to scan (e.g. "/home/*/public_html")
+	IntervalHours   int      `json:"interval_hours"`    // 3, 6, 12, or 24
+	Intensity       string   `json:"intensity"`         // "low", "medium", "high"
+	CustomScanPaths []string `json:"custom_scan_paths"` // additional paths to scan (e.g. "/home/*/public_html")
 }
 
 type WAFConfig struct {
