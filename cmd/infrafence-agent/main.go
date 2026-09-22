@@ -722,117 +722,120 @@ func runAgent() {
 		go ftpW.Run()
 	}
 
-	// Start Reverb WebSocket listener
-	wsClient := ws.New(
-		cfg.ReverbURL,
-		cfg.ReverbAppKey,
-		cfg.AuthEndpoint,
-		cfg.AgentToken,
-		cfg.AgentID,
-		ws.Handlers{
-			OnBanCreated: func(p ws.BanCreatedPayload) {
-				log.Printf("[reverb] ban.created: %s", p.IPAddress)
-				if err := firewall.BanIP(p.IPAddress); err != nil {
-					log.Printf("[firewall] error: %v", err)
+	// Reverb WebSocket listener. Handlers are built once and reused so a
+	// client that started without a reverb URL (see reverbEnabled below) can
+	// be started later, once the server reports one, without duplicating
+	// this block.
+	reverbHandlers := ws.Handlers{
+		OnBanCreated: func(p ws.BanCreatedPayload) {
+			log.Printf("[reverb] ban.created: %s", p.IPAddress)
+			if err := firewall.BanIP(p.IPAddress); err != nil {
+				log.Printf("[firewall] error: %v", err)
+			}
+		},
+		OnBanRemoved: func(p ws.BanRemovedPayload) {
+			log.Printf("[reverb] ban.removed: %s", p.IPAddress)
+			if err := firewall.UnbanIP(p.IPAddress); err != nil {
+				log.Printf("[firewall] error: %v", err)
+			}
+		},
+		OnRuleCreated: func(p ws.RuleCreatedPayload) {
+			log.Printf("[reverb] rule.created: id=%d type=%s", p.ID, p.Type)
+			applyAndAckRule(apiClient, api.Rule{
+				ID:        p.ID,
+				Type:      p.Type,
+				Protocol:  p.Protocol,
+				IPAddress: p.IPAddress,
+				IPRange:   p.IPRange,
+				Port:      p.Port,
+				Status:    p.Status,
+			})
+		},
+		OnRuleRemoved: func(p ws.RuleRemovedPayload) {
+			log.Printf("[reverb] rule.removed: id=%d", p.ID)
+		},
+		OnScanRequested: func(p ws.ScanRequestedPayload) {
+			log.Printf("[reverb] scan.requested: scan_id=%d", p.ScanID)
+			go runScan(apiClient, p.ScanID)
+		},
+		OnImportRequested: func(p ws.ImportRequestedPayload) {
+			log.Printf("[reverb] import.requested: agent_id=%d", p.AgentID)
+			go importExistingRules(apiClient)
+		},
+		OnSyncRequested: func(p ws.SyncRequestedPayload) {
+			log.Printf("[reverb] sync.requested: agent_id=%d", p.AgentID)
+			go func() {
+				if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
+					log.Printf("[sync] sync.requested failed: %v", err)
 				}
-			},
-			OnBanRemoved: func(p ws.BanRemovedPayload) {
-				log.Printf("[reverb] ban.removed: %s", p.IPAddress)
-				if err := firewall.UnbanIP(p.IPAddress); err != nil {
-					log.Printf("[firewall] error: %v", err)
-				}
-			},
-			OnRuleCreated: func(p ws.RuleCreatedPayload) {
-				log.Printf("[reverb] rule.created: id=%d type=%s", p.ID, p.Type)
-				applyAndAckRule(apiClient, api.Rule{
-					ID:        p.ID,
-					Type:      p.Type,
-					Protocol:  p.Protocol,
-					IPAddress: p.IPAddress,
-					IPRange:   p.IPRange,
-					Port:      p.Port,
-					Status:    p.Status,
-				})
-			},
-			OnRuleRemoved: func(p ws.RuleRemovedPayload) {
-				log.Printf("[reverb] rule.removed: id=%d", p.ID)
-			},
-			OnScanRequested: func(p ws.ScanRequestedPayload) {
-				log.Printf("[reverb] scan.requested: scan_id=%d", p.ScanID)
-				go runScan(apiClient, p.ScanID)
-			},
-			OnImportRequested: func(p ws.ImportRequestedPayload) {
-				log.Printf("[reverb] import.requested: agent_id=%d", p.AgentID)
-				go importExistingRules(apiClient)
-			},
-			OnSyncRequested: func(p ws.SyncRequestedPayload) {
-				log.Printf("[reverb] sync.requested: agent_id=%d", p.AgentID)
-				go func() {
-					if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
-						log.Printf("[sync] sync.requested failed: %v", err)
+			}()
+		},
+		OnAuditRequested: func(p ws.AuditRequestedPayload) {
+			log.Printf("[reverb] audit.requested: audit_id=%d", p.AuditID)
+			go runSoftwareAudit(apiClient, p.AuditID)
+		},
+		OnUpdateRequested: func(p ws.UpdateRequestedPayload) {
+			log.Printf("[reverb] update.requested: checking for updates...")
+			resp, err := apiClient.Heartbeat(api.HeartbeatRequest{
+				Status:    "online",
+				Version:   version,
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+				IPAddress: detectOutboundIP(),
+			})
+			if err != nil {
+				log.Printf("[updater] heartbeat failed: %v", err)
+				return
+			}
+			if resp.LatestAgentVersion != nil && resp.AgentDownloadBaseURL != nil {
+				updater.CheckAndUpdate(version, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
+			}
+		},
+		OnMalwareScanRequested: func(p ws.MalwareScanRequestedPayload) {
+			log.Printf("[reverb] malware_scan.requested: intensity=%s", p.Intensity)
+			go runMalwareScan(apiClient, p.Intensity)
+		},
+		OnMalwareScanCancelled: func() {
+			log.Printf("[reverb] malware_scan.cancelled")
+			malwareScanCancel.Store(true)
+		},
+		OnYaraInstallRequested: func(p ws.YaraInstallRequestedPayload) {
+			log.Printf("[reverb] yara_install.requested")
+			go func() {
+				if err := malware.InstallYara(); err != nil {
+					if reportErr := apiClient.ReportEvents([]api.EventRequest{{
+						Type:       "yara_install_failed",
+						Severity:   "warning",
+						Details:    map[string]string{"error": err.Error()},
+						OccurredAt: time.Now().UTC().Format(time.RFC3339),
+					}}); reportErr != nil {
+						log.Printf("[yara] failed to report yara_install_failed: %v", reportErr)
 					}
-				}()
-			},
-			OnAuditRequested: func(p ws.AuditRequestedPayload) {
-				log.Printf("[reverb] audit.requested: audit_id=%d", p.AuditID)
-				go runSoftwareAudit(apiClient, p.AuditID)
-			},
-			OnUpdateRequested: func(p ws.UpdateRequestedPayload) {
-				log.Printf("[reverb] update.requested: checking for updates...")
-				resp, err := apiClient.Heartbeat(api.HeartbeatRequest{
-					Status:    "online",
-					Version:   version,
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
-					IPAddress: detectOutboundIP(),
-				})
-				if err != nil {
-					log.Printf("[updater] heartbeat failed: %v", err)
 					return
 				}
-				if resp.LatestAgentVersion != nil && resp.AgentDownloadBaseURL != nil {
-					updater.CheckAndUpdate(version, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
+				// Re-initialize YARA scanner after install
+				yaraScanner = malware.NewYaraScanner()
+				if err := apiClient.ReportEvents([]api.EventRequest{{
+					Type:       "yara_installed",
+					Severity:   "info",
+					Details:    map[string]string{"status": "ok"},
+					OccurredAt: time.Now().UTC().Format(time.RFC3339),
+				}}); err != nil {
+					log.Printf("[yara] failed to report yara_installed: %v", err)
 				}
-			},
-			OnMalwareScanRequested: func(p ws.MalwareScanRequestedPayload) {
-				log.Printf("[reverb] malware_scan.requested: intensity=%s", p.Intensity)
-				go runMalwareScan(apiClient, p.Intensity)
-			},
-			OnMalwareScanCancelled: func() {
-				log.Printf("[reverb] malware_scan.cancelled")
-				malwareScanCancel.Store(true)
-			},
-			OnYaraInstallRequested: func(p ws.YaraInstallRequestedPayload) {
-				log.Printf("[reverb] yara_install.requested")
-				go func() {
-					if err := malware.InstallYara(); err != nil {
-						if reportErr := apiClient.ReportEvents([]api.EventRequest{{
-							Type:       "yara_install_failed",
-							Severity:   "warning",
-							Details:    map[string]string{"error": err.Error()},
-							OccurredAt: time.Now().UTC().Format(time.RFC3339),
-						}}); reportErr != nil {
-							log.Printf("[yara] failed to report yara_install_failed: %v", reportErr)
-						}
-						return
-					}
-					// Re-initialize YARA scanner after install
-					yaraScanner = malware.NewYaraScanner()
-					if err := apiClient.ReportEvents([]api.EventRequest{{
-						Type:       "yara_installed",
-						Severity:   "info",
-						Details:    map[string]string{"status": "ok"},
-						OccurredAt: time.Now().UTC().Format(time.RFC3339),
-					}}); err != nil {
-						log.Printf("[yara] failed to report yara_installed: %v", err)
-					}
-				}()
-			},
+			}()
 		},
-	)
-	if cfg.ReverbURL != "" {
+	}
+
+	startReverb := func() {
+		wsClient := ws.New(cfg.ReverbURL, cfg.ReverbAppKey, cfg.AuthEndpoint, cfg.AgentToken, cfg.AgentID, reverbHandlers)
 		go wsClient.Run()
+	}
+
+	reverbEnabled := cfg.ReverbURL != ""
+	if reverbEnabled {
+		startReverb()
 	} else {
-		log.Println("[reverb] no websocket URL from server — real-time push disabled, relying on heartbeat/sync only")
+		log.Println("[reverb] no websocket URL from server — real-time push disabled, relying on heartbeat/sync only (will retry via heartbeat)")
 	}
 
 	// Metrics collector
@@ -929,6 +932,20 @@ func runAgent() {
 			// Check for agent update
 			if resp.LatestAgentVersion != nil && resp.AgentDownloadBaseURL != nil {
 				go updater.CheckAndUpdate(version, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
+			}
+
+			// Pick up real-time push once the server reports it, without
+			// requiring a manual --force-register on already-registered agents.
+			if !reverbEnabled && resp.Reverb != nil && resp.Reverb.URL != "" {
+				cfg.ReverbURL = resp.Reverb.URL
+				cfg.ReverbAppKey = resp.Reverb.AppKey
+				cfg.AuthEndpoint = resp.Reverb.AuthEndpoint
+				if err := config.Save(cfg); err != nil {
+					log.Printf("[reverb] failed to persist websocket config: %v", err)
+				}
+				startReverb()
+				reverbEnabled = true
+				log.Println("[reverb] websocket URL received from server — real-time push enabled")
 			}
 		}
 	}()

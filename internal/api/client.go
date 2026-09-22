@@ -126,17 +126,22 @@ type RegisterRequest struct {
 	Version      string `json:"version"`
 }
 
+// ReverbConfig holds the WebSocket connection details for real-time push.
+// The server may not have this configured yet, in which case URL is empty
+// and the agent falls back to heartbeat/sync polling.
+type ReverbConfig struct {
+	URL          string `json:"url"`
+	AppKey       string `json:"app_key"`
+	AuthEndpoint string `json:"auth_endpoint"`
+}
+
 // RegisterResponse is what the server returns after registration.
 type RegisterResponse struct {
 	Token string `json:"token"`
 	Agent struct {
 		ID int64 `json:"id"`
 	} `json:"agent"`
-	Reverb struct {
-		URL          string `json:"url"`
-		AppKey       string `json:"app_key"`
-		AuthEndpoint string `json:"auth_endpoint"`
-	} `json:"reverb"`
+	Reverb ReverbConfig `json:"reverb"`
 }
 
 // SystemMetrics holds server performance data.
@@ -213,6 +218,10 @@ type HeartbeatResponse struct {
 	LatestAgentVersion  *string `json:"latest_agent_version,omitempty"`
 	AgentDownloadBaseURL *string `json:"agent_download_base_url,omitempty"`
 	K8sDomainLimit      int     `json:"k8s_domain_limit,omitempty"`
+	// Reverb is only present once the server has real-time push configured.
+	// Agents that registered before it existed (or before it was enabled)
+	// pick it up here instead of needing --force-register.
+	Reverb *ReverbConfig `json:"reverb,omitempty"`
 }
 
 // BanRequest reports a newly banned IP to the server.
