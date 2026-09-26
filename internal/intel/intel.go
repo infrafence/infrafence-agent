@@ -169,7 +169,21 @@ var slugAliases = map[string]string{
 
 var slugToken = regexp.MustCompile(`[a-z0-9][a-z0-9_-]*`)
 
+// caseClass matches a case-insensitive character class like [cC] or [Bb].
+var caseClass = regexp.MustCompile(`\[([a-zA-Z])([a-zA-Z])\]`)
+
+// slugOf derives a bot's stable id from its list pattern. Case classes are
+// resolved first, so "[cC]laude[bB]ot" is "claudebot" (not "cc", which it
+// used to share with unrelated bots) and "S[eE][mM]rushBot" is "semrushbot".
+// The dashboard's bot settings are keyed by these slugs and derive them the
+// same way (src/lib/bot-catalog.ts in the dashboard).
 func slugOf(pattern string) string {
+	pattern = caseClass.ReplaceAllStringFunc(pattern, func(m string) string {
+		if strings.EqualFold(m[1:2], m[2:3]) {
+			return m[1:2]
+		}
+		return m
+	})
 	s := strings.ToLower(strings.ReplaceAll(pattern, `\`, ""))
 	tok := slugToken.FindString(s)
 	if tok == "" {
