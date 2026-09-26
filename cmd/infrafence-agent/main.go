@@ -680,10 +680,16 @@ func runAgent() {
 		sessionTracker.NotifySigmaEvent(e.Type, e.Severity)
 	})
 
+	// Every sync goes through one runner: never two at once, and bursts of
+	// requests (pushes, heartbeat config version, periodic) are merged.
+	syncs := newSyncRunner(func() error {
+		return syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName)
+	})
+	go syncs.Loop(context.Background())
+	push := &pushListener{runner: syncs}
+
 	// Initial sync (applies config, whitelists, rules, bans)
-	if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
-		log.Printf("[sync] initial sync failed: %v", err)
-	}
+	_ = syncs.Now("initial")
 
 	intel.SetVersion(version)
 	go runIntelUpdater(webW)
@@ -752,11 +758,7 @@ func runAgent() {
 		},
 		OnSyncRequested: func(p ws.SyncRequestedPayload) {
 			log.Printf("[reverb] sync.requested: agent_id=%d", p.AgentID)
-			go func() {
-				if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
-					log.Printf("[sync] sync.requested failed: %v", err)
-				}
-			}()
+			syncs.Request("reverb")
 		},
 		OnAuditRequested: func(p ws.AuditRequestedPayload) {
 			log.Printf("[reverb] audit.requested: audit_id=%d", p.AuditID)
@@ -917,6 +919,11 @@ func runAgent() {
 				continue
 			}
 
+			// Dashboard changes: sync at once when the config version moved,
+			// and keep the push channel matching what the dashboard reports.
+			syncs.ObserveVersion(resp.ConfigVersion)
+			push.Apply(resp.Realtime)
+
 			// Check for agent update
 			if resp.LatestAgentVersion != nil && resp.AgentDownloadBaseURL != nil {
 				go maybeUpdate(apiClient, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
@@ -944,15 +951,14 @@ func runAgent() {
 	// Background security monitors (port scan, flood, file integrity)
 	go runSecurityMonitors(apiClient)
 
-	// Fallback sync ticker (every 5min, in case WS misses something)
+	// Fallback sync every 5 minutes: the safety net if a push and the
+	// heartbeat's config version are both missed.
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 
 		for range ticker.C {
-			if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
-				log.Printf("[sync] error: %v", err)
-			}
+			_ = syncs.Now("periodic")
 		}
 	}()
 
