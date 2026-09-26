@@ -67,6 +67,8 @@ parse_args() {
     INSTALL_TOKEN=""
     INSTALL_ONLY=false
     FORCE_REGISTER=false
+    DRY_RUN=false
+    NO_IPSET=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token)
@@ -80,6 +82,14 @@ parse_args() {
                 ;;
             --force-register)
                 FORCE_REGISTER=true
+                shift
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                shift
+                ;;
+            --no-ipset)
+                NO_IPSET=true
                 shift
                 ;;
             --uninstall)
@@ -196,27 +206,67 @@ check_deps() {
         return 0
     fi
 
+    if [[ "$DRY_RUN" == true ]]; then
+        DRY_MISSING="${DRY_MISSING:+$DRY_MISSING, }${missing[*]}"
+        command -v curl &>/dev/null || error "Dry run needs curl to download the agent. Missing: ${missing[*]}"
+        return 0
+    fi
+
     warn "Installing/updating dependencies: ${missing[*]}"
+    install_packages "${missing[@]}" || dep_install_failed "$PKG_ERROR"
+}
+
+# wait_for_package_manager waits (up to 5 minutes) for any running package
+# operation (apt, dpkg, unattended-upgrades, yum, dnf) to finish, so the
+# installer never competes with it for the lock on a production server.
+wait_for_package_manager() {
+    local waited=0
+    while pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 \
+        || pgrep -x unattended-upgr >/dev/null 2>&1 || pgrep -x yum >/dev/null 2>&1 || pgrep -x dnf >/dev/null 2>&1; do
+        if [[ $waited -eq 0 ]]; then
+            info "Another package operation is running — waiting for it to finish..."
+        fi
+        if [[ $waited -ge 300 ]]; then
+            return 1
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    return 0
+}
+
+# install_packages installs packages without touching anything else: no
+# "dpkg --configure -a", no "--fix-broken" (on a production server those can
+# finish other packages' half-done configurations and restart services).
+install_packages() {
+    PKG_ERROR=""
+    if ! wait_for_package_manager; then
+        PKG_ERROR="another package operation has been running for 5+ minutes"
+        return 1
+    fi
     local err_output=""
     if command -v apt-get &>/dev/null; then
-        # Fix broken packages first (common on old servers)
-        dpkg --configure -a --force-confdef &>/dev/null || true
         # apt-get update may fail on servers with broken/EOL repos — try anyway
         err_output="$(apt-get update -qq 2>&1)" || true
-        if ! apt-get install -y -qq --fix-broken "${missing[@]}" 2>&1; then
-            dep_install_failed "apt-get install failed — $(echo "$err_output" | grep -E '^(E:|W:)' | head -3 | tr '\n' ' ')"
-        fi
-    elif command -v yum &>/dev/null; then
-        if ! yum install -y -q "${missing[@]}" 2>/dev/null; then
-            dep_install_failed "yum install failed"
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-upgrade "$@" 2>&1; then
+            PKG_ERROR="apt-get install failed — $(echo "$err_output" | grep -E '^(E:|W:)' | head -3 | tr '\n' ' ') (if dpkg was interrupted, run 'dpkg --configure -a' yourself first)"
+            return 1
         fi
     elif command -v dnf &>/dev/null; then
-        if ! dnf install -y -q "${missing[@]}" 2>/dev/null; then
-            dep_install_failed "dnf install failed"
+        if ! dnf install -y -q "$@" 2>/dev/null; then
+            PKG_ERROR="dnf install failed"
+            return 1
+        fi
+    elif command -v yum &>/dev/null; then
+        if ! yum install -y -q "$@" 2>/dev/null; then
+            PKG_ERROR="yum install failed"
+            return 1
         fi
     else
-        dep_install_failed "No package manager found (apt-get, yum, dnf)"
+        PKG_ERROR="No package manager found (apt-get, yum, dnf)"
+        return 1
     fi
+    return 0
 }
 
 # ─── SSL Bootstrap ─────────────────────────────────────────────────────────────
@@ -249,6 +299,17 @@ bootstrap_ssl() {
     fi
 
     warn "Bootstrapping Let's Encrypt root CA (Go agent needs ISRG Root X1 in OpenSSL bundle)..."
+
+    if [[ "$DRY_RUN" == true ]]; then
+        # Session only: trust the root for this run's downloads, change nothing.
+        local dry_ca
+        dry_ca="$(mktemp /tmp/infrafence-isrg-XXXXXX.pem 2>/dev/null)" || return 0
+        if curl -fsSk --max-time 15 "https://letsencrypt.org/certs/isrgrootx1.pem" -o "$dry_ca" 2>/dev/null; then
+            export CURL_CA_BUNDLE="$dry_ca"
+            DRY_MISSING="${DRY_MISSING:+$DRY_MISSING, }Let's Encrypt root CA bundle for the agent"
+        fi
+        return 0
+    fi
 
     local ca_tmp
     ca_tmp="$(mktemp /tmp/infrafence-isrg-XXXXXX.pem 2>/dev/null)" || {
@@ -291,10 +352,10 @@ bootstrap_ssl() {
             update-ca-trust extract 2>/dev/null || true
         # DO NOT set CURL_CA_BUNDLE on RHEL/CentOS: curl uses NSS which already has all CAs.
         # Setting CURL_CA_BUNDLE would replace NSS with only ISRG Root X1, breaking github.com etc.
-    elif [[ -f /etc/ssl/certs/ca-certificates.crt ]]; then
-        # Debian/Ubuntu: append to system bundle
-        cat "$ca_tmp" >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
-        # On non-RHEL that needed bootstrap: use merged bundle for curl (NOT just ISRG alone)
+    else
+        # Other distros: don't modify the system bundle (update-ca-certificates
+        # would overwrite it anyway). The agent uses its own merged bundle via
+        # SSL_CERT_FILE in its service definition; curl uses it for this run.
         [[ -n "${SSL_CERT_FILE:-}" ]] && export CURL_CA_BUNDLE="$SSL_CERT_FILE" \
             || export CURL_CA_BUNDLE="$ca_tmp"
     fi
@@ -365,9 +426,42 @@ download_binary() {
     fi
 
     chmod +x "$tmp"
-    mv "$tmp" "${INSTALL_DIR}/${BINARY_NAME}"
-    success "Binary installed at ${INSTALL_DIR}/${BINARY_NAME}"
+    DOWNLOADED_BINARY="$tmp"
     report_status "download_ok"
+}
+
+install_binary() {
+    mv "$DOWNLOADED_BINARY" "${INSTALL_DIR}/${BINARY_NAME}"
+    success "Binary installed at ${INSTALL_DIR}/${BINARY_NAME}"
+}
+
+# run_preflight runs the new binary's read-only host scan and shows it.
+# Nothing is changed on the host by this step.
+run_preflight() {
+    info "Checking this server before changing anything (read-only)..."
+    "$DOWNLOADED_BINARY" preflight 2>/dev/null | sed 's/^/    /' || true
+    PREFLIGHT_JSON="$("$DOWNLOADED_BINARY" preflight --json 2>/dev/null || true)"
+}
+
+# maybe_install_ipset installs ipset (a small userspace tool, no daemon, no
+# configuration) when preflight says it's safe; InfraFence needs it for large
+# ban lists, threat-feed and country blocking. --no-ipset skips it.
+maybe_install_ipset() {
+    command -v ipset &>/dev/null && return 0
+    if [[ "$NO_IPSET" == true ]]; then
+        warn "Skipping ipset (--no-ipset): bans use individual iptables rules, feed/country blocking is detection-only."
+        return 0
+    fi
+    if ! echo "$PREFLIGHT_JSON" | grep -q '"ipset_install_safe": true'; then
+        warn "Not installing ipset now (no package manager, or a package operation is running). Install it later for full blocking."
+        return 0
+    fi
+    info "Installing ipset (needed for large ban lists and feed/country blocking)..."
+    if install_packages ipset; then
+        success "ipset installed."
+    else
+        warn "Could not install ipset (${PKG_ERROR}) — continuing without it."
+    fi
 }
 
 # ─── Registration ──────────────────────────────────────────────────────────────
@@ -647,6 +741,7 @@ respawn limit 10 30
 
 env INFRAFENCE_CONFIG=${CONFIG_DIR}/config.json
 env AUTH_LOG_PATH=${auth_log}
+${_SSL_CA_ENV:+env SSL_CERT_FILE=${CONFIG_DIR}/ca-bundle.pem}
 
 exec ${INSTALL_DIR}/${BINARY_NAME} start
 EOF
@@ -684,6 +779,7 @@ DAEMON=INSTALL_DIR_PLACEHOLDER/infrafence-agent
 PIDFILE=/var/run/infrafence-agent.pid
 export INFRAFENCE_CONFIG=CONFIG_DIR_PLACEHOLDER/config.json
 export AUTH_LOG_PATH=AUTH_LOG_PLACEHOLDER
+[ -f CONFIG_DIR_PLACEHOLDER/ca-bundle.pem ] && export SSL_CERT_FILE=CONFIG_DIR_PLACEHOLDER/ca-bundle.pem
 
 case "$1" in
     start)
@@ -776,6 +872,14 @@ check_service() {
 uninstall() {
     info "Uninstalling InfraFence Agent..."
 
+    # Remove every change the agent made to the host (firewall chains and
+    # sets, web-server UA blocking, ModSecurity includes) while the binary
+    # that knows how is still here.
+    if [[ -x "${INSTALL_DIR}/${BINARY_NAME}" ]]; then
+        "${INSTALL_DIR}/${BINARY_NAME}" uninstall --clean \
+            || warn "Some InfraFence changes could not be removed — see the messages above."
+    fi
+
     # Try all init systems — safe even if only one is present
     if command -v systemctl &>/dev/null; then
         systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
@@ -837,11 +941,33 @@ main() {
     check_deps
 
     # Create config directory
-    mkdir -p "$CONFIG_DIR"
-    chmod 750 "$CONFIG_DIR"
+    if [[ "$DRY_RUN" != true ]]; then
+        mkdir -p "$CONFIG_DIR"
+        chmod 750 "$CONFIG_DIR"
+    fi
 
-    # Download binary
+    # Download binary (to a temp file) and scan the host before changing it
     download_binary "$arch"
+    run_preflight
+
+    if [[ "$DRY_RUN" == true ]]; then
+        rm -f "$DOWNLOADED_BINARY"
+        echo ""
+        echo -e "${BOLD}  Dry run — nothing was installed or changed.${NC}"
+        echo "  A real run would:"
+        [[ -n "${DRY_MISSING:-}" ]] && echo "    • install/set up: ${DRY_MISSING}"
+        echo "    • install ${INSTALL_DIR}/${BINARY_NAME} and the ${SERVICE_NAME} service"
+        command -v ipset &>/dev/null || [[ "$NO_IPSET" == true ]] \
+            || echo "    • install the ipset package (skip with --no-ipset)"
+        echo "    • create the INFRAFENCE firewall chains (jumped to from INPUT, and DOCKER-USER if present)"
+        echo "    • register this server with your InfraFence dashboard"
+        echo "  Web server config changes and inbound threat-feed blocking stay off until enabled in the dashboard."
+        echo ""
+        exit 0
+    fi
+
+    maybe_install_ipset
+    install_binary
 
     # --install-only: install binary + systemd service, skip registration
     if [[ "$INSTALL_ONLY" == true ]]; then

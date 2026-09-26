@@ -342,6 +342,10 @@ type SyncConfig struct {
 // MonitorConfig holds monitoring settings synced from the panel.
 type MonitorConfig struct {
 	CustomLogPaths []string `json:"custom_log_paths"` // additional access log paths to monitor
+	// Host changes the agent may make (all conservative by default):
+	WebserverChanges bool   `json:"webserver_changes"`  // edit nginx/Apache config (UA blocking, ModSecurity)
+	BlockThreatFeeds bool   `json:"block_threat_feeds"` // block threat-feed networks inbound (else detection only)
+	AutoUpdate       string `json:"auto_update"`        // "auto" (default) or "notify"
 }
 
 // SigmaConfig controls Sigma rule-based detection.
