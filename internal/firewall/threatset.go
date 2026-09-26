@@ -2,15 +2,13 @@ package firewall
 
 import (
 	"errors"
-	"fmt"
+	"log"
 	"net"
-	"os/exec"
 	"strings"
 )
 
 const (
-	threatSetName    = "infrafence-threat"
-	threatSetTmpName = "infrafence-threat-tmp"
+	threatSetName = "infrafence-threat"
 	// Refuse anything broader than a /8: no legitimate blocklist entry should
 	// be, and a malformed one must not take out a large part of the internet.
 	minThreatPrefix = 8
@@ -30,24 +28,13 @@ func ApplyThreatSet(entries []string, keep []string) (applied, skipped int, err 
 	}
 
 	cidrs, skipped := filterThreatNets(entries, keep)
-
-	if err := createIpsetHashNet(threatSetName); err != nil {
+	if err := replaceNetSet(threatSetName, cidrs); err != nil {
 		return 0, skipped, err
 	}
-	if err := createIpsetHashNet(threatSetTmpName); err != nil {
-		return 0, skipped, err
-	}
-	defer destroyIpset(threatSetTmpName)
-	if err := flushIpset(threatSetTmpName); err != nil {
-		return 0, skipped, err
-	}
-	if err := populateIpsetBatch(threatSetTmpName, cidrs); err != nil {
-		return 0, skipped, err
-	}
-	if out, err := exec.Command("ipset", "swap", threatSetTmpName, threatSetName).CombinedOutput(); err != nil {
-		return 0, skipped, fmt.Errorf("ipset swap: %s (%w)", strings.TrimSpace(string(out)), err)
-	}
-	if err := addIptablesIpsetRule(threatSetName); err != nil {
+	fw.Lock()
+	fw.threat = cidrs
+	fw.Unlock()
+	if _, err := Ensure(); err != nil {
 		return 0, skipped, err
 	}
 	return len(cidrs), skipped, nil
@@ -56,10 +43,16 @@ func ApplyThreatSet(entries []string, keep []string) (applied, skipped int, err 
 // ClearThreatSet stops inbound threat-feed blocking (e.g. in monitor mode)
 // without touching the rest of the firewall.
 func ClearThreatSet() {
-	if !HasIpset() {
+	fw.Lock()
+	active := fw.threat != nil
+	fw.threat = nil
+	fw.Unlock()
+	if !active || !HasIpset() {
 		return
 	}
-	_ = removeIptablesIpsetRule(threatSetName)
+	if _, err := Ensure(); err != nil {
+		log.Printf("[threat-feed] remove blocklist rule: %v", err)
+	}
 	_ = flushIpset(threatSetName)
 }
 
@@ -112,7 +105,7 @@ func coversSafeIP(n *net.IPNet, keep []*net.IPNet) bool {
 			return true
 		}
 	}
-	for s := range protectedIPs {
+	for _, s := range protectedList() {
 		if ip := net.ParseIP(s); ip != nil && n.Contains(ip) {
 			return true
 		}

@@ -4,7 +4,6 @@ import (
 	"log"
 	"net"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 )
@@ -14,45 +13,33 @@ import (
 type CIDRProvider func(countryCode string) ([]string, error)
 
 // GeoBlocker manages ipset-based country blocking.
-// Each blocked country gets its own ipset hash:net set with all CIDRs loaded.
+// Each blocked country gets its own ipset hash:net set, dropped from the
+// INFRAFENCE chain (see chain.go).
 type GeoBlocker struct {
 	mu              sync.Mutex
 	activeCountries map[string]bool // currently blocked country codes (uppercase)
 	cidrProvider    CIDRProvider
-	protectedIPs    []string // IPs that must never be geo-blocked (panel server, etc.)
 }
 
 // NewGeoBlocker creates a GeoBlocker with the given CIDR provider.
-// panelURL is the InfraFence panel URL (e.g. "https://api.infrafence.com") —
-// its IP will always be whitelisted in iptables before any geo DROP rules.
+// panelURL is the InfraFence panel URL — its IPs are added to the protected
+// IPs, which the INFRAFENCE chain never blocks.
 func NewGeoBlocker(provider CIDRProvider, panelURL string) *GeoBlocker {
 	gb := &GeoBlocker{
 		activeCountries: make(map[string]bool),
 		cidrProvider:    provider,
 	}
-
-	// Resolve panel URL to IP and protect it
 	if panelURL != "" {
 		if u, err := url.Parse(panelURL); err == nil && u.Hostname() != "" {
 			if ips, err := net.LookupHost(u.Hostname()); err == nil {
-				for _, ip := range ips {
-					if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
-						gb.protectedIPs = append(gb.protectedIPs, ip)
-					}
-				}
-				if len(gb.protectedIPs) > 0 {
-					log.Printf("[geoblock] panel IP(s) protected from geoblocking: %v", gb.protectedIPs)
-				}
+				AddProtectedIPs(ips...)
 			}
 		}
 	}
-
 	return gb
 }
 
 // ApplyCountryBlocks synchronizes the ipset country blocks with the desired list.
-// It adds sets for new countries and removes sets for countries no longer blocked.
-// Protected IPs (panel server) always get an ACCEPT rule before any geo DROP.
 func (g *GeoBlocker) ApplyCountryBlocks(countries []string) {
 	if !HasIpset() {
 		if len(countries) > 0 {
@@ -64,12 +51,6 @@ func (g *GeoBlocker) ApplyCountryBlocks(countries []string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	// Ensure protected IPs have ACCEPT rules before any geo DROP
-	if len(countries) > 0 {
-		g.ensureProtectedIPs()
-	}
-
-	// Build desired set (uppercase, deduplicated)
 	desired := make(map[string]bool, len(countries))
 	for _, cc := range countries {
 		cc = strings.ToUpper(strings.TrimSpace(cc))
@@ -77,15 +58,11 @@ func (g *GeoBlocker) ApplyCountryBlocks(countries []string) {
 			desired[cc] = true
 		}
 	}
-
-	// Remove countries that are no longer blocked
 	for cc := range g.activeCountries {
 		if !desired[cc] {
 			g.removeCountry(cc)
 		}
 	}
-
-	// Add countries that are newly blocked
 	for cc := range desired {
 		if !g.activeCountries[cc] {
 			g.addCountry(cc)
@@ -93,11 +70,10 @@ func (g *GeoBlocker) ApplyCountryBlocks(countries []string) {
 	}
 }
 
-// addCountry creates an ipset set for the country, loads CIDRs, and adds the iptables rule.
+// addCountry loads the country's CIDRs into its set and adds it to the chain.
 func (g *GeoBlocker) addCountry(cc string) {
 	setName := ipsetSetName(cc)
 
-	// Get CIDRs from provider
 	cidrs, err := g.cidrProvider(cc)
 	if err != nil {
 		log.Printf("[geoblock] error getting CIDRs for %s: %v", cc, err)
@@ -108,48 +84,38 @@ func (g *GeoBlocker) addCountry(cc string) {
 		return
 	}
 
-	// Create the ipset set
-	if err := createIpsetHashNet(setName); err != nil {
-		log.Printf("[geoblock] failed to create set %s: %v", setName, err)
-		return
-	}
-
-	// Flush any stale entries
-	if err := flushIpset(setName); err != nil {
-		log.Printf("[geoblock] failed to flush set %s: %v", setName, err)
-	}
-
-	// Populate with CIDRs using batch restore (fast)
-	if err := populateIpsetBatch(setName, cidrs); err != nil {
-		log.Printf("[geoblock] failed to populate set %s with %d CIDRs: %v", setName, len(cidrs), err)
-		// Cleanup on failure
+	if err := replaceNetSet(setName, cidrs); err != nil {
+		log.Printf("[geoblock] failed to load set %s with %d CIDRs: %v", setName, len(cidrs), err)
 		_ = destroyIpset(setName)
 		return
 	}
-
-	// Add iptables rule pointing to this set
-	if err := addIptablesIpsetRule(setName); err != nil {
-		log.Printf("[geoblock] failed to add iptables rule for %s: %v", setName, err)
-		_ = flushIpset(setName)
+	fw.Lock()
+	fw.geo[setName] = cidrs
+	fw.Unlock()
+	if _, err := Ensure(); err != nil {
+		log.Printf("[geoblock] failed to add %s to the %s chain: %v", setName, chainName, err)
+		fw.Lock()
+		delete(fw.geo, setName)
+		fw.Unlock()
 		_ = destroyIpset(setName)
 		return
 	}
 
 	g.activeCountries[cc] = true
-	count := ipsetEntryCount(setName)
-	log.Printf("[geoblock] ✓ blocked %s: %d CIDRs loaded into %s", cc, count, setName)
+	log.Printf("[geoblock] ✓ blocked %s: %d CIDRs loaded into %s", cc, ipsetEntryCount(setName), setName)
 }
 
-// removeCountry removes the iptables rule and destroys the ipset set for a country.
+// removeCountry removes the country from the chain, then destroys its set.
 func (g *GeoBlocker) removeCountry(cc string) {
 	setName := ipsetSetName(cc)
 
-	// Remove iptables rule first (must happen before destroying the set)
-	if err := removeIptablesIpsetRule(setName); err != nil {
-		log.Printf("[geoblock] warning: failed to remove iptables rule for %s: %v", setName, err)
+	fw.Lock()
+	delete(fw.geo, setName)
+	fw.Unlock()
+	// The chain must stop referencing the set before it can be destroyed.
+	if _, err := Ensure(); err != nil {
+		log.Printf("[geoblock] warning: failed to remove %s from the %s chain: %v", setName, chainName, err)
 	}
-
-	// Flush and destroy the set
 	_ = flushIpset(setName)
 	if err := destroyIpset(setName); err != nil {
 		log.Printf("[geoblock] warning: failed to destroy set %s: %v", setName, err)
@@ -170,49 +136,14 @@ func (g *GeoBlocker) ActiveCountries() []string {
 	return result
 }
 
-// SetWhitelistedIPs adds extra IPs that must be protected from geoblocking.
-// Called during sync when whitelists are applied.
+// SetWhitelistedIPs exempts the whitelist from every InfraFence block (geo
+// included) through the chain's allow list. It does not open anything in
+// the host firewall for those IPs.
 func (g *GeoBlocker) SetWhitelistedIPs(ips []string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	// Rebuild protected list: panel IPs + whitelisted IPs
-	panelIPs := make([]string, 0)
-	for _, ip := range g.protectedIPs {
-		// Keep only the original panel IPs (non-whitelist)
-		panelIPs = append(panelIPs, ip)
-		if len(panelIPs) >= 5 { // cap at max 5 panel IPs
-			break
-		}
-	}
-	g.protectedIPs = panelIPs
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
-		if ip != "" && net.ParseIP(ip) != nil {
-			g.protectedIPs = append(g.protectedIPs, ip)
-		}
-	}
+	SetAllowList(ips)
 }
 
-// ensureProtectedIPs inserts iptables ACCEPT rules for all protected IPs.
-// These ACCEPT rules are inserted at position 1, before any geo DROP rules.
-func (g *GeoBlocker) ensureProtectedIPs() {
-	for _, ip := range g.protectedIPs {
-		// Check if ACCEPT rule already exists
-		if exec.Command("iptables", "-C", "INPUT", "-s", ip, "-j", "ACCEPT").Run() == nil {
-			continue // already exists
-		}
-		// Insert at position 1 (before any DROP rules)
-		out, err := exec.Command("iptables", "-I", "INPUT", "1", "-s", ip, "-j", "ACCEPT").CombinedOutput()
-		if err != nil {
-			log.Printf("[geoblock] failed to add ACCEPT rule for protected IP %s: %s", ip, strings.TrimSpace(string(out)))
-		} else {
-			log.Printf("[geoblock] ✓ protected IP %s: ACCEPT rule added (immune to geoblocking)", ip)
-		}
-	}
-}
-
-// Cleanup removes all geoblock ipset sets and iptables rules (used on shutdown).
+// Cleanup removes all geoblock ipset sets and chain rules (used on shutdown).
 func (g *GeoBlocker) Cleanup() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
