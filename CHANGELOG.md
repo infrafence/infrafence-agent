@@ -2,6 +2,10 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.12
+- **feat: malware scans can now run on an interval (every 3, 6, 12 or 24 hours).** The scheduler is a plain interval ticker driven by `interval_hours` in the dashboard's malware scan config, replacing the daily/weekly-at-HH:MM model, which no dashboard could ever actually configure. The first scheduled scan fires one full interval after the schedule is enabled; the dashboard's per-server "Scan now" button covers wanting a result immediately (already supported by the sync loop).
+- **fix: agents that registered before the server offered real-time push never picked it up.** The Reverb websocket URL was only read during first registration, so those agents stayed on heartbeat/sync polling until someone re-registered manually. The heartbeat response can now carry it: when the agent has no websocket connection and the server starts reporting one, it saves it to its config and connects without a restart.
+
 ## v1.0.11
 - **fix: Helm chart never got a new version, so Artifact Hub stopped picking up updates.** The release workflow bumped `appVersion` in `Chart.yaml` on every release but never `version` — and `version` is the OCI tag Helm charts get published under, so every release silently overwrote the same "0.6.0" tag with different content underneath. Confirmed on Artifact Hub: its security scanner kept running normally, but its version tracker had been stuck for days, since (from its point of view) there was never a new version to index. `version` now tracks the release tag exactly like `appVersion` already did, so every release is a genuinely new, unique chart version.
 - **cleanup: removed a stray, fully orphaned `charts/charts/infrafence-agent/` directory** — a duplicate, unrelated-to-the-real-one chart nested a level too deep, referenced by no workflow or Chart.yaml dependency, just confusing dead weight sitting in the repo.
