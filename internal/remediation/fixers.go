@@ -1,221 +1,536 @@
+// Package remediation applies the hardening fixes an admin asks for from the
+// dashboard. Every fix is written so it can't take a production server down:
+//
+//   - nothing edits a main configuration file: each change lives in a file
+//     of its own (sshd_config.d, nginx conf.d, Apache conf-enabled/conf.d),
+//     so undoing it means deleting that file;
+//   - the service's own config test must pass (sshd -t, nginx -t,
+//     apachectl configtest) and the new value must actually be in effect,
+//     otherwise the change is rolled back before any reload;
+//   - services are reloaded, never restarted, so open sessions and
+//     connections survive;
+//   - changes that could lock people out (root login, password login, the
+//     SSH port) or break sites (directory listing, security headers) are
+//     never automatic: the dashboard shows how to do them by hand.
 package remediation
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
-// Fixer is a function that applies a fix and returns (output, error).
-type Fixer func() (string, error)
+// Why a finding can't be fixed automatically. The dashboard translates these
+// codes.
+const (
+	ReasonLockoutRisk  = "lockout_risk"  // could lock people out of SSH
+	ReasonSiteRisk     = "site_risk"     // could change how websites behave
+	ReasonManaged      = "managed"       // a hosting panel or config management owns the files
+	ReasonUnsupported  = "unsupported"   // this host's layout isn't one we can change safely
+	ReasonNoAutomation = "no_automation" // there is no automatic fix for this check
+)
 
-// Fixers maps check IDs to their remediation functions.
-var Fixers = map[string]Fixer{
-	"PERM_SHADOW":             fixPermShadow,
-	"PERM_PASSWD":             fixPermPasswd,
-	"PERM_SSHD_CONFIG":        fixPermSshdConfig,
-	"PERM_AUTH_KEYS":          fixAuthKeys,
-	"SSH_X11_FORWARDING":      func() (string, error) { return setSshdOption("X11Forwarding", "no") },
-	"SSH_MAX_AUTH_TRIES":      func() (string, error) { return setSshdOption("MaxAuthTries", "3") },
-	"WS_SERVER_TOKENS":        fixNginxServerTokens,
-	"WS_SERVER_TOKENS_APACHE": fixApacheServerTokens,
-	"WS_SERVER_SIGNATURE":     fixApacheServerSignature,
-	"WS_SEC_HEADERS":          fixNginxSecHeaders,
-	"WS_DIRECTORY_LISTING":    fixApacheDirectoryListing,
-	"WS_TRACE_METHOD":         fixApacheTraceMethod,
+// Host is what the fixes need from the system; tests replace it.
+type Host interface {
+	Run(name string, args ...string) (string, error)
+	LookPath(name string) (string, error)
+	ReadFile(path string) ([]byte, error)
+	WriteFile(path string, data []byte, perm os.FileMode) error
+	Remove(path string) error
+	Stat(path string) (os.FileInfo, error)
+	Chmod(path string, mode os.FileMode) error
+	Symlink(oldname, newname string) error
+	MkdirAll(path string, perm os.FileMode) error
 }
 
-func run(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+type osHost struct{}
+
+func (osHost) Run(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	return string(out), err
 }
+func (osHost) LookPath(name string) (string, error)              { return exec.LookPath(name) }
+func (osHost) ReadFile(path string) ([]byte, error)              { return os.ReadFile(path) }
+func (osHost) Remove(path string) error                          { return os.Remove(path) }
+func (osHost) Stat(path string) (os.FileInfo, error)             { return os.Stat(path) }
+func (osHost) Chmod(path string, mode os.FileMode) error         { return os.Chmod(path, mode) }
+func (osHost) Symlink(oldname, newname string) error             { return os.Symlink(oldname, newname) }
+func (osHost) MkdirAll(path string, perm os.FileMode) error      { return os.MkdirAll(path, perm) }
+func (osHost) WriteFile(p string, d []byte, m os.FileMode) error { return os.WriteFile(p, d, m) }
 
-// ─── File permission fixers ───
+// System is the real host.
+var System Host = osHost{}
 
-func fixPermShadow() (string, error) {
-	return run("chmod", "640", "/etc/shadow")
+// Files InfraFence owns. Uninstall deletes them.
+const (
+	SSHDropIn      = "/etc/ssh/sshd_config.d/00-infrafence-hardening.conf"
+	NginxDropIn    = "/etc/nginx/conf.d/zz-infrafence-hardening.conf"
+	ApacheDebAvail = "/etc/apache2/conf-available/zz-infrafence-hardening.conf"
+	ApacheDebLink  = "/etc/apache2/conf-enabled/zz-infrafence-hardening.conf"
+	ApacheRHEL     = "/etc/httpd/conf.d/zz-infrafence-hardening.conf"
+)
+
+type fixKind int
+
+const (
+	kindSSH fixKind = iota
+	kindPerm
+	kindNginx
+	kindApache
+)
+
+type fix struct {
+	kind  fixKind
+	key   string      // directive (ssh, nginx, apache)
+	value string      // value to set
+	path  string      // file (permissions)
+	mode  os.FileMode // strictest allowed mode (permissions)
 }
 
-func fixPermPasswd() (string, error) {
-	return run("chmod", "644", "/etc/passwd")
+var fixes = map[string]fix{
+	"SSH_X11_FORWARDING":      {kind: kindSSH, key: "X11Forwarding", value: "no"},
+	"SSH_MAX_AUTH_TRIES":      {kind: kindSSH, key: "MaxAuthTries", value: "4"},
+	"PERM_SHADOW":             {kind: kindPerm, path: "/etc/shadow", mode: 0o640},
+	"PERM_PASSWD":             {kind: kindPerm, path: "/etc/passwd", mode: 0o644},
+	"PERM_SSHD_CONFIG":        {kind: kindPerm, path: "/etc/ssh/sshd_config", mode: 0o600},
+	"PERM_AUTH_KEYS":          {kind: kindPerm, path: "/root/.ssh/authorized_keys", mode: 0o600},
+	"WS_SERVER_TOKENS":        {kind: kindNginx, key: "server_tokens", value: "off"},
+	"WS_SERVER_TOKENS_APACHE": {kind: kindApache, key: "ServerTokens", value: "Prod"},
+	"WS_SERVER_SIGNATURE":     {kind: kindApache, key: "ServerSignature", value: "Off"},
+	"WS_TRACE_METHOD":         {kind: kindApache, key: "TraceEnable", value: "Off"},
 }
 
-func fixPermSshdConfig() (string, error) {
-	return run("chmod", "600", "/etc/ssh/sshd_config")
+var manual = map[string]string{
+	"SSH_ROOT_LOGIN":       ReasonLockoutRisk,
+	"SSH_PASSWORD_AUTH":    ReasonLockoutRisk,
+	"SSH_DEFAULT_PORT":     ReasonLockoutRisk,
+	"WS_DIRECTORY_LISTING": ReasonSiteRisk,
+	"WS_SSL_PROTOCOLS":     ReasonSiteRisk,
+	"WS_HSTS":              ReasonSiteRisk,
+	"WS_XCTO":              ReasonSiteRisk,
+	"WS_XFO":               ReasonSiteRisk,
+	"WS_CSP":               ReasonSiteRisk,
+	"WS_PERMISSIONS":       ReasonSiteRisk,
+	"WS_REFERRER":          ReasonSiteRisk,
 }
 
-func fixAuthKeys() (string, error) {
-	// Fix permissions on all ~/.ssh/authorized_keys files for non-root users
-	entries, err := os.ReadDir("/home")
+// Policy says what the host allows.
+type Policy struct {
+	// ConfigChangesSafe is false when a hosting panel or configuration
+	// management owns the service configuration (preflight decides).
+	ConfigChangesSafe bool
+}
+
+// Availability reports whether checkID has an automatic fix on this host,
+// and if not, why.
+func Availability(checkID string, p Policy) (bool, string) {
+	if r, ok := manual[checkID]; ok {
+		return false, r
+	}
+	f, ok := fixes[checkID]
+	if !ok {
+		return false, ReasonNoAutomation
+	}
+	if f.kind != kindPerm && !p.ConfigChangesSafe {
+		return false, ReasonManaged
+	}
+	return true, ""
+}
+
+// ErrNotFixable is returned for checks without an automatic fix.
+var ErrNotFixable = errors.New("no automatic fix for this check on this server")
+
+// Apply fixes one check. The returned message says what was changed.
+func Apply(h Host, checkID string, p Policy) (string, error) {
+	if ok, _ := Availability(checkID, p); !ok {
+		return "", ErrNotFixable
+	}
+	f := fixes[checkID]
+	switch f.kind {
+	case kindSSH:
+		return setSSH(h, f.key, f.value)
+	case kindPerm:
+		return tightenPerm(h, f.path, f.mode)
+	case kindNginx:
+		return setNginx(h, f.key, f.value)
+	case kindApache:
+		return setApache(h, f.key, f.value)
+	}
+	return "", ErrNotFixable
+}
+
+// Revert undoes a fix applied by Apply (permissions stay as they are: a
+// stricter mode never breaks anything and loosening it again would reopen
+// the problem).
+func Revert(h Host, checkID string) (string, error) {
+	f, ok := fixes[checkID]
+	if !ok {
+		return "", ErrNotFixable
+	}
+	switch f.kind {
+	case kindSSH:
+		return setSSH(h, f.key, "")
+	case kindNginx:
+		return setNginx(h, f.key, "")
+	case kindApache:
+		return setApache(h, f.key, "")
+	}
+	return "permissions left as they are", nil
+}
+
+// RemoveAll deletes every file InfraFence added and reloads the services
+// that used them. Used by uninstall.
+func RemoveAll(h Host) []string {
+	var done []string
+	if exists(h, SSHDropIn) {
+		if err := h.Remove(SSHDropIn); err == nil {
+			reloadSSH(h)
+			done = append(done, SSHDropIn)
+		}
+	}
+	if exists(h, NginxDropIn) {
+		if err := h.Remove(NginxDropIn); err == nil {
+			if _, err := h.Run("nginx", "-t"); err == nil {
+				reloadNginx(h)
+			}
+			done = append(done, NginxDropIn)
+		}
+	}
+	apacheChanged := false
+	for _, p := range []string{ApacheDebLink, ApacheDebAvail, ApacheRHEL} {
+		if exists(h, p) || isLink(h, p) {
+			if err := h.Remove(p); err == nil {
+				done = append(done, p)
+				apacheChanged = true
+			}
+		}
+	}
+	if apacheChanged {
+		if ctl := apachectl(h); ctl != "" {
+			if _, err := h.Run(ctl, "configtest"); err == nil {
+				h.Run(ctl, "graceful")
+			}
+		}
+	}
+	return done
+}
+
+// ── SSH ─────────────────────────────────────────────────────────────────────
+
+var sshIncludeRe = regexp.MustCompile(`(?im)^\s*Include\s+\S*sshd_config\.d/\*\.conf`)
+
+// setSSH sets key to value in InfraFence's sshd drop-in (value "" removes
+// it), validates with `sshd -t`, checks the value is in effect with
+// `sshd -T`, then reloads sshd. Any failure puts the old file back.
+func setSSH(h Host, key, value string) (string, error) {
+	sshd := findBinary(h, "sshd", "/usr/sbin/sshd")
+	if sshd == "" {
+		return "", fmt.Errorf("%w: sshd not found", ErrUnsupported)
+	}
+	main, err := h.ReadFile("/etc/ssh/sshd_config")
 	if err != nil {
-		return "", fmt.Errorf("cannot read /home: %w", err)
+		return "", fmt.Errorf("read sshd_config: %w", err)
+	}
+	if !sshIncludeRe.Match(main) {
+		return "", fmt.Errorf("%w: sshd_config does not include sshd_config.d", ErrUnsupported)
 	}
 
-	var sb strings.Builder
-	for _, e := range entries {
-		if !e.IsDir() {
+	old, hadOld := readOptional(h, SSHDropIn)
+	next := setDirective(old, key, value, " ")
+	if err := writeOrRemove(h, SSHDropIn, next, 0o600); err != nil {
+		return "", err
+	}
+	restore := func() { restoreFile(h, SSHDropIn, old, hadOld, 0o600) }
+
+	if out, err := h.Run(sshd, "-t"); err != nil {
+		restore()
+		return "", fmt.Errorf("sshd -t failed, change undone: %s", strings.TrimSpace(out))
+	}
+	if value != "" {
+		out, err := h.Run(sshd, "-T")
+		if err != nil || !hasEffective(out, key, value) {
+			restore()
+			return "", fmt.Errorf("another setting overrides %s, change undone", key)
+		}
+	}
+	if err := reloadSSH(h); err != nil {
+		restore()
+		return "", fmt.Errorf("could not reload sshd, change undone: %v", err)
+	}
+	if value == "" {
+		return fmt.Sprintf("removed %s from %s; sshd reloaded", key, SSHDropIn), nil
+	}
+	return fmt.Sprintf("set %s %s in %s; sshd reloaded (open sessions unaffected)", key, value, SSHDropIn), nil
+}
+
+func reloadSSH(h Host) error {
+	var last error
+	for _, unit := range []string{"ssh", "sshd"} {
+		if _, err := h.Run("systemctl", "reload", unit); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+	}
+	for _, svc := range []string{"ssh", "sshd"} {
+		if _, err := h.Run("service", svc, "reload"); err == nil {
+			return nil
+		}
+	}
+	return last
+}
+
+// hasEffective reports whether `sshd -T` output has key set to value.
+func hasEffective(dump, key, value string) bool {
+	want := strings.ToLower(key) + " " + strings.ToLower(value)
+	for _, line := range strings.Split(dump, "\n") {
+		if strings.ToLower(strings.TrimSpace(line)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ── Permissions ─────────────────────────────────────────────────────────────
+
+// tightenPerm removes the permission bits beyond max; it never adds any.
+func tightenPerm(h Host, path string, max os.FileMode) (string, error) {
+	info, err := h.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	cur := info.Mode().Perm()
+	next := cur & max
+	if next == cur {
+		return fmt.Sprintf("%s already %04o", path, cur), nil
+	}
+	if err := h.Chmod(path, next); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s: %04o → %04o", path, cur, next), nil
+}
+
+// ── nginx ───────────────────────────────────────────────────────────────────
+
+func setNginx(h Host, key, value string) (string, error) {
+	if findBinary(h, "nginx", "/usr/sbin/nginx") == "" {
+		return "", fmt.Errorf("%w: nginx not found", ErrUnsupported)
+	}
+	if !exists(h, filepath.Dir(NginxDropIn)) {
+		return "", fmt.Errorf("%w: no /etc/nginx/conf.d", ErrUnsupported)
+	}
+	old, hadOld := readOptional(h, NginxDropIn)
+	next := setDirective(old, key, value+";", " ")
+	if value == "" {
+		next = setDirective(old, key, "", " ")
+	}
+	if err := writeOrRemove(h, NginxDropIn, next, 0o644); err != nil {
+		return "", err
+	}
+	restore := func() { restoreFile(h, NginxDropIn, old, hadOld, 0o644) }
+
+	if value != "" {
+		// The file must actually be loaded, inside the http block.
+		dump, err := h.Run("nginx", "-T")
+		if err != nil || !strings.Contains(dump, "# configuration file "+NginxDropIn) {
+			restore()
+			if err != nil && strings.Contains(dump, "duplicate") {
+				return "", fmt.Errorf("%s is already set elsewhere in the nginx configuration, change undone", key)
+			}
+			return "", fmt.Errorf("%w: nginx does not load conf.d, change undone", ErrUnsupported)
+		}
+	}
+	if out, err := h.Run("nginx", "-t"); err != nil {
+		restore()
+		if strings.Contains(out, "duplicate") {
+			return "", fmt.Errorf("%s is already set elsewhere in the nginx configuration, change undone", key)
+		}
+		return "", fmt.Errorf("nginx -t failed, change undone: %s", strings.TrimSpace(out))
+	}
+	if err := reloadNginx(h); err != nil {
+		restore()
+		return "", fmt.Errorf("could not reload nginx, change undone: %v", err)
+	}
+	if value == "" {
+		return fmt.Sprintf("removed %s from %s; nginx reloaded", key, NginxDropIn), nil
+	}
+	return fmt.Sprintf("set %s %s in %s; nginx reloaded", key, value, NginxDropIn), nil
+}
+
+func reloadNginx(h Host) error {
+	if _, err := h.Run("systemctl", "reload", "nginx"); err == nil {
+		return nil
+	}
+	_, err := h.Run("nginx", "-s", "reload")
+	return err
+}
+
+// ── Apache ──────────────────────────────────────────────────────────────────
+
+func setApache(h Host, key, value string) (string, error) {
+	ctl := apachectl(h)
+	if ctl == "" {
+		return "", fmt.Errorf("%w: apachectl not found", ErrUnsupported)
+	}
+	var file, link string
+	switch {
+	case exists(h, "/etc/apache2/conf-available") && exists(h, "/etc/apache2/conf-enabled"):
+		file, link = ApacheDebAvail, ApacheDebLink
+	case exists(h, "/etc/httpd/conf.d"):
+		file = ApacheRHEL
+	default:
+		return "", fmt.Errorf("%w: unknown Apache layout", ErrUnsupported)
+	}
+
+	old, hadOld := readOptional(h, file)
+	hadLink := link != "" && (exists(h, link) || isLink(h, link))
+	next := setDirective(old, key, value, " ")
+	if err := writeOrRemove(h, file, next, 0o644); err != nil {
+		return "", err
+	}
+	if link != "" {
+		if next != "" && !hadLink {
+			if err := h.Symlink("../conf-available/"+filepath.Base(file), link); err != nil {
+				restoreFile(h, file, old, hadOld, 0o644)
+				return "", err
+			}
+		}
+		if next == "" && hadLink {
+			h.Remove(link)
+		}
+	}
+	restore := func() {
+		restoreFile(h, file, old, hadOld, 0o644)
+		if link != "" {
+			if hadLink && !isLink(h, link) {
+				h.Symlink("../conf-available/"+filepath.Base(file), link)
+			}
+			if !hadLink {
+				h.Remove(link)
+			}
+		}
+	}
+
+	if out, err := h.Run(ctl, "configtest"); err != nil {
+		restore()
+		return "", fmt.Errorf("apachectl configtest failed, change undone: %s", strings.TrimSpace(out))
+	}
+	if _, err := h.Run(ctl, "graceful"); err != nil {
+		restore()
+		return "", fmt.Errorf("could not reload Apache, change undone: %v", err)
+	}
+	if value == "" {
+		return fmt.Sprintf("removed %s from %s; Apache reloaded", key, file), nil
+	}
+	return fmt.Sprintf("set %s %s in %s; Apache reloaded (graceful)", key, value, file), nil
+}
+
+func apachectl(h Host) string {
+	return findBinary(h, "apache2ctl", "apachectl", "/usr/sbin/apache2ctl", "/usr/sbin/apachectl")
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+// ErrUnsupported marks hosts whose layout we don't change.
+var ErrUnsupported = errors.New(ReasonUnsupported)
+
+const header = "# Managed by InfraFence (hardening fixes applied from the dashboard).\n# Delete this file to undo them.\n"
+
+// setDirective returns the drop-in content with key set to value (value ""
+// removes it). Returns "" when no directive is left.
+func setDirective(content, key, value, sep string) string {
+	kv := map[string]string{}
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
-		keyPath := fmt.Sprintf("/home/%s/.ssh/authorized_keys", e.Name())
-		if _, err := os.Stat(keyPath); err != nil {
-			continue
-		}
-		out, err := exec.Command("chmod", "600", keyPath).CombinedOutput()
-		sb.WriteString(fmt.Sprintf("chmod 600 %s: %s\n", keyPath, string(out)))
-		if err != nil {
-			return sb.String(), err
+		fields := strings.SplitN(t, " ", 2)
+		if len(fields) == 2 {
+			kv[fields[0]] = strings.TrimSpace(fields[1])
 		}
 	}
-
-	if sb.Len() == 0 {
-		return "no authorized_keys files found", nil
+	for k := range kv {
+		if strings.EqualFold(k, key) {
+			delete(kv, k)
+		}
 	}
-	return sb.String(), nil
+	if value != "" {
+		kv[key] = value
+	}
+	if len(kv) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(kv))
+	for k := range kv {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(header)
+	for _, k := range keys {
+		b.WriteString(k + sep + kv[k] + "\n")
+	}
+	return b.String()
 }
 
-// ─── SSH config fixers ───
+func findBinary(h Host, names ...string) string {
+	for _, n := range names {
+		if p, err := h.LookPath(n); err == nil {
+			return p
+		}
+	}
+	return ""
+}
 
-// setSshdOption sets (or adds) a key=value directive in sshd_config and restarts sshd.
-func setSshdOption(key, value string) (string, error) {
-	const path = "/etc/ssh/sshd_config"
+func exists(h Host, p string) bool {
+	_, err := h.Stat(p)
+	return err == nil
+}
 
-	data, err := os.ReadFile(path)
+func isLink(h Host, p string) bool {
+	if lh, ok := h.(interface {
+		Lstat(string) (os.FileInfo, error)
+	}); ok {
+		_, err := lh.Lstat(p)
+		return err == nil
+	}
+	return false
+}
+
+func (osHost) Lstat(p string) (os.FileInfo, error) { return os.Lstat(p) }
+
+func readOptional(h Host, p string) (string, bool) {
+	b, err := h.ReadFile(p)
 	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", path, err)
+		return "", false
 	}
-
-	content := string(data)
-	re := regexp.MustCompile(`(?im)^#?\s*` + regexp.QuoteMeta(key) + `\s.*$`)
-
-	replacement := fmt.Sprintf("%s %s", key, value)
-	if re.MatchString(content) {
-		content = re.ReplaceAllString(content, replacement)
-	} else {
-		content = content + "\n" + replacement + "\n"
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-		return "", fmt.Errorf("cannot write %s: %w", path, err)
-	}
-
-	out, err := exec.Command("systemctl", "restart", "sshd").CombinedOutput()
-	return fmt.Sprintf("set %s %s in sshd_config; restart: %s", key, value, string(out)), err
+	return string(b), true
 }
 
-// ─── Nginx fixers ───
-
-func fixNginxServerTokens() (string, error) {
-	const path = "/etc/nginx/nginx.conf"
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", path, err)
+func writeOrRemove(h Host, p, content string, mode os.FileMode) error {
+	if content == "" {
+		if err := h.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
 	}
-
-	content := string(data)
-	re := regexp.MustCompile(`(?im)^(\s*)#?\s*server_tokens\s+\S+;`)
-
-	if re.MatchString(content) {
-		content = re.ReplaceAllString(content, "${1}server_tokens off;")
-	} else {
-		// Insert inside http { block
-		content = insertInHTTPBlock(content, "    server_tokens off;")
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("cannot write %s: %w", path, err)
-	}
-
-	out, err := exec.Command("nginx", "-s", "reload").CombinedOutput()
-	return fmt.Sprintf("set server_tokens off; reload: %s", string(out)), err
+	return h.WriteFile(p, []byte(content), mode)
 }
 
-func fixNginxSecHeaders() (string, error) {
-	const path = "/etc/nginx/nginx.conf"
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", path, err)
+func restoreFile(h Host, p, old string, hadOld bool, mode os.FileMode) {
+	if hadOld {
+		h.WriteFile(p, []byte(old), mode)
+		return
 	}
-
-	content := string(data)
-	var added []string
-
-	if !strings.Contains(content, "X-Content-Type-Options") {
-		content = insertInHTTPBlock(content, "    add_header X-Content-Type-Options nosniff;")
-		added = append(added, "X-Content-Type-Options")
-	}
-	if !strings.Contains(content, "X-Frame-Options") {
-		content = insertInHTTPBlock(content, "    add_header X-Frame-Options SAMEORIGIN;")
-		added = append(added, "X-Frame-Options")
-	}
-
-	if len(added) == 0 {
-		return "headers already present", nil
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("cannot write %s: %w", path, err)
-	}
-
-	out, err := exec.Command("nginx", "-s", "reload").CombinedOutput()
-	return fmt.Sprintf("added headers %v; reload: %s", added, string(out)), err
-}
-
-// insertInHTTPBlock inserts a line after the first `http {` line.
-func insertInHTTPBlock(content, line string) string {
-	re := regexp.MustCompile(`(?m)^(http\s*\{)`)
-	return re.ReplaceAllStringFunc(content, func(m string) string {
-		return m + "\n" + line
-	})
-}
-
-// ─── Apache fixers ───
-
-func fixApacheServerTokens() (string, error) {
-	return setApacheDirective("ServerTokens", "Prod")
-}
-
-func fixApacheServerSignature() (string, error) {
-	return setApacheDirective("ServerSignature", "Off")
-}
-
-func fixApacheDirectoryListing() (string, error) {
-	return setApacheDirective("Options", "-Indexes")
-}
-
-func fixApacheTraceMethod() (string, error) {
-	return setApacheDirective("TraceEnable", "Off")
-}
-
-// setApacheDirective sets (or adds) a directive in the main Apache config and restarts Apache.
-func setApacheDirective(key, value string) (string, error) {
-	path := "/etc/apache2/apache2.conf"
-	if _, err := os.Stat(path); err != nil {
-		path = "/etc/httpd/conf/httpd.conf"
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %w", path, err)
-	}
-
-	content := string(data)
-	re := regexp.MustCompile(`(?im)^#?\s*` + regexp.QuoteMeta(key) + `\s.*$`)
-	replacement := fmt.Sprintf("%s %s", key, value)
-
-	if re.MatchString(content) {
-		content = re.ReplaceAllString(content, replacement)
-	} else {
-		content = content + "\n" + replacement + "\n"
-	}
-
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("cannot write %s: %w", path, err)
-	}
-
-	out, err := exec.Command("apachectl", "graceful").CombinedOutput()
-	return fmt.Sprintf("set %s %s; graceful: %s", key, value, string(out)), err
+	h.Remove(p)
 }

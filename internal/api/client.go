@@ -313,8 +313,24 @@ type SyncResponse struct {
 	YaraRules              *YaraRulesSync         `json:"yara_rules,omitempty"`
 	YaraInstallRequested    bool                   `json:"yara_install_requested"`
 	MalwareScanRequested   bool                   `json:"malware_scan_requested"`
+	// Hardening check and software (CVE) audit requested from the dashboard.
+	HardeningScanRequested bool `json:"hardening_scan_requested"`
+	SoftwareAuditRequested bool `json:"software_audit_requested"`
+	// Fixes an admin asked for; each is applied once and reported back.
+	HardeningFixes []HardeningFix `json:"hardening_fixes"`
+	// Org-wide bans to enforce in ModSecurity (servers behind a proxy/CDN,
+	// where the firewall only sees the proxy's address).
+	ModsecBanIPs []string `json:"modsec_ban_ips"`
 	QuarantinePending      []string               `json:"quarantine_pending"`
 	CSFPortActions         []CSFPortAction        `json:"csf_port_actions"`
+}
+
+// HardeningFix is one requested fix: apply or revert the automatic fix for
+// a hardening check.
+type HardeningFix struct {
+	ID      int64  `json:"id"`
+	CheckID string `json:"check_id"`
+	Action  string `json:"action"` // "apply" (default) or "revert"
 }
 
 // CSFPortAction is a pending CSF port management command from the panel.
@@ -479,6 +495,10 @@ type ScanFinding struct {
 	Recommendation string            `json:"recommendation,omitempty"`
 	Details        map[string]string `json:"details,omitempty"`
 	Passed         bool              `json:"passed"`
+	// Fixable: the dashboard may offer a one-click fix. Otherwise
+	// FixBlockedReason says why not (see internal/remediation).
+	Fixable          bool   `json:"fixable"`
+	FixBlockedReason string `json:"fix_blocked_reason,omitempty"`
 }
 
 func (c *Client) SubmitScanResults(req ScanResultRequest) error {
@@ -540,6 +560,8 @@ func (c *Client) ReportEvents(events []EventRequest) error {
 // SoftwareAuditRequest sends software audit results to the server.
 type SoftwareAuditRequest struct {
 	AuditID     int64       `json:"audit_id"`
+	OSID        string      `json:"os_id,omitempty"`
+	OSVersionID string      `json:"os_version_id,omitempty"`
 	Summary     interface{} `json:"summary"`
 	KeySoftware interface{} `json:"key_software"`
 	Packages    interface{} `json:"packages,omitempty"`

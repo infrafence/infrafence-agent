@@ -14,6 +14,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/api"
 	"github.com/infrafence/infrafence-agent/internal/firewall"
 	"github.com/infrafence/infrafence-agent/internal/preflight"
+	"github.com/infrafence/infrafence-agent/internal/remediation"
 	"github.com/infrafence/infrafence-agent/internal/updater"
 	"github.com/infrafence/infrafence-agent/internal/webserver"
 )
@@ -284,6 +285,10 @@ func cmdUninstall(args []string) {
 	if err := modsecurityRemove(); err != nil {
 		fmt.Fprintf(os.Stderr, "could not remove ModSecurity rules: %v\n", err)
 		failed = true
+	}
+	// Hardening fixes applied from the dashboard live in files of their own.
+	for _, p := range remediation.RemoveAll(remediation.System) {
+		fmt.Println("removed", p)
 	}
 	if failed {
 		os.Exit(1)

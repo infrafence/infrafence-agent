@@ -3,6 +3,7 @@ package collector
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,10 @@ import (
 
 // AuditResult is the payload sent to the server.
 type AuditResult struct {
+	// OS identifies the vulnerability ecosystem the packages belong to
+	// (ID and VERSION_ID from /etc/os-release, e.g. "debian" "12").
+	OSID        string        `json:"os_id,omitempty"`
+	OSVersionID string        `json:"os_version_id,omitempty"`
 	Summary     Summary       `json:"summary"`
 	KeySoftware []KeySoftware `json:"key_software"`
 	Packages    []Package     `json:"packages,omitempty"`
@@ -37,12 +42,17 @@ type KeySoftware struct {
 type Package struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	// Source package and its version: vulnerability databases (Debian,
+	// Ubuntu, RHEL-family advisories) are keyed by source package.
+	Source        string `json:"source,omitempty"`
+	SourceVersion string `json:"source_version,omitempty"`
 }
 
 // Collect gathers the full software inventory from the system.
 func Collect() AuditResult {
 	result := AuditResult{}
 
+	result.OSID, result.OSVersionID = osRelease()
 	result.Packages = collectInstalledPackages()
 	result.Summary.TotalPackages = len(result.Packages)
 	result.Summary.UpdatesAvailable = countUpdatesAvailable()
@@ -58,36 +68,87 @@ func Collect() AuditResult {
 func collectInstalledPackages() []Package {
 	// Try dpkg (Debian/Ubuntu)
 	if _, err := exec.LookPath("dpkg-query"); err == nil {
-		out, err := exec.Command("dpkg-query", "-W", "-f=${Package}\t${Version}\n").Output()
+		out, err := exec.Command("dpkg-query", "-W",
+			"-f=${db:Status-Abbrev}\t${Package}\t${Version}\t${source:Package}\t${source:Version}\n").Output()
 		if err == nil {
-			return parseTSVPackages(string(out))
+			return parseDpkg(string(out))
 		}
 	}
 
 	// Try rpm (RHEL/CentOS)
 	if _, err := exec.LookPath("rpm"); err == nil {
-		out, err := exec.Command("rpm", "-qa", "--queryformat", "%{NAME}\t%{VERSION}-%{RELEASE}\n").Output()
+		out, err := exec.Command("rpm", "-qa", "--queryformat",
+			"%{NAME}\t%|EPOCH?{%{EPOCH}:}:{}|%{VERSION}-%{RELEASE}\t%{SOURCERPM}\n").Output()
 		if err == nil {
-			return parseTSVPackages(string(out))
+			return parseRPM(string(out))
 		}
 	}
 
 	return nil
 }
 
-func parseTSVPackages(output string) []Package {
+// parseDpkg keeps installed packages only ("ii"; removed packages whose
+// configuration files remain are listed by dpkg-query too).
+func parseDpkg(output string) []Package {
 	var packages []Package
 	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+		parts := strings.Split(line, "\t")
+		if len(parts) != 5 || strings.TrimSpace(parts[0]) != "ii" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 2 {
-			packages = append(packages, Package{Name: parts[0], Version: parts[1]})
+		p := Package{Name: parts[1], Version: parts[2], Source: parts[3], SourceVersion: parts[4]}
+		if p.Source == "" {
+			p.Source = p.Name
 		}
+		if p.SourceVersion == "" {
+			p.SourceVersion = p.Version
+		}
+		packages = append(packages, p)
 	}
 	return packages
+}
+
+// srpmRe splits "openssl-3.0.7-27.el9.src.rpm" into name and version-release.
+var srpmRe = regexp.MustCompile(`^(.+)-([^-]+-[^-]+)\.src\.rpm$`)
+
+func parseRPM(output string) []Package {
+	var packages []Package
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.Split(strings.TrimSpace(line), "\t")
+		if len(parts) < 2 || parts[0] == "" || parts[0] == "gpg-pubkey" {
+			continue
+		}
+		p := Package{Name: parts[0], Version: parts[1]}
+		if len(parts) == 3 {
+			if m := srpmRe.FindStringSubmatch(parts[2]); m != nil {
+				p.Source = m[1]
+			}
+		}
+		packages = append(packages, p)
+	}
+	return packages
+}
+
+// osRelease returns ID and VERSION_ID from /etc/os-release.
+func osRelease() (id, version string) {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		v = strings.Trim(v, `"'`)
+		switch k {
+		case "ID":
+			id = v
+		case "VERSION_ID":
+			version = v
+		}
+	}
+	return id, version
 }
 
 // ─── Update Counts ───

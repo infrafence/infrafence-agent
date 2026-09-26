@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -53,8 +54,8 @@ func Run() []Finding {
 func checkSSHConfig() []Finding {
 	var findings []Finding
 
-	data, err := os.ReadFile("/etc/ssh/sshd_config")
-	if err != nil {
+	content, ok := sshEffectiveConfig()
+	if !ok {
 		findings = append(findings, Finding{
 			Category:    "ssh_config",
 			Severity:    "info",
@@ -66,11 +67,9 @@ func checkSSHConfig() []Finding {
 		return findings
 	}
 
-	content := string(data)
-
 	// Check root login
 	rootLogin := sshConfigValue(content, "PermitRootLogin")
-	passed := rootLogin == "no" || rootLogin == "prohibit-password"
+	passed := rootLogin == "no" || rootLogin == "prohibit-password" || rootLogin == "without-password"
 	findings = append(findings, Finding{
 		Category:       "ssh_config",
 		Severity:       "critical",
@@ -131,14 +130,15 @@ func checkSSHConfig() []Finding {
 	if maxAuth == "" {
 		maxAuth = "6" // default
 	}
-	passed = maxAuth != "" && maxAuth <= "4"
+	n, err := strconv.Atoi(maxAuth)
+	passed = err == nil && n <= 4
 	findings = append(findings, Finding{
 		Category:       "ssh_config",
 		Severity:       "medium",
 		CheckID:        "SSH_MAX_AUTH_TRIES",
 		Title:          "SSH max auth tries",
 		Description:    fmt.Sprintf("MaxAuthTries is %s", maxAuth),
-		Recommendation: "Set MaxAuthTries to 3 or lower",
+		Recommendation: "Set MaxAuthTries to 4 or lower",
 		Details:        map[string]string{"value": maxAuth},
 		Passed:         passed,
 	})
@@ -392,6 +392,32 @@ func checkFirewall() []Finding {
 }
 
 // ─── Helpers ───
+
+// sshEffectiveConfig returns the configuration sshd actually uses: `sshd -T`
+// when available (it resolves Include files and defaults), otherwise the
+// drop-in files followed by the main file — sshd keeps the first value it
+// reads, and Debian/Ubuntu include sshd_config.d at the top of the main file.
+func sshEffectiveConfig() (string, bool) {
+	for _, bin := range []string{"sshd", "/usr/sbin/sshd"} {
+		if out, err := runTimeout(10*time.Second, bin, "-T"); err == nil && len(out) > 0 {
+			return out, true
+		}
+	}
+	data, err := os.ReadFile("/etc/ssh/sshd_config")
+	if err != nil {
+		return "", false
+	}
+	return readDirConfigs("/etc/ssh/sshd_config.d") + "\n" + string(data), true
+}
+
+// runTimeout runs a command and returns its combined output, killing it
+// after d.
+func runTimeout(d time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return string(out), err
+}
 
 func sshConfigValue(content, key string) string {
 	for _, line := range strings.Split(content, "\n") {
