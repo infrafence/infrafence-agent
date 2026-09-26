@@ -2,8 +2,8 @@ apiVersion: v2
 name: infrafence-agent
 description: InfraFence security agent — SSH protection, WAF, bot detection, CVE scanning, and K8s-native monitoring
 type: application
-version: 1.0.15
-appVersion: "1.0.15"
+version: 1.0.16
+appVersion: "1.0.16"
 home: https://infrafence.com
 sources:
   - https://github.com/infrafence/infrafence-agent
