@@ -428,8 +428,8 @@ func runAgent() {
 
 	}
 
-	cpName, cpVersion := detectControlPanel()
-	panelDomains := collectPanelDomains(cpName)
+	cpID, cpName, cpVersion := detectControlPanel()
+	panelDomains := collectPanelDomains(cpID)
 
 	// Web-server UA blocking is set up from the sync, only when allowed
 	// (dashboard setting + preflight), see applyWebserverChanges.
@@ -1668,44 +1668,16 @@ func parseApacheVersion(output string) string {
 	return ""
 }
 
-// detectControlPanel detects hosting control panels (Plesk, cPanel, DirectAdmin).
-// Runs once at startup — checks for well-known paths and binaries.
-func detectControlPanel() (name, version string) {
-	// Plesk: /usr/local/psa/version contains "18.0.65"
-	if data, err := os.ReadFile("/usr/local/psa/version"); err == nil {
-		v := strings.TrimSpace(string(data))
-		if fields := strings.Fields(v); len(fields) > 0 {
-			v = fields[0]
-		}
-		log.Printf("[panel] Plesk %s detected", v)
-		return "plesk", v
+// detectControlPanel returns the hosting panel's id (for panel-specific
+// logic such as collectPanelDomains), its display name and version. Same
+// detection as the preflight scan, so the dashboard and the host policy
+// always agree.
+func detectControlPanel() (id, name, version string) {
+	p := preflight.DetectPanel()
+	if p.Found() {
+		log.Printf("[panel] %s %s detected", p.Name, p.Version)
 	}
-
-	// cPanel: /usr/local/cpanel/version contains "122.0.28"
-	if data, err := os.ReadFile("/usr/local/cpanel/version"); err == nil {
-		v := strings.TrimSpace(string(data))
-		log.Printf("[panel] cPanel %s detected", v)
-		return "cpanel", v
-	}
-
-	// DirectAdmin: /usr/local/directadmin/directadmin binary
-	if _, err := os.Stat("/usr/local/directadmin/directadmin"); err == nil {
-		v := ""
-		out, err := exec.Command("/usr/local/directadmin/directadmin", "v").CombinedOutput()
-		if err == nil {
-			s := strings.TrimSpace(string(out))
-			if idx := strings.Index(s, "v"); idx >= 0 {
-				v = s[idx+1:]
-				if spIdx := strings.IndexByte(v, ' '); spIdx >= 0 {
-					v = v[:spIdx]
-				}
-			}
-		}
-		log.Printf("[panel] DirectAdmin %s detected", v)
-		return "directadmin", v
-	}
-
-	return "", ""
+	return p.ID, p.Name, p.Version
 }
 
 // collectPanelDomains lists all domains managed by the hosting panel.

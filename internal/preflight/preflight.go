@@ -252,8 +252,12 @@ func ScanEnv(env Env) Report {
 		}
 	}
 	r.Facts["web_servers"] = strings.Join(web, ",")
-	panel := detectPanel(env)
+	pnl := detectPanel(env)
+	panel := pnl.Name
 	r.Facts["panel"] = panel
+	if pnl.Version != "" {
+		r.Facts["panel_version"] = pnl.Version
+	}
 	managed := managedConfigFiles(env)
 	if ls.Running {
 		detail := "Protection works through firewall bans and log analysis. InfraFence doesn't edit LiteSpeed's configuration yet: " +
@@ -333,29 +337,6 @@ func confValue(s, key string) string {
 		l = strings.TrimSpace(l)
 		if strings.HasPrefix(l, key+"=") {
 			return strings.TrimSpace(strings.TrimPrefix(l, key+"="))
-		}
-	}
-	return ""
-}
-
-func detectPanel(env Env) string {
-	for _, p := range []struct{ path, name string }{
-		{"/usr/local/cpanel", "cPanel"},
-		{"/usr/local/psa", "Plesk"},
-		{"/usr/local/directadmin", "DirectAdmin"},
-		{"/usr/local/CyberCP", "CyberPanel"},
-		{"/usr/local/hestia", "HestiaCP"},
-		{"/usr/local/vesta", "VestaCP"},
-		{"/usr/local/ispconfig", "ISPConfig"},
-		{"/home/clp", "CloudPanel"},
-		{"/etc/webmin/virtual-server", "Virtualmin"},
-		{"/data/coolify", "Coolify"},
-		{"/etc/runcloud", "RunCloud"},
-		{"/etc/gridpane", "GridPane"},
-		{"/opt/bitnami", "Bitnami"},
-	} {
-		if env.Exists(p.path) {
-			return p.name
 		}
 	}
 	return ""
