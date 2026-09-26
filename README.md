@@ -140,7 +140,7 @@ Each detection adds points to a per-IP score. Scores decay at -5 pts/min. Action
 - **No impact** on servers without ModSecurity — falls back to iptables-only blocking
 
 ### Outbound threat detection (egress & DNS)
-Most tools only watch traffic coming *in*. InfraFence also watches what an already-compromised host does *out* — the same threat feed used for inbound bans (Spamhaus DROP, Feodo Tracker, and more) is checked against outbound activity too:
+Most tools only watch traffic coming *in*. InfraFence also watches what an already-compromised host does *out* — the same threat feed used for inbound bans (public threat-intelligence blocklists) is checked against outbound activity too:
 - **Egress threat matching** — flags established outbound connections to any IP on your threat feed, catching a compromised host beaconing out to C2 infrastructure that inbound-only firewall rules never see
 - **DNS resolver monitoring** — flags outbound DNS traffic (UDP/53) to threat-feed IPs, to resolvers outside your configured `/etc/resolv.conf`, and to "resolver hopping" (many distinct external resolvers in a short window) — an early signal of DNS tunneling
 - Poll-based on the same cycle as the other monitors: reliably catches *sustained* traffic — tunneling, repeated beaconing — rather than a single one-off query
