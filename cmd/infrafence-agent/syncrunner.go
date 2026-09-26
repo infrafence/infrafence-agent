@@ -29,6 +29,10 @@ type syncRunner struct {
 	seen     string // latest config version reported by the dashboard
 	applied  string // config version of the last successful sync
 	lastSync time.Time
+
+	tmu   sync.Mutex
+	timer *time.Timer // next scheduled sync (ban expiry)
+	at    time.Time
 }
 
 func newSyncRunner(run func() error) *syncRunner {
@@ -95,6 +99,48 @@ func (s *syncRunner) Loop(ctx context.Context) {
 		log.Printf("[sync] syncing now (%s)", reason)
 		_ = s.Now(reason)
 	}
+}
+
+// ScheduleAt requests a sync at t (e.g. when the next ban expires), so an
+// expired ban is lifted on time instead of at the next periodic sync. Only
+// the earliest pending time is kept; a zero t cancels it.
+func (s *syncRunner) ScheduleAt(t time.Time, reason string) {
+	s.tmu.Lock()
+	defer s.tmu.Unlock()
+	if s.timer != nil && !t.IsZero() && !s.at.IsZero() && s.at.Before(t) && time.Until(s.at) > 0 {
+		return // an earlier sync is already scheduled
+	}
+	if s.timer != nil {
+		s.timer.Stop()
+		s.timer = nil
+	}
+	s.at = t
+	if t.IsZero() {
+		return
+	}
+	s.timer = time.AfterFunc(time.Until(t), func() { s.Request(reason) })
+}
+
+// nextBanExpiry returns when the earliest of bans expires after now (plus a
+// second, so the server already considers it expired), or false if none does.
+func nextBanExpiry(bans []api.Ban, now time.Time) (time.Time, bool) {
+	var next time.Time
+	for _, b := range bans {
+		if b.ExpiresAt == nil {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, *b.ExpiresAt)
+		if err != nil || !t.After(now) {
+			continue
+		}
+		if next.IsZero() || t.Before(next) {
+			next = t
+		}
+	}
+	if next.IsZero() {
+		return next, false
+	}
+	return next.Add(time.Second), true
 }
 
 // ObserveVersion records the config version from a heartbeat and requests a
