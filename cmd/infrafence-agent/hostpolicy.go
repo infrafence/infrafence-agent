@@ -98,8 +98,9 @@ func applyWebserverChanges(client *api.Client, wsType string, blockFps []webserv
 		}
 	}
 
-	// ModSecurity: one attempt a day at most, never in a reload loop.
-	if modsecEngine != nil && modsecEngine.IsAvailable() && time.Since(modsecSetupAt) > 24*time.Hour {
+	// ModSecurity: Apache only (not LiteSpeed, which reads Apache's config
+	// but must not have Apache reloaded under it); one attempt a day at most.
+	if wsType == "apache" && modsecEngine != nil && modsecEngine.IsAvailable() && time.Since(modsecSetupAt) > 24*time.Hour {
 		modsecSetupAt = time.Now()
 		if err := modsecEngine.Setup(); err != nil {
 			log.Printf("[modsec] setup failed: %v", err)

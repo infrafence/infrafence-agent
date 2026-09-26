@@ -265,6 +265,13 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 		add(info)
 	}
 
+	// 3b. OpenLiteSpeed server and vhost configs (accesslog + listener maps)
+	for _, info := range detectOpenLiteSpeedLogInfo() {
+		if _, err := os.Stat(info.Path); err == nil {
+			add(info)
+		}
+	}
+
 	// 4. cPanel domlogs (per-domain access logs)
 	for _, info := range detectCpanelDomlogs() {
 		add(info)
@@ -296,6 +303,9 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 		"/var/log/nginx/*/access.log",
 		"/var/www/*/logs/access.log",
 		"/home/*/logs/access.log",
+		// OpenLiteSpeed / CyberPanel vhost logs
+		"/usr/local/lsws/*/logs/access.log",
+		"/home/*/logs/*.access_log",
 	}
 	for _, pattern := range perDomainGlobs {
 		matches, _ := filepath.Glob(pattern)
@@ -1523,6 +1533,12 @@ func extractDomainFromLogPath(path string) string {
 				return domain
 			}
 		}
+	}
+
+	// Pattern: DOMAIN.access_log (CyberPanel / OpenLiteSpeed)
+	if domain := strings.TrimSuffix(base, ".access_log"); domain != base &&
+		strings.ContainsRune(domain, '.') && !isIPAddress(domain) {
+		return domain
 	}
 
 	// Pattern: /var/www/vhosts/DOMAIN/logs/ or /var/log/*/DOMAIN/

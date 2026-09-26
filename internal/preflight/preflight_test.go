@@ -161,3 +161,54 @@ func TestNoIptables(t *testing.T) {
 		t.Errorf("missing iptables must block enforcement: %+v", r.Decisions)
 	}
 }
+
+func TestLiteSpeedEnterpriseBlocksWebserverChanges(t *testing.T) {
+	// cPanel-less LiteSpeed Enterprise: httpd is present for its config,
+	// but Apache must not be edited or reloaded.
+	e := ubuntu()
+	delete(e.bins, "nginx")
+	e.bins["httpd"] = true
+	e.files["/usr/local/lsws/bin/lshttpd"] = ""
+	e.files["/usr/local/lsws/VERSION"] = "6.3.1\n"
+	e.runs["pgrep -x litespeed"] = "4321"
+	r := ScanEnv(e)
+	if r.Decisions.WebserverChangesSafe || !strings.Contains(r.Decisions.WebserverChangesReason, "LiteSpeed") {
+		t.Errorf("decisions: %+v", r.Decisions)
+	}
+	if r.Facts["web_servers"] != "httpd,litespeed" || r.Facts["litespeed"] != "enterprise 6.3.1 (running)" {
+		t.Errorf("facts: %+v", r.Facts)
+	}
+	if f := finding(r, "litespeed"); f == nil || !strings.Contains(f.Detail, "Apache") {
+		t.Errorf("finding: %+v", f)
+	}
+}
+
+func TestOpenLiteSpeed(t *testing.T) {
+	e := ubuntu()
+	delete(e.bins, "nginx")
+	e.files["/usr/local/lsws/bin/openlitespeed"] = ""
+	e.files["/usr/local/lsws/bin/lshttpd"] = ""
+	e.runs["pgrep -x openlitespeed"] = "99"
+	r := ScanEnv(e)
+	if r.Facts["web_servers"] != "openlitespeed" || r.Decisions.WebserverChangesSafe {
+		t.Errorf("facts: %+v decisions: %+v", r.Facts, r.Decisions)
+	}
+	if got := detectLiteSpeed(e).Name(); got != "openlitespeed" {
+		t.Errorf("name = %q", got)
+	}
+}
+
+func TestLiteSpeedInstalledButApacheServes(t *testing.T) {
+	// LiteSpeed switched off (e.g. on cPanel): Apache rules apply as usual.
+	e := ubuntu()
+	delete(e.bins, "nginx")
+	e.bins["apache2"] = true
+	e.files["/usr/local/lsws/bin/lshttpd"] = ""
+	r := ScanEnv(e)
+	if !r.Decisions.WebserverChangesSafe || finding(r, "litespeed") != nil {
+		t.Errorf("stopped LiteSpeed must not veto: %+v", r.Decisions)
+	}
+	if r.Facts["litespeed"] != "enterprise (installed, not running)" {
+		t.Errorf("fact = %q", r.Facts["litespeed"])
+	}
+}

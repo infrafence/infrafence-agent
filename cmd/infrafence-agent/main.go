@@ -30,6 +30,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/malware"
 	"github.com/infrafence/infrafence-agent/internal/modsecurity"
 	"github.com/infrafence/infrafence-agent/internal/monitor"
+	"github.com/infrafence/infrafence-agent/internal/preflight"
 	"github.com/infrafence/infrafence-agent/internal/scanner"
 	"github.com/infrafence/infrafence-agent/internal/session"
 	"github.com/infrafence/infrafence-agent/internal/updater"
@@ -1660,7 +1661,13 @@ func trimQuotes(s string) string {
 // detectWebServerInfo detects the installed web server and its version.
 // Runs once at startup — executes "nginx -v" or "apache2 -v" a single time.
 func detectWebServerInfo() (name, version string) {
-	// Try Nginx first
+	// LiteSpeed first: the Enterprise edition keeps Apache's httpd binary for
+	// its configuration, so finding httpd doesn't mean Apache serves the sites.
+	if ls := preflight.DetectLiteSpeed(); ls.Running {
+		return ls.Name(), ls.Version
+	}
+
+	// Try Nginx
 	if path, err := exec.LookPath("nginx"); err == nil && path != "" {
 		out, err := exec.Command("nginx", "-v").CombinedOutput()
 		if err == nil {
