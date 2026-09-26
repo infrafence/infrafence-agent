@@ -232,18 +232,42 @@ func ScanEnv(env Env) Report {
 
 	// ── Web server & ownership of its configuration ──
 	var web []string
-	for _, b := range []string{"nginx", "apache2", "httpd", "caddy", "litespeed", "lshttpd"} {
+	for _, b := range []string{"nginx", "apache2", "httpd", "caddy"} {
 		if env.LookPath(b) {
 			web = append(web, b)
+		}
+	}
+	// LiteSpeed lives in /usr/local/lsws/bin, normally not in PATH. The
+	// Enterprise edition keeps Apache's httpd binary around for its config,
+	// so "httpd" alone doesn't mean Apache serves the sites.
+	ls := detectLiteSpeed(env)
+	if ls.Installed() {
+		state := "running"
+		if !ls.Running {
+			state = "installed, not running"
+		}
+		r.Facts["litespeed"] = strings.Join(strings.Fields(ls.Edition+" "+ls.Version), " ") + " (" + state + ")"
+		if ls.Running {
+			web = append(web, ls.Name())
 		}
 	}
 	r.Facts["web_servers"] = strings.Join(web, ",")
 	panel := detectPanel(env)
 	r.Facts["panel"] = panel
 	managed := managedConfigFiles(env)
+	if ls.Running {
+		detail := "Protection works through firewall bans and log analysis. InfraFence doesn't edit LiteSpeed's configuration yet: " +
+			"bots set to \"block\" are banned at the firewall instead of in the web server, and InfraFence doesn't install ModSecurity rules."
+		if ls.Edition == "enterprise" {
+			detail += " LiteSpeed Enterprise reads Apache's configuration, so InfraFence must not reload Apache here."
+		}
+		add("litespeed", Info, "LiteSpeed serves the sites ("+ls.Edition+")", detail)
+	}
 	switch {
 	case len(web) == 0:
 		d.WebserverChangesReason = "no supported web server"
+	case ls.Running:
+		d.WebserverChangesReason = "LiteSpeed (" + ls.Edition + ") serves the sites; InfraFence doesn't edit its configuration"
 	case panel != "":
 		d.WebserverChangesReason = panel + " manages the web server configuration and may overwrite edits"
 		add("panel", Warn, "Hosting panel detected: "+panel,
