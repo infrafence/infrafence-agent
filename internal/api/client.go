@@ -229,6 +229,15 @@ type HeartbeatResponse struct {
 	Realtime *RealtimeConfig `json:"realtime,omitempty"`
 }
 
+// BotPolicy is the organization's choice of what happens to known bots, on
+// top of the defaults of the downloaded bot lists: an action per category
+// ("ai-crawler", "seo", ...) and per bot (fingerprint slug). A bot's own
+// entry wins over its category's. Actions: "allow", "log", "block".
+type BotPolicy struct {
+	Categories map[string]string `json:"categories"`
+	Bots       map[string]string `json:"bots"`
+}
+
 // RealtimeConfig is a Supabase Realtime channel for "config changed" signals.
 type RealtimeConfig struct {
 	URL   string `json:"url"`
@@ -296,6 +305,7 @@ type SyncResponse struct {
 	AgentUpdate       *AgentUpdateInfo    `json:"agent_update,omitempty"`
 	DetectionRules    []DetectionRule     `json:"detection_rules"`
 	BotFingerprints   []BotFingerprint    `json:"bot_fingerprints"`
+	BotPolicy         *BotPolicy          `json:"bot_policy,omitempty"`
 	WafRules          []WafRule           `json:"waf_rules"`
 	ThreatFeed        []ThreatEntry       `json:"threat_feed"`
 	MalwareAllowlist   []MalwareIgnoreEntry  `json:"malware_allowlist"`
