@@ -1,7 +1,10 @@
 <p align="center">
   <a href="README.md">English</a> ·
   <a href="README.it.md">Italiano</a> ·
-  <a href="README.pt-br.md">Português (BR)</a>
+  <a href="README.pt-br.md">Português (BR)</a> ·
+  <a href="README.es.md">Español</a> ·
+  <a href="README.fr.md">Français</a> ·
+  <a href="README.de.md">Deutsch</a>
 </p>
 
 <p align="center">
@@ -11,8 +14,8 @@
 <h3 align="center">Segurança de servidor que se instala em 30 segundos</h3>
 
 <p align="center">
-  Agente Go leve que detecta ataques em tempo real e os bloqueia automaticamente — de entrada e de saída.<br>
-  Força bruta SSH, WAF, varredura de malware, gestão de bots, detecção de ameaças egress & DNS, Docker e Kubernetes — zero configuração.
+  Agente Go leve para servidores Linux que detecta ataques em tempo real e os bloqueia automaticamente — na entrada e na saída.<br>
+  Força bruta SSH, ataques web, bots, malware, ameaças DNS e de saída, integridade de arquivos, Docker — com padrões seguros, gerenciado a partir de um único painel.
 </p>
 
 <p align="center">
@@ -20,15 +23,13 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
   <a href="https://github.com/infrafence/infrafence-agent"><img src="https://img.shields.io/badge/Platform-Linux-orange?logo=linux&logoColor=white" alt="Platform"></a>
-  <a href="https://github.com/infrafence/infrafence-agent/pkgs/container/infrafence-agent"><img src="https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white" alt="Docker"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/infrafence/infrafence-agent"><img src="https://api.securityscorecards.dev/projects/github.com/infrafence/infrafence-agent/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 <p align="center">
   <a href="https://infrafence.com">Site</a> ·
-  <a href="https://infrafence.com/docs">Documentação</a> ·
-  <a href="https://infrafence.com/docs/installation">Guia de instalação</a> ·
   <a href="https://infrafence.com/pricing">Preços</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
   <a href="https://github.com/infrafence/infrafence-agent/issues">Issues</a>
 </p>
 
@@ -36,524 +37,265 @@
 
 ## O problema
 
-Assim que você coloca um VPS Linux novo no ar, a contagem já começa — bots automatizados o escaneiam, tentam força bruta em SSH e sondam exploits em questão de minutos, muitas vezes antes mesmo de você terminar a configuração inicial.
+Você sobe um novo VPS Linux e a contagem regressiva começa na hora — bots automatizados o escaneiam, tentam força bruta no SSH e procuram exploits em poucos minutos, muitas vezes antes de você terminar a configuração inicial.
 
-A maior parte dessa atividade passa despercebida. Ninguém está olhando os logs em tempo real enquanto isso acontece.
+A maior parte dessa atividade passa despercebida. Ninguém está olhando os logs enquanto acontece.
 
-O **fail2ban** só reage depois do fato e não te conta nada sobre o que aconteceu. O **CrowdSec** é capaz, mas exige um esforço real de configuração. As ferramentas enterprise que oferecem visibilidade e automação juntas começam em $20-200+ por host.
+As ferramentas clássicas reagem a linhas de log um servidor por vez e mostram pouco do que aconteceu. As suítes de segurança completas dão visibilidade e automação, mas exigem um trabalho real de configuração e custam mais por servidor.
 
-O InfraFence fica no meio do caminho: **instalação com um comando, tudo visível ao vivo em um dashboard, bloqueio automático — por €9/servidor**.
+O InfraFence fica no meio: **instale com um comando, acompanhe tudo ao vivo em um painel e deixe-o bloquear automaticamente — por 9 €/servidor**.
 
 ## Início rápido
 
+Crie um token de instalação no painel (Servidores → Adicionar servidor) e depois, no servidor, como root:
+
 ```bash
-# Linux (comando único)
-curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <SEU_TOKEN>
-
-# Docker
-docker run -d --name infrafence-agent --restart unless-stopped \
-  --network host --pid host \
-  -v /var/log:/var/log:ro \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro \
-  -e INFRAFENCE_TOKEN=<SEU_TOKEN> \
-  ghcr.io/infrafence/infrafence-agent:latest
-
-# Kubernetes (Helm)
-helm install infrafence-agent \
-  oci://ghcr.io/infrafence/charts/infrafence-agent \
-  --set config.organizationApiKey=<SUA_API_KEY> \
-  --namespace infrafence-system --create-namespace
+curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --token <YOUR_TOKEN>
 ```
+
+Quer ver antes o que ele faria? Adicione `--dry-run`: ele baixa o agente, verifica o servidor em modo somente leitura, mostra o plano e não altera nada.
 
 > **[Obtenha seu token em infrafence.com](https://infrafence.com)** — o plano gratuito inclui 1 servidor com proteção completa.
 
 ---
 
-## Por que InfraFence
-
-| | fail2ban | CrowdSec | BitNinja | **InfraFence** |
-|---|:---:|:---:|:---:|:---:|
-| Dashboard em tempo real | — | Pago ($2K+/ano) | Sim | **Sim** |
-| Instalação com um comando | — | — | Só cPanel | **Sim** |
-| Detecção SSH | Sim | Sim | Sim | **Sim (15 padrões)** |
-| Pontuação de risco de sessão SSH (comportamento pós-login) | — | — | — | **Sim** |
-| Web Application Firewall | — | Parcial | Sim | **Sim (15 tipos OWASP)** |
-| Gestão de bots | — | — | Sim | **Sim (70+ fingerprints)** |
-| Varredura de malware | — | — | Sim | **Sim (YARA + banco de hashes + quarentena)** |
-| Integridade de arquivos & monitoramento de persistência | — | — | Só núcleo do WP | **Sim (todo o sistema)** |
-| Reconhecimento de containers Docker | — | — | — | **Sim** |
-| Kubernetes / Helm | — | Sim | — | **Sim (DaemonSet)** |
-| Detecção de ameaças de saída (egress & DNS) | — | — | — | **Sim** |
-| Modo monitor (apenas detecção) | — | — | — | **Sim** |
-| Funciona em qualquer Linux | Sim | Sim | cPanel/Plesk | **Sim** |
-| Preço | Grátis | Grátis / $2K+ | €14-52/srv | **€9/srv** |
-
----
-
 ## O que ele detecta
 
-### SSH & força bruta
-15 padrões de detecção: senhas incorretas, usuários inválidos, falhas de PAM, varredura pré-autenticação, incompatibilidade de protocolo, quedas na negociação kex. Os padrões são sincronizados a partir do dashboard — ative/desative por servidor sem reiniciar o agente.
+### SSH e força bruta
+15 padrões de detecção no log do SSH: senhas erradas, usuários inexistentes, falhas de PAM, varreduras antes da autenticação, incompatibilidades de protocolo, trocas de chave interrompidas. Os atacantes são banidos no firewall por períodos progressivos — 24 horas, 7 dias, 30 dias e depois permanente — ou pela duração que você escolher no painel.
 
 ### Web Application Firewall
+Lê os logs de acesso dos seus servidores web e atribui uma pontuação a cada IP visitante:
 
 | Tipo de ataque | Pontuação | Modo |
 |---|:---:|---|
 | RCE / Web shell / Shellshock | +50 | Por pontuação |
-| User agent de scanner (sqlmap, nikto, nmap, nuclei...) | +50 | Por pontuação |
-| SQL injection / SSRF / Exploit web | +40 | Por pontuação |
-| Honeypot (caminhos isca definidos como regras personalizadas) | +40 | Por pontuação |
+| UA de scanner (sqlmap, nikto, nmap, nuclei…) | +50 | Por pontuação |
+| SQL injection / SSRF / Exploits web | +40 | Por pontuação |
+| Armadilha honeypot (caminhos isca definidos como regras personalizadas) | +40 | Por pontuação |
 | Path traversal / Header injection | +30 | Por pontuação |
-| Força bruta WordPress | +30 | Limite (10 req / 2 min) |
-| XSS / sondagem `.env` / XMLRPC | +25 | Por pontuação |
-| Sondagem de config / Padrão de scanner | +20 | Por pontuação |
-| Flood 404 | +15 | Limite (30 req / 5 min) |
+| Força bruta WordPress | +30 | Limite (10 requisições / 2 min) |
+| XSS / Busca por `.env` / XMLRPC | +25 | Por pontuação |
+| Busca por arquivos de configuração | +20 | Por pontuação |
+| Rajada de 404 | +15 | Limite (15 requisições / 5 min) |
 
-Cada detecção soma pontos a uma pontuação por IP. As pontuações decaem -5 pts/min. Níveis de ação: **observar** (30) → **conter** (60) → **bloquear 1h** (80) → **lista negra 24h** (100+). Pelo dashboard você vê todas as regras integradas, muda pesos, limites e modo por tipo, desativa padrões individuais e adiciona suas próprias regras (URL, User-Agent ou Referer, texto ou regex).
+A pontuação cai 5 pontos por minuto. Níveis de ação: **observar** (30) → **desacelerar** (60) → **bloquear** (80) → **ban no firewall** (100). No painel você vê cada regra embutida, altera pesos, limites e modo por tipo, desativa padrões individuais e adiciona regras próprias (URL, User-Agent ou Referer, texto ou regex). Cada release publica o catálogo de regras embutidas como `waf-catalog.json`.
 
 ### Gestão de bots
-70+ fingerprints de bots (motores de busca, crawlers de IA, ferramentas de SEO, scanners). Políticas por organização: **permitir** / **registrar** / **bloquear**. Bots bloqueados são rejeitados no nível do nginx/Apache — conexão encerrada antes de chegar à sua aplicação.
+Cerca de 1.500 bots conhecidos, a partir de listas públicas atualizadas diariamente ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), ambas MIT) — buscadores, crawlers de IA, ferramentas de SEO, scanners, monitoramento, prévias de links e outros. Bots falsos de buscadores são desmascarados pelo DNS reverso. Para cada categoria, ou bot individual, escolha no painel: **permitir**, **apenas registrar** ou **bloquear**. Bots bloqueados são banidos no firewall; se você permitir alterações no servidor web, também são recusados pelo nginx/Apache.
 
 ### Scanner de malware
-- **Varredura por assinatura** — 24 padrões integrados para webshells, backdoors, mineradores de cripto, kits de phishing
-- **Consulta de hash** — cada detecção inclui o SHA-256 do arquivo, que o dashboard pode verificar no MalwareBazaar
-- **Motor YARA** — cerca de 900 regras da comunidade relevantes para web do [YARA Forge](https://github.com/YARAHQ/yara-forge) (signature-base, ReversingLabs), atualizadas diariamente; apenas fontes cuja licença permite uso comercial. Usa a CLI yara se instalada (opcional)
-- **Detecção de framework** — detecta automaticamente Laravel, WordPress, Django, Symfony, CakePHP, CodeIgniter, Node/Express, Rails, Joomla, Drupal
-- **Verificações de segurança de framework** — exposição de .env, modo DEBUG, APP_KEY, permissões abertas demais, Telescope, wp-config
-- **Análise heurística** — detecção de entropia de Shannon, anomalias de timestamp em diretórios de upload
-- **Integridade do sistema** — `dpkg -V` / `rpm -Va` para binários modificados, indicadores de rootkit (ld.so.preload, processos ocultos, executáveis em /tmp)
-- **Varredura de credenciais** — arquivos .env expostos, permissões de chaves SSH, .git na raiz web, credenciais de provedores de nuvem
-- **Varredura de banco de dados WP** — scripts injetados em posts/opções, usuários admin fraudulentos
-- **Detecção de processos** — mineradores de cripto em execução, reverse shells, scripts suspeitos rodando de /tmp
-- **Pontuação de postura de segurança** — 0-100 (nota A-F) com detalhamento por categoria
-- **Quarentena** — move arquivos maliciosos para `/var/lib/infrafence/quarantine/` com possibilidade de restauração
-- **Varreduras agendadas** — frequência, horário e intensidade configuráveis pelo dashboard
-- **Watcher em tempo real** — verifica diretórios de upload a cada 30s em busca de novos arquivos PHP
-- **Prevenção de falsos positivos** — checksums do núcleo do WP, severidade contextual, allowlist de usuário com herd immunity entre redes
+- **Varredura por assinaturas** — 28 padrões embutidos para web shells, backdoors, mineradores de criptomoedas e kits de phishing
+- **Motor YARA** — regras da comunidade para ameaças web do [YARA Forge](https://github.com/YARAHQ/yara-forge), atualizadas diariamente, apenas de fontes cuja licença permite uso comercial (signature-base, ReversingLabs). Requer a ferramenta `yara`, instalável com um clique no painel
+- **Cada detecção** explica por que foi sinalizada, a gravidade e o SHA-256 do arquivo, com links para verificá-lo em bancos públicos de malware
+- **Reconhecimento de frameworks** — WordPress, Laravel, Django, Symfony, CakePHP, CodeIgniter, Node/Express, Rails, Joomla, Drupal
+- **Verificações de segurança dos frameworks** — `.env` exposto, modo DEBUG, APP_KEY, permissões abertas demais, Telescope, wp-config
+- **Heurísticas** — entropia de Shannon, anomalias de data em pastas de upload
+- **Integridade do sistema** — binários do sistema modificados (`dpkg -V` / `rpm -Va`), indicadores de rootkit
+- **Varredura de credenciais** — arquivos `.env` expostos, permissões de chaves SSH, `.git` na pasta web, credenciais de nuvem
+- **Varredura do banco WordPress** — scripts injetados em posts e opções, administradores não autorizados
+- **Detecção de processos** — mineradores em execução, reverse shells, scripts suspeitos a partir de `/tmp`
+- **Quarentena e ignorar** — com um clique, mova um arquivo malicioso para `/var/lib/infrafence/quarantine/` (restaurável) ou marque um falso positivo, que as próximas varreduras ignoram
+- **Varreduras agendadas** a cada 3, 6, 12 ou 24 horas, além de "Verificar agora" no painel
+- **Verificação em tempo real** — a cada 30 segundos verifica as pastas de upload em busca de novos arquivos PHP
 
-### WAF inline ModSecurity
-- **Detecta automaticamente** Apache + mod_security2 na inicialização (padrão em cPanel/WHM)
-- **14 regras estáticas** — SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, bloqueio de scanners
-- **Bloqueia na primeira requisição** — o ModSecurity intercepta antes de o tráfego chegar à sua aplicação
-- **Regras de ban de IP** — IPs banidos sincronizados do dashboard para o ModSecurity, bloqueio em nível HTTP
-- **Zero configuração** — escreve regras automaticamente, configura o Include, recarrega sem downtime
-- **Sem impacto** em servidores sem ModSecurity — usa bloqueio via iptables como alternativa
+### WAF inline ModSecurity (opcional)
+- Apenas se você permitir alterações no servidor web nas configurações do painel — desativado por padrão
+- Nunca em servidores cuja configuração é gerenciada por um painel de hospedagem ou ferramenta de gerência de configuração
+- Para Apache com mod_security2: 13 regras (SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, bloqueio de scanners), bloqueio na primeira requisição
+- Seguro: se o teste de configuração do Apache falhar, a alteração é desfeita
 
-### Detecção de ameaças de saída (egress & DNS)
-A maioria das ferramentas só observa o tráfego de *entrada*. O InfraFence também observa o que um host já comprometido faz na *saída* — a mesma threat feed usada para os bans de entrada (blocklists públicas de threat intelligence) também é verificada contra a atividade de saída:
-- **Correspondência de ameaças de saída (egress)** — sinaliza conexões de saída estabelecidas para qualquer IP presente na sua threat feed, capturando um host comprometido se comunicando com infraestrutura C2 que regras de firewall apenas de entrada nunca veem
-- **Monitoramento de resolvedores DNS** — sinaliza tráfego DNS de saída (UDP/53) para IPs da threat feed, para resolvedores fora do seu `/etc/resolv.conf` configurado, e "resolver hopping" (muitos resolvedores externos distintos em uma janela curta de tempo) — um sinal precoce de DNS tunneling
-- Baseado em polling, no mesmo ciclo dos outros monitores: captura de forma confiável tráfego *sustentado* — tunneling, beaconing repetido — não uma única consulta isolada
-- **Listas de threat intelligence** — baixadas por cada servidor diretamente dos editores uma vez por dia: redes sabidamente sequestradas, a lista de hosts comprometidos do Emerging Threats e as impressões de user agents de bots ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), ambas MIT). Requer HTTPS de saída para os editores (URLs em [`internal/intel/intel.go`](internal/intel/intel.go)). O bloqueio de entrada das redes listadas requer `ipset`; sem ele, as listas servem apenas para a detecção egress/DNS.
+### Ameaças de saída e DNS
+- **Conexões de saída** para IPs de listas públicas de threat intelligence, baixadas por cada servidor uma vez por dia (redes sabidamente sequestradas, a lista de hosts comprometidos da Emerging Threats)
+- **Inspeção DNS** — cada consulta e resposta DNS é lida no nível do pacote (UDP 53, somente leitura, com um filtro executado no kernel) e ligada ao programa que a fez: consultas a servidores DNS inesperados ou maliciosos, domínios que apontam para IPs maliciosos conhecidos, túneis DNS e malware que gera domínios aleatórios (DGA)
+- O serviço DNS do próprio servidor e as consultas de antivírus e antispam são reconhecidos e não sinalizados
+- O bloqueio de entrada das redes listadas vem desativado por padrão e é ativado no painel (requer `ipset`)
 
-### Integridade de arquivos & monitoramento de persistência
-Hashing SHA-256 de baseline com alerta instantâneo em caso de alteração, cobrindo tanto os alvos clássicos de "tripwire" quanto técnicas comuns de persistência:
+### Integridade de arquivos e persistência
+Hashes SHA-256 de referência, com alerta a cada alteração:
 - Arquivos centrais do sistema — `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers` (+ `sudoers.d/*`), `/etc/ssh/sshd_config`, `/etc/hosts`, `/etc/resolv.conf`
-- Persistência via tarefas agendadas — `/etc/crontab`, `/etc/cron.d/*`, e **crontabs por usuário** (`/var/spool/cron/crontabs/*` no Debian, `/var/spool/cron/*` no RHEL)
-- Persistência via SSH — `authorized_keys` do root e de todo usuário em `/home/*`
-- Pontos de rootkit / hijack — `/etc/ld.so.preload` (hijack clássico em userspace via LD_PRELOAD)
-- Persistência via systemd — `/etc/systemd/system/*.service` e `*.timer` (um substituto comum do cron para plantar persistência)
+- Tarefas agendadas — `/etc/crontab`, `/etc/cron.d/*`, crontabs de cada usuário
+- Persistência SSH — `authorized_keys` do root e de cada usuário em `/home/*`
+- `/etc/ld.so.preload` e unidades systemd (`/etc/systemd/system/*.service`, `*.timer`)
 
-### Pontuação de risco de sessões SSH
-Acompanha cada sessão SSH do login ao logout — método de autenticação, reputação do IP de origem, horário do login, comandos privilegiados (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — e atribui uma pontuação de 0 a 100 ao encerrar. **Correlação Sigma**: se qualquer outro detector (WAF, integridade, malware, varredura de portas, egress, DNS) disparar enquanto uma sessão está aberta, a pontuação de risco dessa sessão sobe — transformando sinais isolados de baixa confiança em um único alerta de alta confiança vinculado exatamente a quem estava logado naquele momento.
+### Risco das sessões SSH
+Acompanha cada sessão SSH do início ao fim — método de autenticação, reputação do IP de origem, horário de login, comandos privilegiados (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — e lhe dá uma pontuação de 0 a 100 ao fechar. **Correlação Sigma**: se outro detector (WAF, integridade, malware, varredura de portas, saída, DNS) disparar enquanto uma sessão está aberta, o risco dessa sessão sobe.
 
 ### E mais
-- **Proteção de Mail & FTP** — detecção de força bruta em Postfix, Dovecot, Pure-FTPD, MySQL
-- **Reconhecimento de Docker** — detecta automaticamente containers web, lê logs via bind mounts e volumes
-- **Bloqueio GeoIP** — bloqueia países inteiros pelo dashboard
-- **Propagação de bans na rede** — um ban em um servidor se aplica a todos os seus servidores
-- **Security scanner** — 30+ verificações de hardening com auto-remediação
-- **Varredura de vulnerabilidades** — correspondência de CVE via NVD + Exploit-DB, pontuação EPSS
-- **Modo monitor** — detecta ameaças sem bloquear (padrão para novos servidores)
-- **Métricas do sistema** — CPU, memória, disco reportados ao dashboard
-- **Addon cPanel/WHM** — integração nativa na barra lateral com auto-detecção de cPHulk e domlog
+- **E-mail, banco de dados e FTP** — detecção de força bruta para Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD e vsftpd
+- **Compatível com Docker** — encontra os logs dos containers web e protege as portas publicadas (`DOCKER-USER`)
+- **Bloqueio por país** no painel (requer `ipset`)
+- **Painéis de hospedagem reconhecidos** (24, por ex. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) e **LiteSpeed / OpenLiteSpeed** — o InfraFence nunca altera uma configuração gerenciada por um painel ou pelo LiteSpeed
+- **Modo monitor** — detecta tudo, não bloqueia nada
+- **Métricas do sistema** — CPU, memória, disco e rede
+
+---
+
+## Seguro em servidores de produção
+
+- **Verifica antes de alterar** — `infrafence-agent preflight` é uma verificação somente leitura do servidor (firewall e outras ferramentas de segurança, servidores web, painéis de hospedagem, gerência de configuração, operações de pacotes, recursos). O instalador a executa antes de alterar qualquer coisa; o agente, ao iniciar e diariamente.
+- **Padrões conservadores** — alterações no servidor web e bloqueio de entrada por listas de ameaças ficam desligados até você ativá-los; as atualizações automáticas podem ser configuradas para apenas notificar.
+- **Chains de firewall próprias** — cada regra fica nas chains `INFRAFENCE` do agente, chamadas a partir de `INPUT` (e `DOCKER-USER`), reconstruídas de forma atômica e restauradas automaticamente em até um minuto se outra ferramenta (ufw, firewalld, CSF) as remover. Suas regras existentes nunca são alteradas. IPs na whitelist são isentos, nunca liberados.
+- **Desinstalação limpa** — remove o agente e tudo o que ele adicionou: chains de firewall, alterações no servidor web, o serviço.
 
 ---
 
 ## Como funciona
 
 ```
-auth.log / logs de acesso web / logs Docker / logs ingress K8s
+SSH, web, mail, database and FTP logs · DNS packets · connections · files
     │
     ▼
-Auto-detecção de logs
-    │  nginx -T / apachectl -S / docker inspect / API K8s
-    │  Resolve bind mounts, volumes, symlinks
-    ▼
-Goroutines watcher
-    │  Detecta força bruta, SQLi, XSS, SSRF, path traversal, web shells...
-    ▼
-Motor de pontuação de bots (por IP, com decaimento)
+Detectors (per log line, per packet, periodic scans)
     │
-    ├─ < 30 pts  → observar (apenas log)
-    ├─ ≥ 30 pts  → conter
-    ├─ ≥ 80 pts  → bloquear 1h
-    └─ ≥ 100 pts → lista negra 24h
-            │
-            ▼
-    ipset add infrafence-bans <IP>
-            │  Usa iptables -I INPUT -s <IP> -j DROP como alternativa
-            │  ipset: 65K+ IPs  ·  fallback iptables: 500 (rotação FIFO)
-            │
-            ├──► POST /api/v1/agent/bans → dashboard
-            └──► WebSocket propaga o ban para todos os seus servidores
+    ▼
+Per-IP scoring (web) / thresholds (SSH, mail, DB, FTP)
+    │
+    ▼
+Ban → ipset "infrafence-bans" in the INFRAFENCE chain
+      (without ipset: one rule per IP in the chain, up to 500)
+    │
+    └──► event and ban reported to the dashboard (HTTPS)
+
+Dashboard changes (settings, bans, whitelist, rules, scans)
+    └──► pushed to the agent in about a second (real-time channel),
+         checked on every heartbeat (60 s), full sync every 5 minutes
 ```
 
-O agente **nunca bane** IPs reservados, os próprios IPs do seu servidor, ou o endpoint da API do InfraFence — mesmo que o backend envie uma regra incorreta.
+O agente **nunca bane** IPs reservados ou privados, os endereços do próprio servidor, o endereço do painel ou IPs na whitelist — mesmo que seja solicitado.
 
 ---
 
 ## Instalação
 
-### Linux (recomendado)
+### Linux
 
 ```bash
-curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <SEU_TOKEN>
+curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --token <YOUR_TOKEN>
 ```
 
-**Suportados:** Ubuntu 20+, Debian 11+, CentOS 7+, RHEL 8+, Rocky, Alma, Amazon Linux 2023, Fedora
-**Requer:** `iptables`, `systemd`, acesso root · **Recomendado:** `ipset` (aumenta a capacidade de ban para 65K+)
+| Opção | Efeito |
+|---|---|
+| `--dry-run` | Verifica o servidor e mostra o plano; não altera nada |
+| `--no-ipset` | Não instala o `ipset` (os bans continuam funcionando, até 500; o bloqueio por país e por listas de ameaças precisa dele) |
+| `--uninstall` | Remove o agente e tudo o que ele adicionou |
+
+**Requisitos:** x86-64 ou ARM64, acesso root, `iptables`; systemd, upstart ou sysvinit. O instalador usa `apt`, `dnf` ou `yum` para dependências ausentes e instala o `ipset` apenas quando a verificação do servidor diz que é seguro.
+
+**Testado até agora:** Ubuntu 24.04 (em produção) e Debian 12 (instalador e firewall, nos dois backends do iptables, com e sem ipset). Outras distribuições das famílias RHEL e Debian devem funcionar, mas ainda não foram verificadas — veja [Ainda não disponível](#ainda-não-disponível).
 
 ### Docker
 
 ```bash
 docker run -d --name infrafence-agent --restart unless-stopped \
-  --network host --pid host \
+  --privileged --network host --pid host \
   -v /var/log:/var/log:ro \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v infrafence-config:/etc/infrafence \
-  -e INFRAFENCE_TOKEN=<SEU_TOKEN> \
+  -e INFRAFENCE_TOKEN=<YOUR_TOKEN> \
   ghcr.io/infrafence/infrafence-agent:latest
 ```
 
-**Imagem:** `ghcr.io/infrafence/infrafence-agent` — multi-arch (amd64 + arm64), ~40MB
-
-<details>
-<summary>Docker Compose</summary>
-
-```yaml
-services:
-  infrafence-agent:
-    image: ghcr.io/infrafence/infrafence-agent:latest
-    container_name: infrafence-agent
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    pid: host
-    environment:
-      - INFRAFENCE_TOKEN=${INFRAFENCE_TOKEN}
-    volumes:
-      - /var/log:/var/log:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - infrafence-config:/etc/infrafence
-
-volumes:
-  infrafence-config:
-```
-
-```bash
-INFRAFENCE_TOKEN=<SEU_TOKEN> docker compose up -d infrafence-agent
-```
-
-</details>
-
-<details>
-<summary>Docker Swarm (serviço global)</summary>
-
-```bash
-# Armazene o token como um Docker secret
-echo "<SEU_TOKEN>" | docker secret create infrafence_token -
-
-# Implante 1 agente por nó
-docker stack deploy -c docker-compose.swarm.yml infrafence
-```
-
-Veja [docker-compose.swarm.yml](docker-compose.swarm.yml) para a definição completa da stack.
-
-</details>
-
-### Kubernetes (Helm)
-
-```bash
-helm install infrafence-agent \
-  oci://ghcr.io/infrafence/charts/infrafence-agent \
-  --set config.organizationApiKey=<SUA_API_KEY> \
-  --set config.serverUrl=https://infrafence.com \
-  --namespace infrafence-system --create-namespace
-```
-
-Implanta um **DaemonSet** — um agente por nó (incluindo control-plane). RBAC, tolerations e limites de recursos já pré-configurados.
-
-<details>
-<summary>values.yaml personalizado</summary>
-
-```yaml
-config:
-  organizationApiKey: "sua-api-key-da-organizacao"
-  serverUrl: "https://infrafence.com"
-  clusterName: "production"    # auto-detectado se omitido
-
-resources:
-  limits:
-    cpu: 100m
-    memory: 128Mi
-  requests:
-    cpu: 50m
-    memory: 64Mi
-
-tolerations:
-  - operator: Exists           # executa em todos os nós
-```
-
-```bash
-helm install infrafence-agent \
-  oci://ghcr.io/infrafence/charts/infrafence-agent \
-  -f values.yaml -n infrafence-system --create-namespace
-```
-
-</details>
-
-**Chart:** `oci://ghcr.io/infrafence/charts/infrafence-agent` · Imagens assinadas com [Cosign](https://github.com/sigstore/cosign) · Helm chart com procedência GPG
+Imagem multiarquitetura (amd64 + arm64) publicada a cada release. Um stack para Docker Swarm está em [docker-compose.swarm.yml](docker-compose.swarm.yml).
 
 ### Desinstalação
 
 ```bash
-curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --uninstall
+curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --uninstall
 ```
 
 ---
 
 ## Configuração
 
-<details>
-<summary><strong>Configuração de WAF por servidor</strong></summary>
+Quase tudo é configurado no painel e chega aos servidores em cerca de um segundo: limites de força bruta, duração dos bans, modo monitor, regras do WAF, escolhas de bots, whitelist, países bloqueados, agenda das varreduras de malware, inspeção DNS, alterações no servidor web, bloqueio por listas de ameaças, atualizações automáticas.
 
-Cada tipo de ataque pode ser configurado independentemente pelo dashboard (Server → Web Protection). As alterações sincronizam em até 60 segundos.
+No servidor:
 
-- **Ativar/desativar tipos** — desative regras irrelevantes para sua stack (ex.: `wp_bruteforce` em um servidor que não é WordPress)
-- **Modo apenas detecção** — registra eventos sem banir
-- **Limites personalizados** — sobrescreva os padrões de `wp_bruteforce`, `xmlrpc_abuse`, `scanner_detected`, `404_flood`
-- **Pesos de pontuação personalizados** — ajuste os pontos por tipo de detecção
+| Variável de ambiente | Efeito |
+|---|---|
+| `AUTH_LOG_PATH` | Log do SSH a ser lido (padrão: `/var/log/auth.log` ou `/var/log/secure`) |
+| `WEB_LOG_PATH` | Logs de acesso web, separados por vírgula (padrão: detectados a partir de nginx, Apache, LiteSpeed, painéis, Docker) |
+| `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Substituem os logs de e-mail, banco de dados e FTP detectados |
+| `MODSEC_AUDIT_LOG` | Log de auditoria do ModSecurity |
+| `GEOIP_DB_PATH` | Banco GeoIP de países |
+| `INFRAFENCE_CONFIG` | Arquivo de configuração do agente (padrão `/etc/infrafence/config.json`) |
 
-Configuração de WAF `null` → todos os 15 tipos ativos com limites padrão (totalmente retrocompatível).
+Defina-as com `sudo systemctl edit infrafence-agent` (`[Service]` → `Environment=...`) e reinicie o serviço.
 
-</details>
+**Labels do Docker** nos seus containers: `infrafence.monitor` (`true`/`false`), `infrafence.log-path` (caminhos no host), `infrafence.domain` (domínios).
 
-<details>
-<summary><strong>Labels do Docker</strong></summary>
-
-Configure o monitoramento por container via labels do Docker — sem precisar reiniciar o agente:
-
-```yaml
-services:
-  nginx:
-    image: nginx
-    labels:
-      infrafence.monitor: "true"
-      infrafence.log-path: "/var/log/nginx/access.log"
-      infrafence.domain: "example.com,api.example.com"
-    volumes:
-      - /var/log/nginx:/var/log/nginx
-```
-
-| Label | Valores | Efeito |
-|---|---|---|
-| `infrafence.monitor` | `true` / `false` | Força inclusão ou exclusão de um container |
-| `infrafence.log-path` | Caminho(s) no host, separados por vírgula | Caminho de log explícito (pula a auto-detecção) |
-| `infrafence.domain` | Domínio(s), separados por vírgula | Associa nomes de domínio aos logs |
-| `infrafence.waf` | `true` / `false` | Informativo (o WAF é controlado pelo painel) |
-
-**Prioridade**: label `infrafence.log-path` > auto-detecção `nginx -T` > varredura de bind-mount > `docker logs`.
-
-</details>
-
-<details>
-<summary><strong>Sobrescrever manualmente o caminho dos logs</strong></summary>
-
-Se a auto-detecção não encontrar seus logs, defina `WEB_LOG_PATH`:
-
-```bash
-sudo systemctl edit infrafence-agent
-```
-
-```ini
-[Service]
-Environment="WEB_LOG_PATH=/var/log/httpd/access_log,/var/log/nginx/custom.log"
-```
-
-```bash
-sudo systemctl restart infrafence-agent
-```
-
-</details>
-
-<details>
-<summary><strong>Variáveis de ambiente</strong></summary>
-
-Armazenadas em `/etc/infrafence/agent.conf`:
-
-| Variável | Descrição | Padrão |
-|---|---|---|
-| `INFRAFENCE_TOKEN` | Token de autenticação do agente | *(do registro)* |
-| `INFRAFENCE_SERVER` | URL do servidor do painel | `https://infrafence.com` |
-| `INFRAFENCE_LOG_PATH` | Caminho do arquivo de auth log | *(auto-detectado)* |
-| `INFRAFENCE_HEARTBEAT` | Intervalo de heartbeat (segundos) | `30` |
-| `INFRAFENCE_BAN_THRESHOLD` | Tentativas falhas antes do ban | `5` |
-| `INFRAFENCE_WS_ENABLED` | Habilita WebSocket | `true` |
-| `INFRAFENCE_GEOIP_ENABLED` | Habilita consultas GeoIP | `true` |
-| `WEB_LOG_PATH` | Sobrescreve os caminhos dos logs web | *(auto-detectado)* |
-
-</details>
+**Comandos:** `infrafence-agent preflight [--json]` (verificação do servidor somente leitura), `infrafence-agent check`, `infrafence-agent uninstall --clean`.
 
 ---
 
-## Solução de problemas
+## Ainda não disponível
 
-<details>
-<summary><code>"Peer's Certificate issuer is not recognized"</code> durante a instalação</summary>
+Lista honesta do que ainda não existe:
 
-Afeta CentOS 7, RHEL 7 e sistemas com `ca-certificates` desatualizados:
+- **Kubernetes** — o chart Helm e o DaemonSet existem, mas o painel ainda não registra agentes de um cluster
+- **Propagação de bans** — um ban vale no servidor que o detectou, ainda não em todos os seus servidores
+- **Verificações de hardening e varredura de CVE** — o código está no agente, mas o painel ainda não consegue acioná-las
+- **Pontuação de segurança** (0-100) — calculada pelo agente, ainda não exibida no painel
+- **Padrões de detecção SSH por servidor** a partir do painel
+- **Bans de IP no ModSecurity** sincronizados a partir do painel
+- **Logs apenas no journald** — a detecção de SSH requer `/var/log/auth.log` ou `/var/log/secure`; servidores sem rsyslog (Debian 12+ minimal, Fedora) ainda não são cobertos
+- **Mais distribuições verificadas** (Rocky, AlmaLinux, CentOS Stream, Fedora, Amazon Linux)
 
-```bash
-curl -sk https://letsencrypt.org/certs/isrgrootx1.pem -o /tmp/isrg.pem
-export CURL_CA_BUNDLE=/tmp/isrg.pem
-curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <SEU_TOKEN>
-```
-
-</details>
-
-<details>
-<summary>O agente mostra <code>203/EXEC</code> — o serviço não inicia</summary>
-
-Binário ausente ou corrompido. Restaure do backup:
-
-```bash
-cp /usr/local/bin/infrafence-agent.bak /usr/local/bin/infrafence-agent
-chmod 755 /usr/local/bin/infrafence-agent
-systemctl reset-failed infrafence-agent && systemctl start infrafence-agent
-```
-
-Se aparecer `start-limit-hit`:
-
-```bash
-systemctl reset-failed infrafence-agent
-systemctl start infrafence-agent
-```
-
-</details>
-
-<details>
-<summary>O WAF não está detectando ataques</summary>
-
-Verifique quais logs o agente está monitorando:
-
-```bash
-journalctl -u infrafence-agent | grep webwatcher
-```
-
-Se nenhum log for encontrado: os logs do seu servidor web precisam estar acessíveis no host. Para servidores web em Docker, monte o diretório de logs:
-
-```yaml
-volumes:
-  - /var/log/nginx:/var/log/nginx
-```
-
-</details>
-
-Mais soluções de problemas em [infrafence.com/docs/troubleshooting](https://infrafence.com/docs/troubleshooting).
+Estamos trabalhando nisso; o [changelog](CHANGELOG.md) informa quando chegam.
 
 ---
 
 ## Arquitetura
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    InfraFence Cloud                        │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────┐  │
-│  │ Dashboard │  │ REST API │  │ WebSocket│  │ Threat │  │
-│  │  (Vue 3) │  │ (Laravel)│  │ (Reverb) │  │  Intel │  │
-│  └──────────┘  └──────────┘  └──────────┘  └────────┘  │
-└───────────────────────┬─────────────────────────────────┘
-                        │ HTTPS + WSS
+┌──────────────────────────────────────────────┐
+│              InfraFence dashboard             │
+│   web app + API · Postgres · real-time push   │
+└───────────────────────┬──────────────────────┘
+                        │ HTTPS (agent → dashboard)
+                        │ real-time channel (dashboard → agent)
         ┌───────────────┼───────────────┐
         ▼               ▼               ▼
-   ┌─────────┐    ┌─────────┐    ┌─────────────┐
-   │ Agente  │    │ Agente  │    │Agente (K8s) │
-   │  (VPS)  │    │(Docker) │    │ (DaemonSet) │
-   └─────────┘    └─────────┘    └─────────────┘
-   SSH + WAF      SSH + WAF +     WAF no Ingress +
-   + GeoIP        Detecção Docker Eventos de pod +
-   + Métricas     + Inventário    auditoria de API
-                  de containers
+   ┌─────────┐    ┌─────────┐    ┌─────────┐
+   │  Agent  │    │  Agent  │    │  Agent  │
+   │  (VPS)  │    │ (Docker)│    │  (...)  │
+   └─────────┘    └─────────┘    └─────────┘
 ```
 
-O agente é um único binário Go estático (~12MB). Sem dependências, sem runtime, sem desperdício. Roda como serviço `systemd`, container Docker, ou DaemonSet Kubernetes.
-
-**Uso de recursos:** <1% CPU, <30MB RAM em um servidor típico.
+O agente é um único binário Go estático (~9 MB, sem dependências), executado como serviço systemd (ou upstart/sysvinit) ou como container Docker. No servidor de demonstração usa cerca de 25 MB de memória e menos de 1% de CPU.
 
 ---
 
-## Changelog
-
-Veja [CHANGELOG.md](CHANGELOG.md) para o histórico completo de versões.
-
-Destaques recentes:
-
-| Versão | Destaque |
-|---|---|
-| v1.0.0 | Primeiro release oficial do InfraFence — correlação Sigma para risco de sessão, detecção de ameaças egress/DNS, monitoramento de persistência estendido, releases assinados |
-| v0.9.80+ | Suporte a DaemonSet Kubernetes, Helm chart, WAF no ingress |
-| v0.9.63 | Serviço global Docker Swarm, Docker secrets |
-| v0.9.62 | Labels do Docker (`infrafence.monitor`, `infrafence.log-path`, `infrafence.domain`) |
-| v0.9.50+ | Motor de pontuação WAF cumulativa por IP com pesos configuráveis |
-| v0.9.44 | Regras de detecção dinâmicas a partir do dashboard (padrões SSH por servidor) |
-| v0.9.42 | Modo monitor (detecção sem bloqueio) |
-| v0.9.40 | Gestão de bots com políticas allow/log/block |
-| v0.9.33 | Backend de firewall ipset (capacidade de ban 65K+) |
-| v0.9.27 | Security scanner (30+ verificações de hardening) |
-| v0.9.20 | Detecção de containers Docker e descoberta de logs |
-| v0.9.0 | WAF inicial: 15 tipos de ataque OWASP |
-
----
-
-## Segurança & confiança
-
-Rodar este agente significa conceder a ele acesso privilegiado ao seu servidor — é um pedido sério, e não o levamos de ânimo leve. Veja exatamente o que sustenta essa confiança em produção:
+## Segurança e confiança
 
 | | Detalhe |
 |---|---|
-| **Código aberto** | Cada linha de código tem licença MIT. Audite antes de instalar. |
-| **Footprint mínimo** | Lê auth logs e logs de acesso web. Sem acesso ao código da aplicação, bancos de dados, variáveis de ambiente, chaves SSH ou dados de usuário. |
-| **Chain de firewall dedicada** | Usa sua própria chain do iptables chamada `INFRAFENCE` — suas regras existentes nunca são modificadas. |
-| **Transparência de dados** | Apenas metadados de ataques são enviados ao seu dashboard (IP do atacante, tipo, timestamp). Os logs brutos nunca saem do seu servidor. Sem telemetria, sem compartilhamento com terceiros. |
-| **Binários assinados** | Cada release é compilada pelo GitHub Actions CI com assinaturas [Cosign](https://github.com/sigstore/cosign) e [atestado de procedência do build](https://github.com/infrafence/infrafence-agent/attestations). |
-| **Modo monitor** | Comece em modo apenas detecção — veja tudo, bloqueie nada. Ative a proteção quando estiver pronto. |
-| **Desinstalação limpa** | `curl -fsSL https://infrafence.com/install.sh \| sudo bash -s -- --uninstall` — remove binário, configuração e chain de firewall. Sem alterações residuais. |
+| **Código aberto** | O agente tem licença MIT. Revise cada linha antes de instalar. |
+| **O que ele lê** | Logs do sistema e do servidor web, os arquivos dos sites para a varredura de malware (incluindo `.env` e arquivos de configuração), posts e usuários do WordPress para a varredura WordPress, e o tráfego DNS e as conexões de rede do servidor. |
+| **O que ele envia** | Apenas eventos de segurança: IP do atacante, tipo, horário e os detalhes necessários para entendê-los — para um ataque web, a linha de log que o disparou; para um malware, o caminho do arquivo e o texto encontrado. Logs e arquivos completos nunca saem do seu servidor. Sem telemetria, sem compartilhamento com terceiros. |
+| **Firewall** | Suas próprias chains `INFRAFENCE`; suas regras existentes nunca são alteradas. |
+| **Binários assinados** | Cada release é compilado pelo GitHub Actions com assinaturas [Cosign](https://github.com/sigstore/cosign) e [atestado de proveniência](https://github.com/infrafence/infrafence-agent/attestations). |
+| **Desinstalação limpa** | `install.sh --uninstall` remove o agente e tudo o que ele adicionou. |
 
-Detalhes completos em [SECURITY.md](SECURITY.md) e em [infrafence.com/docs/trust](https://infrafence.com/docs/trust).
+Detalhes em [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Contribuindo
 
-Contribuições são bem-vindas. [Abra uma issue](https://github.com/infrafence/infrafence-agent/issues) antes de enviar mudanças grandes.
+Contribuições são bem-vindas. [Abra uma issue](https://github.com/infrafence/infrafence-agent/issues) antes de mudanças grandes.
 
 ```bash
-# Build
 go build -o infrafence-agent ./cmd/infrafence-agent
-
-# Executar localmente
-./infrafence-agent start
+go test ./...
+bash scripts/firewall-integration.sh   # real firewall tests in Docker
 ```
-
----
 
 ## Licença
 
-[MIT](LICENSE) — use como quiser.
-
----
+[MIT](LICENSE)
 
 <p align="center">
-  <a href="https://infrafence.com">infrafence.com</a> · Operações de Segurança em Tempo Real
+  <a href="https://infrafence.com">infrafence.com</a>
 </p>
