@@ -140,7 +140,7 @@ Cada detecção soma pontos a uma pontuação por IP. As pontuações decaem -5 
 - **Sem impacto** em servidores sem ModSecurity — usa bloqueio via iptables como alternativa
 
 ### Detecção de ameaças de saída (egress & DNS)
-A maioria das ferramentas só observa o tráfego de *entrada*. O InfraFence também observa o que um host já comprometido faz na *saída* — a mesma threat feed usada para os bans de entrada (Spamhaus DROP, Feodo Tracker e outras) também é verificada contra a atividade de saída:
+A maioria das ferramentas só observa o tráfego de *entrada*. O InfraFence também observa o que um host já comprometido faz na *saída* — a mesma threat feed usada para os bans de entrada (blocklists públicas de threat intelligence) também é verificada contra a atividade de saída:
 - **Correspondência de ameaças de saída (egress)** — sinaliza conexões de saída estabelecidas para qualquer IP presente na sua threat feed, capturando um host comprometido se comunicando com infraestrutura C2 que regras de firewall apenas de entrada nunca veem
 - **Monitoramento de resolvedores DNS** — sinaliza tráfego DNS de saída (UDP/53) para IPs da threat feed, para resolvedores fora do seu `/etc/resolv.conf` configurado, e "resolver hopping" (muitos resolvedores externos distintos em uma janela curta de tempo) — um sinal precoce de DNS tunneling
 - Baseado em polling, no mesmo ciclo dos outros monitores: captura de forma confiável tráfego *sustentado* — tunneling, beaconing repetido — não uma única consulta isolada

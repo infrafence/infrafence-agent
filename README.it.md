@@ -140,7 +140,7 @@ Ogni rilevamento aggiunge punti a un punteggio per-IP. I punteggi decadono di -5
 - **Nessun impatto** sui server senza ModSecurity — ripiega sul blocco via iptables
 
 ### Rilevamento minacce in uscita (egress & DNS)
-La maggior parte degli strumenti guarda solo il traffico in *entrata*. InfraFence osserva anche cosa fa un host già compromesso in *uscita* — la stessa threat feed usata per i ban in entrata (Spamhaus DROP, Feodo Tracker e altre) viene verificata anche sul traffico in uscita:
+La maggior parte degli strumenti guarda solo il traffico in *entrata*. InfraFence osserva anche cosa fa un host già compromesso in *uscita* — la stessa threat feed usata per i ban in entrata (blocklist pubbliche di threat intelligence) viene verificata anche sul traffico in uscita:
 - **Egress threat matching** — segnala connessioni in uscita stabilite verso qualsiasi IP presente nella threat feed, individuando un host compromesso che comunica con infrastrutture C2 che le regole firewall solo-inbound non vedono
 - **Monitoraggio resolver DNS** — segnala traffico DNS in uscita (UDP/53) verso IP della threat feed, verso resolver esterni al tuo `/etc/resolv.conf` configurato, e "resolver hopping" (molti resolver esterni distinti in una finestra breve) — un segnale precoce di DNS tunneling
 - Basato su polling, sullo stesso ciclo degli altri monitor: intercetta in modo affidabile il traffico *sostenuto* — tunneling, beaconing ripetuto — non una singola query occasionale
