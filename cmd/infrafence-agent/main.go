@@ -30,6 +30,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/malware"
 	"github.com/infrafence/infrafence-agent/internal/modsecurity"
 	"github.com/infrafence/infrafence-agent/internal/monitor"
+	"github.com/infrafence/infrafence-agent/internal/preflight"
 	"github.com/infrafence/infrafence-agent/internal/scanner"
 	"github.com/infrafence/infrafence-agent/internal/session"
 	"github.com/infrafence/infrafence-agent/internal/updater"
@@ -72,6 +73,12 @@ func main() {
 	case "start":
 		runAgent()
 
+	case "preflight":
+		cmdPreflight(os.Args[2:])
+
+	case "uninstall":
+		cmdUninstall(os.Args[2:])
+
 	case "check":
 		// Pre-flight self-test used by the auto-updater to verify the binary
 		// works before restarting the service. Exits 0 on success.
@@ -89,6 +96,8 @@ func printUsage() {
 	fmt.Println("  infrafence-agent register <server_url> <agent_name> <install_token>")
 	fmt.Println("  infrafence-agent start")
 	fmt.Println("  infrafence-agent check")
+	fmt.Println("  infrafence-agent preflight [--json]   read-only host compatibility scan")
+	fmt.Println("  infrafence-agent uninstall --clean    remove every change InfraFence made to this host")
 }
 
 // runRegister performs first-boot registration and saves the config.
@@ -187,23 +196,15 @@ func runAgent() {
 		firewall.AddProtectedIPs(selfIP)
 	}
 
+	// Read-only host scan first: decides what the agent may change here.
+	startupPreflight(apiClient)
+
 	// Initialize firewall backend (detects ipset, falls back to iptables)
 	firewall.Init()
 
-	// Initialize ModSecurity engine (auto-detects if Apache + mod_security installed)
+	// ModSecurity is only detected here; its rules are installed from the
+	// sync, and only if web server changes are allowed (see hostpolicy.go).
 	modsecEngine = modsecurity.New()
-	if modsecEngine.IsAvailable() {
-		if err := modsecEngine.Setup(); err != nil {
-			log.Printf("[modsec] setup failed: %v", err)
-		} else if err := apiClient.ReportEvents([]api.EventRequest{{
-			Type:       "modsecurity_enabled",
-			Severity:   "info",
-			Details:    map[string]string{"status": "active"},
-			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}}); err != nil {
-			log.Printf("[modsec] failed to report modsecurity_enabled: %v", err)
-		}
-	}
 
 	// Shared dedup: ModSecurity audit log events suppress duplicate WAF log-based events
 	modsecDedup := modsecurity.NewDedup(30 * time.Second)
@@ -461,30 +462,8 @@ func runAgent() {
 	cpName, cpVersion := detectControlPanel()
 	panelDomains := collectPanelDomains(cpName)
 
-	// Setup UA blocking at web server level (runs once; no-op if sentinel exists)
-	uaReport := func(eventType, severity string, details map[string]string) {
-		if err := apiClient.ReportEvents([]api.EventRequest{{
-			Type:       eventType,
-			Severity:   severity,
-			Details:    details,
-			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-		}}); err != nil {
-			log.Printf("[ua-block] failed to report %s: %v", eventType, err)
-		}
-	}
-	if wsName == "nginx" {
-		go func() {
-			if err := webserver.SetupNginxUABlock(uaReport); err != nil {
-				log.Printf("[ua-block] nginx setup error: %v", err)
-			}
-		}()
-	} else if wsName == "apache" {
-		go func() {
-			if err := webserver.SetupApacheUABlock(uaReport); err != nil {
-				log.Printf("[ua-block] apache setup error: %v", err)
-			}
-		}()
-	}
+	// Web-server UA blocking is set up from the sync, only when allowed
+	// (dashboard setting + preflight), see applyWebserverChanges.
 
 	// Start mail log watcher (if Postfix/Dovecot detected)
 	var mailW *watcher.MailWatcher
@@ -796,7 +775,7 @@ func runAgent() {
 				return
 			}
 			if resp.LatestAgentVersion != nil && resp.AgentDownloadBaseURL != nil {
-				updater.CheckAndUpdate(version, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
+				maybeUpdate(apiClient, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
 			}
 		},
 		OnMalwareScanRequested: func(p ws.MalwareScanRequestedPayload) {
@@ -940,7 +919,7 @@ func runAgent() {
 
 			// Check for agent update
 			if resp.LatestAgentVersion != nil && resp.AgentDownloadBaseURL != nil {
-				go updater.CheckAndUpdate(version, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
+				go maybeUpdate(apiClient, *resp.LatestAgentVersion, *resp.AgentDownloadBaseURL, reportUpdateEvent)
 			}
 
 			// Pick up real-time push once the server reports it, without
@@ -1011,7 +990,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		}
 		// Still check for agent updates so the agent can be updated while suspended
 		if sync.AgentUpdate != nil && sync.AgentUpdate.LatestVersion != "" {
-			go updater.CheckAndUpdate(version, sync.AgentUpdate.LatestVersion, sync.AgentUpdate.DownloadBaseURL, reportUpdateEvent)
+			go maybeUpdate(client, sync.AgentUpdate.LatestVersion, sync.AgentUpdate.DownloadBaseURL, reportUpdateEvent)
 		}
 		return nil
 	}
@@ -1130,6 +1109,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 
 	// Threat intel: lists the agent downloads itself (internal/intel) plus any
 	// the dashboard sends. Re-applied only when one of its inputs changes.
+	applyHostSettings(sync.Config.MonitorConfig)
 	intelState.Lock()
 	intelState.monitorMode = sync.Config.MonitorMode
 	intelState.whitelist = append(append([]string{}, wlIPs...), wlCIDRs...)
@@ -1197,40 +1177,16 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		webW.UpdateWafRules(rules)
 	}
 
-	// Update web server UA blocklist (fingerprints with action=block)
-	if wsType != "" && len(sync.BotFingerprints) > 0 {
+	// Web server changes (ModSecurity rules, UA blocking for bots with a
+	// "block" action) happen only when allowed — see hostpolicy.go.
+	if wsType != "" {
 		var uaFps []webserver.UAFingerprint
 		for _, fp := range sync.BotFingerprints {
 			if fp.Action == "block" {
-				uaFps = append(uaFps, webserver.UAFingerprint{
-					Pattern: fp.Pattern,
-					IsRegex: fp.IsRegex,
-				})
+				uaFps = append(uaFps, webserver.UAFingerprint{Pattern: fp.Pattern, IsRegex: fp.IsRegex})
 			}
 		}
-		uaReport := func(eventType, severity string, details map[string]string) {
-			if err := client.ReportEvents([]api.EventRequest{{
-				Type:       eventType,
-				Severity:   severity,
-				Details:    details,
-				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}}); err != nil {
-				log.Printf("[ua-block] failed to report %s: %v", eventType, err)
-			}
-		}
-		if wsType == "nginx" {
-			go func(fps []webserver.UAFingerprint) {
-				if err := webserver.UpdateNginxUABlocklist(fps, uaReport); err != nil {
-					log.Printf("[ua-block] nginx update error: %v", err)
-				}
-			}(uaFps)
-		} else if wsType == "apache" {
-			go func(fps []webserver.UAFingerprint) {
-				if err := webserver.UpdateApacheUABlock(fps, uaReport); err != nil {
-					log.Printf("[ua-block] apache update error: %v", err)
-				}
-			}(uaFps)
-		}
+		go applyWebserverChanges(client, wsType, uaFps)
 	}
 
 	// Apply dynamic malware signatures from backend
@@ -1429,7 +1385,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 
 	// Check for agent update from sync response
 	if sync.AgentUpdate != nil && sync.AgentUpdate.LatestVersion != "" {
-		go updater.CheckAndUpdate(version, sync.AgentUpdate.LatestVersion, sync.AgentUpdate.DownloadBaseURL, reportUpdateEvent)
+		go maybeUpdate(client, sync.AgentUpdate.LatestVersion, sync.AgentUpdate.DownloadBaseURL, reportUpdateEvent)
 	}
 
 	return nil
@@ -1705,7 +1661,13 @@ func trimQuotes(s string) string {
 // detectWebServerInfo detects the installed web server and its version.
 // Runs once at startup — executes "nginx -v" or "apache2 -v" a single time.
 func detectWebServerInfo() (name, version string) {
-	// Try Nginx first
+	// LiteSpeed first: the Enterprise edition keeps Apache's httpd binary for
+	// its configuration, so finding httpd doesn't mean Apache serves the sites.
+	if ls := preflight.DetectLiteSpeed(); ls.Running {
+		return ls.Name(), ls.Version
+	}
+
+	// Try Nginx
 	if path, err := exec.LookPath("nginx"); err == nil && path != "" {
 		out, err := exec.Command("nginx", "-v").CombinedOutput()
 		if err == nil {
@@ -2032,6 +1994,7 @@ func loadThreatFeedCache() []api.ThreatEntry {
 var intelState struct {
 	sync.Mutex
 	monitorMode   bool
+	blockInbound  bool // dashboard setting; off = threat feeds are detection-only
 	whitelist     []string
 	dashboardFeed []api.ThreatEntry
 	downloaded    []api.ThreatEntry
@@ -2049,17 +2012,21 @@ func applyThreatIntel() {
 	defer intelState.Unlock()
 
 	all := append(append([]api.ThreatEntry{}, intelState.downloaded...), intelState.dashboardFeed...)
-	key := fmt.Sprintf("%d|%d|%v|%s", len(intelState.downloaded), len(intelState.dashboardFeed),
-		intelState.monitorMode, strings.Join(intelState.whitelist, ","))
+	key := fmt.Sprintf("%d|%d|%v|%v|%s", len(intelState.downloaded), len(intelState.dashboardFeed),
+		intelState.monitorMode, intelState.blockInbound, strings.Join(intelState.whitelist, ","))
 	if key == intelState.appliedKey {
 		return
 	}
 	intelState.appliedKey = key
 
 	threatFeedIndex.Update(all)
-	if intelState.monitorMode {
+	if intelState.monitorMode || !intelState.blockInbound {
 		firewall.ClearThreatSet()
-		log.Printf("[threat-feed] %d entries loaded for detection (monitor mode: not blocking)", len(all))
+		why := "inbound blocking is off in dashboard settings"
+		if intelState.monitorMode {
+			why = "monitor mode"
+		}
+		log.Printf("[threat-feed] %d entries loaded for egress/DNS detection (%s)", len(all), why)
 		return
 	}
 	var nets []string
@@ -2484,3 +2451,5 @@ func runFirewallGuard(client *api.Client) {
 		}
 	}
 }
+
+func modsecurityRemove() error { return modsecurity.New().Remove() }
