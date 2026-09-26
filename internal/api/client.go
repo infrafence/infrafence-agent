@@ -222,6 +222,18 @@ type HeartbeatResponse struct {
 	// Agents that registered before it existed (or before it was enabled)
 	// pick it up here instead of needing --force-register.
 	Reverb *ReverbConfig `json:"reverb,omitempty"`
+	// ConfigVersion changes whenever the dashboard changes something this
+	// agent syncs (settings, whitelist, bans, rules, requests).
+	ConfigVersion string `json:"config_version,omitempty"`
+	// Realtime is the push channel that signals those changes immediately.
+	Realtime *RealtimeConfig `json:"realtime,omitempty"`
+}
+
+// RealtimeConfig is a Supabase Realtime channel for "config changed" signals.
+type RealtimeConfig struct {
+	URL   string `json:"url"`
+	Key   string `json:"key"`
+	Topic string `json:"topic"`
 }
 
 // BanRequest reports a newly banned IP to the server.
