@@ -65,3 +65,26 @@ func TestMergeBotsSkipsCoveredAICrawlers(t *testing.T) {
 		t.Errorf("added AI crawler: %+v", got[1])
 	}
 }
+
+func TestSlugOf(t *testing.T) {
+	// The dashboard derives the same slugs (src/lib/bot-catalog.ts); bot
+	// settings are keyed by them.
+	for pattern, want := range map[string]string{
+		`Googlebot\/`:         "googlebot",
+		`[cC]laude[bB]ot`:     "claudebot",
+		`[Cc]urebot`:          "curebot",
+		`[cC]ludo`:            "cludo",
+		`CC Metadata Scaper`:  "cc",
+		`S[eE][mM]rushBot`:    "semrushbot",
+		`[wW]get`:             "wget",
+		`[pP]ingdom`:          "pingdom",
+		`^BW\/`:               "bw",
+		`[0-9]{3}bot`:         "0-9",
+		`Slurp`:               "yahoo-slurp",
+		`facebookexternalhit`: "facebookbot",
+	} {
+		if got := slugOf(pattern); got != want {
+			t.Errorf("slugOf(%q) = %q, want %q", pattern, got, want)
+		}
+	}
+}
