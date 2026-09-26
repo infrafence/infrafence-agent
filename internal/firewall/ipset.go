@@ -88,35 +88,6 @@ func populateIpsetBatch(setName string, cidrs []string) error {
 	return nil
 }
 
-// addIptablesIpsetRule adds an iptables rule that matches traffic from an ipset set.
-// Uses -A (append) so protected IP ACCEPT rules (inserted with -I at position 1) always come first.
-func addIptablesIpsetRule(setName string) error {
-	// Check if rule already exists
-	if exec.Command("iptables", "-C", "INPUT",
-		"-m", "set", "--match-set", setName, "src", "-j", "DROP").Run() == nil {
-		return nil // already exists
-	}
-
-	out, err := exec.Command("iptables", "-A", "INPUT",
-		"-m", "set", "--match-set", setName, "src", "-j", "DROP").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("iptables add ipset rule for %s: %s (%w)",
-			setName, strings.TrimSpace(string(out)), err)
-	}
-	return nil
-}
-
-// removeIptablesIpsetRule removes the iptables rule referencing an ipset set.
-func removeIptablesIpsetRule(setName string) error {
-	out, err := exec.Command("iptables", "-D", "INPUT",
-		"-m", "set", "--match-set", setName, "src", "-j", "DROP").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("iptables remove ipset rule for %s: %s (%w)",
-			setName, strings.TrimSpace(string(out)), err)
-	}
-	return nil
-}
-
 // createIpsetHashIP creates an ipset hash:ip set for individual IP bans.
 func createIpsetHashIP(name string) error {
 	out, err := exec.Command("ipset", "create", name, "hash:ip",
