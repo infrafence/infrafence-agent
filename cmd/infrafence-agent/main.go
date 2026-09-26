@@ -1258,6 +1258,18 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 				log.Printf("[yara] failed to report yara_installed: %v", err)
 			}
 		}()
+	} else if sync.YaraInstallRequested {
+		// Already installed: still acknowledge, or the dashboard's request
+		// flag (cleared on yara_installed) stays set forever.
+		log.Printf("[yara] install requested but already available — acknowledging")
+		if err := client.ReportEvents([]api.EventRequest{{
+			Type:       "yara_installed",
+			Severity:   "info",
+			Details:    map[string]string{"status": "already_installed"},
+			OccurredAt: time.Now().UTC().Format(time.RFC3339),
+		}}); err != nil {
+			log.Printf("[yara] failed to report yara_installed: %v", err)
+		}
 	}
 
 	// Apply YARA rules from backend
