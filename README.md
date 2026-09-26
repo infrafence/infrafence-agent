@@ -144,6 +144,7 @@ Most tools only watch traffic coming *in*. InfraFence also watches what an alrea
 - **Egress threat matching** — flags established outbound connections to any IP on your threat feed, catching a compromised host beaconing out to C2 infrastructure that inbound-only firewall rules never see
 - **DNS resolver monitoring** — flags outbound DNS traffic (UDP/53) to threat-feed IPs, to resolvers outside your configured `/etc/resolv.conf`, and to "resolver hopping" (many distinct external resolvers in a short window) — an early signal of DNS tunneling
 - Poll-based on the same cycle as the other monitors: reliably catches *sustained* traffic — tunneling, repeated beaconing — rather than a single one-off query
+- **Threat intelligence lists** — downloaded by each server directly from the publishers once a day: known-hijacked netblocks, the Emerging Threats compromised-hosts list, and bot user-agent fingerprints ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), both MIT). Needs outbound HTTPS to the publishers (URLs in [`internal/intel/intel.go`](internal/intel/intel.go)). Inbound blocking of listed networks needs `ipset`; without it the lists are used for egress/DNS detection only.
 
 ### File integrity & persistence monitoring
 SHA-256 baseline hashing with instant alerts on change, covering both classic tripwire targets and common persistence techniques:
