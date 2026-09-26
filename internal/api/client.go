@@ -557,6 +557,13 @@ type MalwareScanFinding struct {
 	MatchText   string `json:"match_text"`
 	Domain      string `json:"domain,omitempty"`
 	Framework   string `json:"framework,omitempty"`
+	FileSHA256  string `json:"file_hash,omitempty"`
+
+	RuleDescription string `json:"rule_description,omitempty"`
+	RuleAuthor      string `json:"rule_author,omitempty"`
+	RuleReference   string `json:"rule_reference,omitempty"`
+	RuleSource      string `json:"rule_source,omitempty"`
+	RuleLicense     string `json:"rule_license,omitempty"`
 }
 
 type MalwareFrameworkIssue struct {
