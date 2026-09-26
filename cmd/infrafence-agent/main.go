@@ -1044,10 +1044,11 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		if sync.Config.WAFConfig != nil {
 			log.Printf("[sync] applying WAF config: %d enabled types, %d score weights", len(sync.Config.WAFConfig.EnabledTypes), len(sync.Config.WAFConfig.ScorePoints))
 			webW.UpdateWAFConfig(&watcher.WAFConfig{
-				EnabledTypes:    sync.Config.WAFConfig.EnabledTypes,
-				DetectOnlyTypes: sync.Config.WAFConfig.DetectOnlyTypes,
-				Thresholds:      sync.Config.WAFConfig.Thresholds,
-				ScorePoints:     sync.Config.WAFConfig.ScorePoints,
+				EnabledTypes:     sync.Config.WAFConfig.EnabledTypes,
+				DetectOnlyTypes:  sync.Config.WAFConfig.DetectOnlyTypes,
+				Thresholds:       sync.Config.WAFConfig.Thresholds,
+				ScorePoints:      sync.Config.WAFConfig.ScorePoints,
+				DisabledPatterns: sync.Config.WAFConfig.DisabledPatterns,
 			})
 		} else {
 			log.Println("[sync] no WAF config — all types enabled by default")
