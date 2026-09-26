@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.19
+- **fix: bot identifiers from patterns with case classes.** Bot settings are keyed by the id the agent derives from each list pattern. Patterns like `[cC]laude[bB]ot`, `[Cc]urebot` and `[cC]ludo` all became `cc` (also the id of "CC Metadata Scaper"), `S[eE][mM]rushBot` became `s`, `[wW]get` `ww`: a setting for one of them applied to the others. Case classes are now resolved first (`claudebot`, `curebot`, `semrushbot`, `wget`...). 11 ids change; the reverse-DNS verified crawlers (Googlebot, Bingbot...) are unaffected. The dashboard derives the same ids.
+
 ## v1.0.18
 - **feat: bot settings from the dashboard.** Bots are recognized from public lists downloaded daily (about 1,500 bots in 12 categories), each with its category's default action: search engines, SEO tools, monitoring, advertising, link previews, feed readers, archivers and research crawlers are allowed; AI crawlers, scanners, HTTP libraries and browser automation are logged. Organizations can now override that per category and per bot (allow, log only, block; a bot's own setting wins over its category's). The agent re-applies the settings whenever they or the lists change, without downloading again; changes arrive within seconds. Blocked bots are banned at the firewall and, when web server changes are allowed, blocked in nginx/Apache too.
 - **fix: expired bans are lifted on time.** Bans now have durations (ban policy in the dashboard, or per-ban changes), but an expired ban was only lifted at the next periodic sync, up to 5 minutes late. The agent now syncs right after the earliest ban expiry.
