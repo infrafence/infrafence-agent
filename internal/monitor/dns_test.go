@@ -240,8 +240,8 @@ func TestIsSystemResolver(t *testing.T) {
 		{&ProcInfo{Name: "unbound"}, false}, // exe unreadable: no pass
 		{nil, false},
 	} {
-		if got := isSystemResolver(c.p); got != c.want {
-			t.Errorf("isSystemResolver(%+v) = %v, want %v", c.p, got, c.want)
+		if got := IsSystemResolver(c.p); got != c.want {
+			t.Errorf("IsSystemResolver(%+v) = %v, want %v", c.p, got, c.want)
 		}
 	}
 }

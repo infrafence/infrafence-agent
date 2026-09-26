@@ -34,6 +34,9 @@ func (p *ProcInfo) Details() map[string]string {
 // procRoot is overridable in tests.
 var procRoot = "/proc"
 
+// SocketOwners maps socket inodes to the processes holding them.
+func SocketOwners(inodes map[uint64]bool) map[uint64]*ProcInfo { return socketOwners(inodes) }
+
 // socketOwners maps socket inodes to the processes holding them, by scanning
 // /proc/<pid>/fd. Only the inodes asked for are looked up, and the scan stops
 // once all are found; it runs only when a flow needs explaining.
@@ -73,6 +76,9 @@ func socketOwners(inodes map[uint64]bool) map[uint64]*ProcInfo {
 	}
 	return out
 }
+
+// ProcInfoOf describes a running process.
+func ProcInfoOf(pid int) *ProcInfo { return procInfo(pid) }
 
 func procInfo(pid int) *ProcInfo {
 	dir := filepath.Join(procRoot, strconv.Itoa(pid))
@@ -121,8 +127,8 @@ var systemResolvers = map[string]bool{
 // location, so a process that merely calls itself "dnsmasq" gets no pass.
 var systemExeDirs = []string{"/usr/", "/lib/", "/lib64/", "/opt/", "/sbin/", "/bin/"}
 
-// isSystemResolver reports whether p is the machine's own DNS service.
-func isSystemResolver(p *ProcInfo) bool {
+// IsSystemResolver reports whether p is the machine's own DNS service.
+func IsSystemResolver(p *ProcInfo) bool {
 	if p == nil || !systemResolvers[p.Name] || p.Exe == "" {
 		return false
 	}
