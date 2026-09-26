@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.23
+- **feat: DNS inspection at packet level.** The agent now reads the server's DNS packets (UDP 53, IPv4 and IPv6) read-only, through a filter run in the kernel so nothing else reaches it, and attributes each query to its process (name, pid, executable, user). It sees what the previous monitor couldn't (queries from unconnected sockets, single lookups, the domain names and the answers) and reports queries to unconfigured or threat-listed DNS servers, **domains resolving to known malicious IPs**, **possible DNS tunnels** (many long, distinct subdomains of one domain) and **DGA-style lookups** (bursts of non-existent, random-looking domains). Antivirus, anti-spam and cloud names are allowlisted; queries the host answers as a DNS server are ignored; at most 3,000 packets/s are analyzed. On by default; it can be turned off in the dashboard settings. Where packet capture isn't available, the previous monitor stays active.
+
 ## v1.0.22
 - **fix: no more "unusual DNS resolver" alarms for normal lookups, and the alarm says which process.** Configured DNS servers were read only from `/etc/resolv.conf`, which with systemd-resolved (Ubuntu's default) names just the local stub `127.0.0.53`, so every lookup sent to the real upstream servers was reported. Configured servers now also come from systemd-resolved's and NetworkManager's files, re-read every 5 minutes. Each external DNS query is traced to its process (name, pid, executable, user), which the events now include. Queries made by the server's own DNS service (systemd-resolved, dnsmasq, unbound, BIND, Docker's embedded DNS...) to its upstream or root servers are no longer reported as unusual or as resolver hopping; it must run from a system path. Threat-listed DNS servers are reported whoever queries them.
 
