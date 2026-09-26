@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.13
+- **fix: a YARA install request stayed pending forever if YARA was already installed.** The sync handler only acted on the dashboard's install request when YARA was missing; otherwise it skipped it without reporting anything, so the request flag (cleared when the agent reports `yara_installed`) was never cleared. The agent now acknowledges the request with `yara_installed` (`status: already_installed`).
+
 ## v1.0.12
 - **feat: malware scans can now run on an interval (every 3, 6, 12 or 24 hours).** The scheduler is a plain interval ticker driven by `interval_hours` in the dashboard's malware scan config, replacing the daily/weekly-at-HH:MM model, which no dashboard could ever actually configure. The first scheduled scan fires one full interval after the schedule is enabled; the dashboard's per-server "Scan now" button covers wanting a result immediately (already supported by the sync loop).
 - **fix: agents that registered before the server offered real-time push never picked it up.** The Reverb websocket URL was only read during first registration, so those agents stayed on heartbeat/sync polling until someone re-registered manually. The heartbeat response can now carry it: when the agent has no websocket connection and the server starts reporting one, it saves it to its config and connects without a restart.
