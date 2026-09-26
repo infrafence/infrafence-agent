@@ -2,6 +2,11 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.17
+- **fix: each ban is reported once.** Watchers remember their bans only for their detection window, so an IP seen again later was reported again although it was still banned, and every report added a ban row (55 rows for one IP on a real server). All ban paths (SSH, web, scored web, mail, database, FTP) now report a ban only when the agent doesn't already ban the IP (its own detection or an active dashboard ban); after the ban expires, a new detection is a new ban, which drives escalation. Whitelisted and protected IPs, which the firewall refuses to ban, are no longer reported as banned.
+- **fix: the installer no longer mistakes an idle Ubuntu daemon for a package operation.** `unattended-upgrade-shutdown --wait-for-signal` runs permanently on Ubuntu (process name `unattended-upgr`) and holds no lock, but preflight and `install.sh` counted it as a running package operation: on a fresh Ubuntu server the installer waited 5 minutes and then didn't install missing dependencies or ipset. A package operation now means a package manager process or a dpkg/apt lock actually held (read from `/proc/locks`, without taking it). `packagekitd` no longer counts either.
+- **diagnostics:** syncs triggered by a real-time push or by the heartbeat's config version are logged with their reason.
+
 ## v1.0.16
 Built for production servers: every change InfraFence makes to a host is checked first, isolated, reversible and opt-in.
 
