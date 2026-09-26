@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -161,26 +162,61 @@ func (w *Watcher) UpdateConfig(cfg Config) {
 	log.Printf("[watcher] config updated: threshold=%d window=%s", w.threshold, w.window)
 }
 
-// UpdatePatterns replaces the SSH detection patterns with rules from the panel.
-// If patterns is empty, the hardcoded defaults are kept.
-func (w *Watcher) UpdatePatterns(patterns []SSHPattern) {
-	if len(patterns) == 0 {
+// customSSHPatterns are the per-server patterns defined in the dashboard.
+// They are checked after the built-in ones, never instead of them.
+var customSSHPatterns atomic.Pointer[[]SSHPattern]
+
+// SetCustomPatterns replaces the dashboard-defined SSH patterns; an empty
+// list leaves only the built-in ones.
+func (w *Watcher) SetCustomPatterns(patterns []SSHPattern) {
+	cp := append([]SSHPattern(nil), patterns...)
+	old := customSSHPatterns.Swap(&cp)
+	if old == nil && len(cp) == 0 {
 		return
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	sshPatterns = patterns
-	log.Printf("[watcher] detection patterns updated: %d rules", len(patterns))
+	if old == nil || len(*old) != len(cp) {
+		log.Printf("[watcher] custom SSH patterns: %d (plus %d built-in)", len(cp), len(sshPatterns))
+	}
 }
 
-// ParsePattern compiles a regex string into an SSHPattern. Returns nil on error.
+// ParsePattern compiles a regex string into an SSHPattern. Returns nil on
+// error or when the regex has no capture group for the IP address.
 func ParsePattern(pattern, reason string) *SSHPattern {
+	if len(pattern) > 1000 {
+		log.Printf("[watcher] pattern too long (%d chars), ignored", len(pattern))
+		return nil
+	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		log.Printf("[watcher] invalid pattern %q: %v", pattern, err)
 		return nil
 	}
+	if re.NumSubexp() < 1 {
+		log.Printf("[watcher] pattern %q has no capture group for the IP, ignored", pattern)
+		return nil
+	}
+	if reason == "" {
+		reason = "brute_force_ssh"
+	}
 	return &SSHPattern{Re: re, Reason: reason}
+}
+
+// matchSSH returns the IP and reason of the first matching pattern:
+// built-in first, then the dashboard's.
+func matchSSH(line string) (ip, reason string) {
+	for _, p := range sshPatterns {
+		if m := p.Re.FindStringSubmatch(line); len(m) >= 2 {
+			return m[1], p.Reason
+		}
+	}
+	if custom := customSSHPatterns.Load(); custom != nil {
+		for _, p := range *custom {
+			if m := p.Re.FindStringSubmatch(line); len(m) >= 2 {
+				return m[1], p.Reason
+			}
+		}
+	}
+	return "", ""
 }
 
 // UpdateWhitelist replaces the whitelist with a new set of IPs/CIDRs.
@@ -356,15 +392,7 @@ func isPrivateIP(ip string) bool {
 }
 
 func (w *Watcher) processLine(line string) {
-	var ip, reason string
-	for _, p := range sshPatterns {
-		m := p.Re.FindStringSubmatch(line)
-		if len(m) >= 2 {
-			ip = m[1]
-			reason = p.Reason
-			break
-		}
-	}
+	ip, reason := matchSSH(line)
 	if ip == "" {
 		return
 	}

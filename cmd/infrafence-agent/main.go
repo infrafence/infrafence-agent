@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/api"
-	"github.com/infrafence/infrafence-agent/internal/collector"
 	"github.com/infrafence/infrafence-agent/internal/config"
 	"github.com/infrafence/infrafence-agent/internal/dnswatch"
 	"github.com/infrafence/infrafence-agent/internal/firewall"
@@ -32,7 +31,6 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/modsecurity"
 	"github.com/infrafence/infrafence-agent/internal/monitor"
 	"github.com/infrafence/infrafence-agent/internal/preflight"
-	"github.com/infrafence/infrafence-agent/internal/scanner"
 	"github.com/infrafence/infrafence-agent/internal/session"
 	"github.com/infrafence/infrafence-agent/internal/updater"
 	"github.com/infrafence/infrafence-agent/internal/watcher"
@@ -217,6 +215,7 @@ func runAgent() {
 
 	// Read-only host scan first: decides what the agent may change here.
 	startupPreflight(apiClient)
+	go runDailyAudits(currentAPIClient.Load)
 
 	// Initialize firewall backend (detects ipset, falls back to iptables)
 	firewall.Init()
@@ -1004,20 +1003,18 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		}
 	}
 
-	// Apply detection rules from panel (SSH patterns)
-	if len(sync.DetectionRules) > 0 {
-		var patterns []watcher.SSHPattern
-		for _, dr := range sync.DetectionRules {
-			if dr.Service != "ssh" {
-				continue
-			}
-			p := watcher.ParsePattern(dr.Pattern, dr.Reason)
-			if p != nil {
-				patterns = append(patterns, *p)
-			}
+	// SSH patterns defined in the dashboard for this server, checked in
+	// addition to the built-in ones (an empty list removes them).
+	var customPatterns []watcher.SSHPattern
+	for _, dr := range sync.DetectionRules {
+		if dr.Service != "ssh" {
+			continue
 		}
-		w.UpdatePatterns(patterns)
+		if p := watcher.ParsePattern(dr.Pattern, dr.Reason); p != nil {
+			customPatterns = append(customPatterns, *p)
+		}
 	}
+	w.SetCustomPatterns(customPatterns)
 
 	// Apply whitelists
 	var wlIPs, wlCIDRs []string
@@ -1073,6 +1070,16 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 	if !sync.Config.MonitorMode {
 		firewall.ApplyBans(banIPs)
+	}
+	// Refused by ModSecurity too (visitors behind a proxy/CDN).
+	if modsecEngine != nil {
+		modsecIPs := banIPs
+		if sync.Config.MonitorMode {
+			modsecIPs = nil
+		}
+		if err := modsecEngine.UpdateBannedIPs(modsecIPs); err != nil {
+			log.Printf("[modsec] ban rules: %v", err)
+		}
 	}
 	// Lift the next expiring ban on time rather than at the next periodic sync.
 	if onBanSchedule != nil {
@@ -1308,6 +1315,15 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		log.Printf("[malware] scan requested via sync — starting...")
 		go runMalwareScan(client, "medium")
 	}
+	if sync.HardeningScanRequested {
+		go runScan(client, 0)
+	}
+	if sync.SoftwareAuditRequested {
+		go runSoftwareAudit(client, 0)
+	}
+	if len(sync.HardeningFixes) > 0 {
+		go applyHardeningFixes(client, sync.HardeningFixes)
+	}
 
 	// Apply CSF port actions if requested from dashboard
 	if len(sync.CSFPortActions) > 0 && firewall.HasCSF() {
@@ -1396,57 +1412,6 @@ func importExistingRules(client *api.Client) {
 	}
 
 	log.Printf("[import] complete — imported=%d, skipped=%d, total=%d", resp.Imported, resp.Skipped, resp.Total)
-}
-
-// runScan executes a vulnerability scan and submits results to the server.
-func runScan(client *api.Client, scanID int64) {
-	log.Printf("[scanner] starting scan %d", scanID)
-
-	results := scanner.Run()
-
-	findings := make([]api.ScanFinding, len(results))
-	for i, r := range results {
-		findings[i] = api.ScanFinding{
-			Category:       r.Category,
-			Severity:       r.Severity,
-			CheckID:        r.CheckID,
-			Title:          r.Title,
-			Description:    r.Description,
-			Recommendation: r.Recommendation,
-			Details:        r.Details,
-			Passed:         r.Passed,
-		}
-	}
-
-	if err := client.SubmitScanResults(api.ScanResultRequest{
-		ScanID:   scanID,
-		Findings: findings,
-	}); err != nil {
-		log.Printf("[scanner] failed to submit results: %v", err)
-		return
-	}
-
-	log.Printf("[scanner] scan %d complete — %d findings submitted", scanID, len(findings))
-}
-
-// runSoftwareAudit collects the full software inventory and submits it to the server.
-func runSoftwareAudit(client *api.Client, auditID int64) {
-	log.Printf("[collector] starting software audit %d", auditID)
-
-	result := collector.Collect()
-
-	if err := client.SubmitSoftwareAudit(api.SoftwareAuditRequest{
-		AuditID:     auditID,
-		Summary:     result.Summary,
-		KeySoftware: result.KeySoftware,
-		Packages:    result.Packages,
-	}); err != nil {
-		log.Printf("[collector] failed to submit audit %d: %v", auditID, err)
-		return
-	}
-
-	log.Printf("[collector] audit %d complete — %d packages, %d key software items",
-		auditID, result.Summary.TotalPackages, len(result.KeySoftware))
 }
 
 // applyAndAckRule applies a single firewall rule and sends the ack back to the server.
