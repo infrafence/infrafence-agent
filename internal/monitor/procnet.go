@@ -32,6 +32,8 @@ type UDPFlow struct {
 	LocalPort  uint16
 	RemotePort uint16
 	State      uint8
+	UID        uint32 // owner of the socket
+	Inode      uint64 // socket inode, to find the owning process
 }
 
 // procNetEntry is the shared row shape of /proc/net/tcp and /proc/net/udp —
@@ -43,6 +45,8 @@ type procNetEntry struct {
 	LocalPort  uint16
 	RemotePort uint16
 	State      uint8
+	UID        uint32
+	Inode      uint64
 }
 
 // parseProcNet parses a /proc/net/{tcp,udp}-formatted file at path.
@@ -84,13 +88,23 @@ func parseProcNet(path string) ([]procNetEntry, error) {
 			continue
 		}
 
-		entries = append(entries, procNetEntry{
+		e := procNetEntry{
 			LocalIP:    localIP,
 			RemoteIP:   remoteIP,
 			LocalPort:  localPort,
 			RemotePort: remotePort,
 			State:      uint8(state),
-		})
+		}
+		// "sl local rem st tx:rx tr:when retrnsmt uid timeout inode ..."
+		if len(fields) >= 10 {
+			if uid, err := strconv.ParseUint(fields[7], 10, 32); err == nil {
+				e.UID = uint32(uid)
+			}
+			if ino, err := strconv.ParseUint(fields[9], 10, 64); err == nil {
+				e.Inode = ino
+			}
+		}
+		entries = append(entries, e)
 	}
 
 	return entries, nil
@@ -131,6 +145,8 @@ func ParseProcNetUDP() ([]UDPFlow, error) {
 			LocalPort:  e.LocalPort,
 			RemotePort: e.RemotePort,
 			State:      e.State,
+			UID:        e.UID,
+			Inode:      e.Inode,
 		})
 	}
 	return flows, nil
