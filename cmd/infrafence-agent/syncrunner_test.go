@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/api"
 )
 
 type countingSync struct {
@@ -138,5 +140,49 @@ func TestFailedSyncIsRetriedOnNextHeartbeat(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := c.calls.Load(); n != 2 {
 		t.Errorf("applied version synced again (%d)", n)
+	}
+}
+
+func TestNextBanExpiry(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	str := func(s string) *string { return &s }
+	bans := []api.Ban{
+		{IPAddress: "1.1.1.1"}, // permanent
+		{IPAddress: "2.2.2.2", ExpiresAt: str("2026-09-26T11:00:00Z")},        // already expired
+		{IPAddress: "3.3.3.3", ExpiresAt: str("2026-09-27T12:00:00+00:00")},   // tomorrow
+		{IPAddress: "4.4.4.4", ExpiresAt: str("2026-09-26T13:00:00.5+00:00")}, // in 1h
+		{IPAddress: "5.5.5.5", ExpiresAt: str("garbage")},
+	}
+	next, ok := nextBanExpiry(bans, now)
+	want := time.Date(2026, 9, 26, 13, 0, 1, 500_000_000, time.UTC)
+	if !ok || !next.Equal(want) {
+		t.Errorf("next = %v %v, want %v", next, ok, want)
+	}
+	if _, ok := nextBanExpiry(bans[:2], now); ok {
+		t.Error("permanent and expired bans have no next expiry")
+	}
+}
+
+func TestScheduledSyncFiresAtExpiry(t *testing.T) {
+	c := &countingSync{}
+	r, cancel := fastRunner(c)
+	defer cancel()
+
+	r.ScheduleAt(time.Now().Add(150*time.Millisecond), "ban expiry")
+	time.Sleep(100 * time.Millisecond)
+	if c.calls.Load() != 0 {
+		t.Fatal("synced before the expiry")
+	}
+	eventually(t, func() bool { return c.calls.Load() == 1 })
+
+	// A later time doesn't replace an earlier pending one; zero cancels.
+	r.ScheduleAt(time.Now().Add(100*time.Millisecond), "ban expiry")
+	r.ScheduleAt(time.Now().Add(time.Hour), "ban expiry")
+	eventually(t, func() bool { return c.calls.Load() == 2 })
+	r.ScheduleAt(time.Now().Add(100*time.Millisecond), "ban expiry")
+	r.ScheduleAt(time.Time{}, "")
+	time.Sleep(300 * time.Millisecond)
+	if n := c.calls.Load(); n != 2 {
+		t.Errorf("cancelled schedule still synced (%d)", n)
 	}
 }
