@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.20
+- **fix: bot settings apply right after upgrading.** The agent loads the bot list from its cache at startup and re-downloads it once a day; after upgrading to v1.0.19 the cache still carried the old bot ids (`cc` for ClaudeBot), so a setting for `claudebot` didn't apply for up to 24 hours. Ids are now re-derived from the patterns whenever the list is loaded.
+
 ## v1.0.19
 - **fix: bot identifiers from patterns with case classes.** Bot settings are keyed by the id the agent derives from each list pattern. Patterns like `[cC]laude[bB]ot`, `[Cc]urebot` and `[cC]ludo` all became `cc` (also the id of "CC Metadata Scaper"), `S[eE][mM]rushBot` became `s`, `[wW]get` `ww`: a setting for one of them applied to the others. Case classes are now resolved first (`claudebot`, `curebot`, `semrushbot`, `wget`...). 11 ids change; the reverse-DNS verified crawlers (Googlebot, Bingbot...) are unaffected. The dashboard derives the same ids.
 
