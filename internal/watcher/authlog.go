@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -402,6 +403,7 @@ func (w *Watcher) recordAttempt(ip, reason string) {
 				}
 			} else {
 				go w.onBan(ip, banReason, 1)
+				w.emitBanEvent(ip, banReason, 1)
 			}
 			return
 		}
@@ -429,6 +431,21 @@ func (w *Watcher) recordAttempt(ip, reason string) {
 			}
 		} else {
 			go w.onBan(ip, reason, count)
+			w.emitBanEvent(ip, reason, count)
 		}
 	}
+}
+
+// emitBanEvent reports the attack behind a ban as an event too. Without it,
+// SSH brute force only ever reached the bans table in enforcement mode and
+// never showed up in the event stream or the SSH tile.
+func (w *Watcher) emitBanEvent(ip, reason string, attempts int) {
+	if w.onEvent == nil {
+		return
+	}
+	go w.onEvent(ip, "brute_force", "critical", map[string]string{
+		"reason":   reason,
+		"attempts": strconv.Itoa(attempts),
+		"action":   "banned",
+	})
 }
