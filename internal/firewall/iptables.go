@@ -234,17 +234,38 @@ func isSafeIP(ip net.IP) bool {
 // BanIP blocks an IP in the INFRAFENCE chain (via the infrafence-bans ipset
 // when available, otherwise a rule in the chain).
 func BanIP(ip string) error {
+	_, err := BanIPOnce(ip)
+	return err
+}
+
+// BanIPOnce bans ip and reports whether this call added the ban: false when
+// the agent already bans it (its own detection, or an active dashboard ban),
+// so callers report each ban to the dashboard once. The firewall entry is
+// (re)applied either way.
+func BanIPOnce(ip string) (added bool, err error) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
-		return fmt.Errorf("invalid IP address: %s", ip)
+		return false, fmt.Errorf("invalid IP address: %s", ip)
 	}
 	if isSafeIP(parsed) {
-		return fmt.Errorf("refusing to ban safe IP: %s", ip)
+		return false, fmt.Errorf("refusing to ban safe IP: %s", ip)
 	}
-	fw.Lock()
-	fw.bans[parsed.String()] = true
-	fw.Unlock()
+	added = claimBan(parsed.String())
+	return added, applyBan(parsed, ip)
+}
 
+// claimBan records ip as banned; true if it wasn't already.
+func claimBan(ip string) bool {
+	fw.Lock()
+	defer fw.Unlock()
+	if fw.bans[ip] {
+		return false
+	}
+	fw.bans[ip] = true
+	return true
+}
+
+func applyBan(parsed net.IP, ip string) error {
 	if HasIpset() {
 		return ipsetAdd(banSetName, ip)
 	}
