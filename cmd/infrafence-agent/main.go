@@ -38,7 +38,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/ws"
 )
 
-var version = "1.0.14"
+var version = "1.0.15"
 
 // Global malware scanner state (initialized in runAgent, used in syncAndApply + runMalwareScan)
 var malwareScanRunning atomic.Bool
