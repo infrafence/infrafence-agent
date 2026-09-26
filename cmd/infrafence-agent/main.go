@@ -625,6 +625,7 @@ func runAgent() {
 		return syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName)
 	})
 	go syncs.Loop(context.Background())
+	onBanSchedule = func(t time.Time) { syncs.ScheduleAt(t, "ban expiry") }
 	push := &pushListener{runner: syncs}
 
 	// Initial sync (applies config, whitelists, rules, bans)
@@ -910,6 +911,9 @@ func runAgent() {
 	log.Println("Shutting down...")
 }
 
+// onBanSchedule receives the next ban expiry after each sync (zero: none).
+var onBanSchedule func(time.Time)
+
 func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatcher, mailW *watcher.MailWatcher, dbW *watcher.DBWatcher, ftpW *watcher.FTPWatcher, geo *geoip.Lookup, geoBlocker *firewall.GeoBlocker, reportUpdateEvent updater.EventReporter, wsType string) error {
 	sync, err := client.Sync()
 	if err != nil {
@@ -1050,6 +1054,11 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 	if !sync.Config.MonitorMode {
 		firewall.ApplyBans(banIPs)
+	}
+	// Lift the next expiring ban on time rather than at the next periodic sync.
+	if onBanSchedule != nil {
+		next, _ := nextBanExpiry(sync.Bans, time.Now())
+		onBanSchedule(next)
 	}
 
 	// Threat intel: lists the agent downloads itself (internal/intel) plus any
