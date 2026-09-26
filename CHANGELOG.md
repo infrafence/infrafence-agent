@@ -2,6 +2,13 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.14
+- **feat: real YARA rules, refreshed daily.** YARA was installed on servers but never scanned anything: rules only came from the dashboard, which never sent any. The agent now checks the latest [YARA Forge](https://github.com/YARAHQ/yara-forge) release daily (hourly while none is installed) and keeps only web-relevant rules from sources whose license allows commercial use, verified against each repo's LICENSE: signature-base (Detection Rule License 1.1) and ReversingLabs (MIT). ~920 rules today. A new set is installed only if `yara` compiles it; otherwise the previous one stays. Reports `yara_rules_updated`.
+- **feat: richer findings.** YARA matches now carry the rule's description, author (required by DRL 1.1 wherever a match is reported), reference, source, license, a severity derived from the rule's score, the matched text and its line number. Every finding now includes the file's SHA-256.
+- **fix: quarantine could move any file on the server.** Requests from the dashboard were executed as root with no path check. The agent now refuses anything but a regular file inside a detected web root, resolved through symlinks.
+- **fix: the AniShell signature never matched.** Its pattern was declared as a literal, so the scanner searched for the text `AniShell|Ani-Shell` including the pipe. A new test fails if any literal signature contains regex syntax.
+- **docs:** README claims corrected — there were no "229 YARA rules", and the "64,000 MalwareBazaar hashes" lookup was a stub.
+
 ## v1.0.13
 - **fix: a YARA install request stayed pending forever if YARA was already installed.** The sync handler only acted on the dashboard's install request when YARA was missing; otherwise it skipped it without reporting anything, so the request flag (cleared when the agent reports `yara_installed`) was never cleared. The agent now acknowledges the request with `yara_installed` (`status: already_installed`).
 
