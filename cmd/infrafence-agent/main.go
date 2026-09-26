@@ -1101,6 +1101,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Apply bot fingerprints to web watcher. When the dashboard supplies none,
 	// the list downloaded by runIntelUpdater is used instead.
 	dashboardBots.Store(len(sync.BotFingerprints) > 0)
+	setBotPolicy(webW, sync.BotPolicy)
 	if webW != nil && len(sync.BotFingerprints) > 0 {
 		fps := make([]watcher.BotFingerprintInput, len(sync.BotFingerprints))
 		for i, fp := range sync.BotFingerprints {
@@ -1134,7 +1135,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Web server changes (ModSecurity rules, UA blocking for bots with a
 	// "block" action) happen only when allowed — see hostpolicy.go.
 	if wsType != "" {
-		var uaFps []webserver.UAFingerprint
+		uaFps := blockedBotUAs()
 		for _, fp := range sync.BotFingerprints {
 			if fp.Action == "block" {
 				uaFps = append(uaFps, webserver.UAFingerprint{Pattern: fp.Pattern, IsRegex: fp.IsRegex})
@@ -2018,7 +2019,7 @@ func runIntelUpdater(webW *watcher.WebWatcher) {
 	intelState.downloaded = feeds
 	intelState.Unlock()
 	applyThreatIntel()
-	applyDownloadedBots(webW, bots)
+	setDownloadedBots(webW, bots)
 
 	for {
 		if time.Since(feedsAt) >= intel.RefreshInterval {
@@ -2050,18 +2051,11 @@ func runIntelUpdater(webW *watcher.WebWatcher) {
 				if err := intel.SaveCache("bot_fingerprints.json", fps); err != nil {
 					log.Printf("[bots] cache: %v", err)
 				}
-				applyDownloadedBots(webW, fps)
+				setDownloadedBots(webW, fps)
 			}
 		}
 		time.Sleep(time.Hour)
 	}
-}
-
-func applyDownloadedBots(webW *watcher.WebWatcher, fps []watcher.BotFingerprintInput) {
-	if webW == nil || len(fps) == 0 || dashboardBots.Load() {
-		return
-	}
-	webW.UpdateBotFingerprints(fps)
 }
 
 // runMalwareScan detects web roots, runs malware signature scanning and framework checks.
