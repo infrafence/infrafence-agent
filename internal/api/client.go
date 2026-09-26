@@ -368,6 +368,9 @@ type MonitorConfig struct {
 	WebserverChanges bool   `json:"webserver_changes"`  // edit nginx/Apache config (UA blocking, ModSecurity)
 	BlockThreatFeeds bool   `json:"block_threat_feeds"` // block threat-feed networks inbound (else detection only)
 	AutoUpdate       string `json:"auto_update"`        // "auto" (default) or "notify"
+	// DNSInspection turns the packet-level DNS inspection off when false
+	// (default on: it is read-only and changes nothing on the host).
+	DNSInspection *bool `json:"dns_inspection,omitempty"`
 }
 
 // SigmaConfig controls Sigma rule-based detection.
