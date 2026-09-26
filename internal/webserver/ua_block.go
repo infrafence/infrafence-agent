@@ -458,3 +458,78 @@ func apacheGraceful() error {
 	}
 	return nil
 }
+
+// injectedLine matches the line injectIfIntoServerBlock adds.
+var injectedLine = regexp.MustCompile(`(?m)^[ \t]*if \(\$infrafence_blocked_ua\) \{ return 444; \} # infrafence[ \t]*\r?\n?`)
+
+// RemoveNginxUABlock undoes SetupNginxUABlock: removes the injected line from
+// every server block, the map conf and the blocklist, then reloads nginx.
+// If nginx -t fails afterwards, every file is restored and nothing changes.
+func RemoveNginxUABlock() error {
+	files, err := findNginxServerBlockFiles()
+	if err != nil {
+		files = scanNginxConfigDirs()
+	}
+	var backups []fileBackup
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil || !injectedLine.Match(data) {
+			continue
+		}
+		backups = append(backups, fileBackup{path: path, content: data})
+		if err := os.WriteFile(path, injectedLine.ReplaceAll(data, nil), 0644); err != nil {
+			restoreFiles(backups)
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+	}
+	mapConf, mapErr := os.ReadFile(nginxMapConf)
+	if mapErr == nil {
+		os.Remove(nginxMapConf)
+	}
+	if len(backups) == 0 && mapErr != nil {
+		os.Remove(nginxSentinel)
+		os.Remove(nginxBlocklist)
+		return nil // nothing of ours in the nginx config
+	}
+	if err := nginxTest(); err != nil {
+		restoreFiles(backups)
+		if mapErr == nil {
+			os.WriteFile(nginxMapConf, mapConf, 0644) //nolint:errcheck
+		}
+		return fmt.Errorf("nginx -t failed, nothing removed: %w", err)
+	}
+	if err := nginxReload(); err != nil {
+		return err
+	}
+	os.Remove(nginxSentinel)
+	os.Remove(nginxBlocklist)
+	log.Printf("[ua-block] nginx UA blocking removed (%d files restored)", len(backups))
+	return nil
+}
+
+// RemoveApacheUABlock undoes SetupApacheUABlock.
+func RemoveApacheUABlock() error {
+	confPath, useA2enconf := apacheConfPath()
+	content, err := os.ReadFile(confPath)
+	if err != nil {
+		os.Remove(apacheSentinel)
+		return nil // nothing of ours
+	}
+	if useA2enconf {
+		exec.Command("a2disconf", "infrafence-ua-block").Run() //nolint:errcheck
+	}
+	os.Remove(confPath)
+	if out, err := exec.Command("apachectl", "-t").CombinedOutput(); err != nil {
+		os.WriteFile(confPath, content, 0644) //nolint:errcheck
+		if useA2enconf {
+			exec.Command("a2enconf", "infrafence-ua-block").Run() //nolint:errcheck
+		}
+		return fmt.Errorf("apachectl -t failed, nothing removed: %s", strings.TrimSpace(string(out)))
+	}
+	if err := apacheGraceful(); err != nil {
+		return err
+	}
+	os.Remove(apacheSentinel)
+	log.Println("[ua-block] apache UA blocking removed")
+	return nil
+}
