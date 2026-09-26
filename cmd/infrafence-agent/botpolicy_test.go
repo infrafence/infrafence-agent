@@ -76,3 +76,27 @@ func TestBotPolicyReappliedOnChangeOnly(t *testing.T) {
 		t.Fatalf("defaults not restored, %d blocked", n)
 	}
 }
+
+// A list cached by v1.0.18 carries "cc" for [cC]laude[bB]ot; a setting
+// for "claudebot" must still apply after upgrading, without waiting for
+// the next download.
+func TestCachedListGetsCurrentSlugs(t *testing.T) {
+	botState.Lock()
+	botState.downloaded, botState.policyKey, botState.effective = nil, "", nil
+	botState.Unlock()
+
+	setBotPolicy(nil, &api.BotPolicy{Bots: map[string]string{"claudebot": "block"}})
+	cached := []watcher.BotFingerprintInput{
+		{Slug: "cc", Category: "ai-crawler", Action: "log", Pattern: "[cC]laude[bB]ot", IsRegex: true},
+		{Slug: "cc", Category: "seo", Action: "allow", Pattern: "CC Metadata Scaper"},
+	}
+	setDownloadedBots(nil, cached)
+	b := blockedBotUAs()
+	if len(b) != 1 || b[0].Pattern != "[cC]laude[bB]ot" {
+		t.Fatalf("blocked = %+v, want only ClaudeBot", b)
+	}
+	if cached[0].Slug != "cc" {
+		t.Error("setDownloadedBots modified the caller's slice")
+	}
+	setBotPolicy(nil, nil)
+}
