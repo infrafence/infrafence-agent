@@ -216,13 +216,30 @@ check_deps() {
     install_packages "${missing[@]}" || dep_install_failed "$PKG_ERROR"
 }
 
+# package_operation_running: a package manager process, or a dpkg/apt lock
+# that is actually held (read from /proc/locks; no lock is taken). Idle
+# daemons such as unattended-upgrade-shutdown (always running on Ubuntu) or
+# packagekitd hold no lock and don't count.
+package_operation_running() {
+    local p f ino
+    for p in apt apt-get dpkg yum dnf rpm zypper; do
+        pgrep -x "$p" >/dev/null 2>&1 && return 0
+    done
+    [[ -r /proc/locks ]] || return 1
+    for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+        [[ -e "$f" ]] || continue
+        ino="$(stat -c %i "$f" 2>/dev/null)" || continue
+        grep -qE ":${ino}( |\$)" /proc/locks && return 0
+    done
+    return 1
+}
+
 # wait_for_package_manager waits (up to 5 minutes) for any running package
 # operation (apt, dpkg, unattended-upgrades, yum, dnf) to finish, so the
 # installer never competes with it for the lock on a production server.
 wait_for_package_manager() {
     local waited=0
-    while pgrep -x apt >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x dpkg >/dev/null 2>&1 \
-        || pgrep -x unattended-upgr >/dev/null 2>&1 || pgrep -x yum >/dev/null 2>&1 || pgrep -x dnf >/dev/null 2>&1; do
+    while package_operation_running; do
         if [[ $waited -eq 0 ]]; then
             info "Another package operation is running — waiting for it to finish..."
         fi
