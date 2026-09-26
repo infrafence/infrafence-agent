@@ -60,6 +60,9 @@ jobs:
             -o build/infrafence-agent-linux-arm64-k8s \
             ./cmd/infrafence-agent
 
+          # Built-in WAF rules, read by the dashboard's WAF page
+          go run ./cmd/wafcatalog -version "${VERSION}" > build/waf-catalog.json
+
       - name: Generate checksums
         working-directory: build
         run: |
@@ -150,6 +153,7 @@ jobs:
             build/infrafence-agent-linux-arm64-k8s.sig
             build/checksums.txt
             build/checksums.txt.sig
+            build/waf-catalog.json
             install.sh
 
   docker:

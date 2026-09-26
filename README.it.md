@@ -102,14 +102,14 @@ helm install infrafence-agent \
 | RCE / Web shell / Shellshock | +50 | A punteggio |
 | User agent scanner (sqlmap, nikto, nmap, nuclei...) | +50 | A punteggio |
 | SQL injection / SSRF / Exploit web | +40 | A punteggio |
-| Honeypot (50+ endpoint esca) | +40 | A punteggio |
+| Honeypot (percorsi esca definiti come regole personalizzate) | +40 | A punteggio |
 | Path traversal / Header injection | +30 | A punteggio |
 | Brute force WordPress | +30 | Soglia (10 req / 2 min) |
 | XSS / probe `.env` / XMLRPC | +25 | A punteggio |
 | Config probing / Pattern scanner | +20 | A punteggio |
 | Flood 404 | +15 | Soglia (30 req / 5 min) |
 
-Ogni rilevamento aggiunge punti a un punteggio per-IP. I punteggi decadono di -5 pt/min. Livelli di azione: **osserva** (30) → **rallenta** (60) → **blocca 1h** (80) → **blacklist 24h** (100+). Tutti i pesi sono configurabili per server.
+Ogni rilevamento aggiunge punti a un punteggio per-IP. I punteggi decadono di -5 pt/min. Livelli di azione: **osserva** (30) → **rallenta** (60) → **blocca 1h** (80) → **blacklist 24h** (100+). Dalla dashboard puoi vedere tutte le regole integrate, cambiare pesi, soglie e modalità per tipo, disattivare singoli pattern e aggiungere regole tue (URL, User-Agent o Referer, testo o regex).
 
 ### Gestione bot
 70+ fingerprint di bot (motori di ricerca, crawler AI, tool SEO, scanner). Politiche per organizzazione: **consenti** / **registra** / **blocca**. I bot bloccati vengono respinti a livello nginx/Apache — connessione chiusa prima che raggiunga la tua app.
