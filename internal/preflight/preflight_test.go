@@ -137,10 +137,38 @@ func TestInactiveUfwIsIgnored(t *testing.T) {
 
 func TestPackageOperationRunning(t *testing.T) {
 	e := ubuntu()
-	e.runs["pgrep -x unattended-upgr"] = "1234"
+	e.runs["pgrep -x apt-get"] = "1234"
 	r := ScanEnv(e)
 	if r.Decisions.IpsetInstallSafe || finding(r, "pkg_busy") == nil {
-		t.Errorf("must not install packages while unattended-upgrades runs: %+v", r.Decisions)
+		t.Errorf("must not install packages while apt-get runs: %+v", r.Decisions)
+	}
+}
+
+// Found on a real Ubuntu 24.04 server: unattended-upgrade-shutdown
+// --wait-for-signal runs permanently (process name "unattended-upgr") and
+// holds no lock. It must not block package installs.
+func TestIdleUnattendedUpgradesDaemonIsNotAnOperation(t *testing.T) {
+	e := ubuntu()
+	e.runs["pgrep -x unattended-upgr"] = "641"
+	e.files["/var/lib/dpkg/lock-frontend"] = ""
+	e.runs["stat -c %i /var/lib/dpkg/lock-frontend"] = "393219"
+	e.files["/proc/locks"] = "1: POSIX  ADVISORY  WRITE 900 fd:01:111 0 EOF\n2: FLOCK  ADVISORY  WRITE 901 00:1a:222 0 EOF\n"
+	r := ScanEnv(e)
+	if !r.Decisions.IpsetInstallSafe || finding(r, "pkg_busy") != nil {
+		t.Errorf("idle daemon counted as a package operation: %+v", r.Decisions)
+	}
+}
+
+func TestHeldDpkgLockIsAnOperation(t *testing.T) {
+	e := ubuntu()
+	e.files["/var/lib/dpkg/lock-frontend"] = ""
+	e.runs["stat -c %i /var/lib/dpkg/lock-frontend"] = "393219"
+	e.files["/proc/locks"] = "1: POSIX  ADVISORY  WRITE 4242 fd:01:393219 0 EOF\n2: POSIX  ADVISORY  WRITE 900 fd:01:111 0 EOF\n"
+	e.files["/proc/4242/comm"] = "unattended-upgr\n"
+	r := ScanEnv(e)
+	f := finding(r, "pkg_busy")
+	if r.Decisions.IpsetInstallSafe || f == nil || !strings.Contains(f.Title, "unattended-upgr") {
+		t.Errorf("held dpkg lock not detected: %+v %+v", r.Decisions, f)
 	}
 }
 
