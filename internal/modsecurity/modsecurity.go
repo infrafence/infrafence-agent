@@ -38,7 +38,6 @@ func New() *Engine {
 	}
 
 	e.available = true
-	os.MkdirAll(rulesDir, 0755)
 	log.Printf("[modsec] ModSecurity detected, rules dir: %s", rulesDir)
 	return e
 }
@@ -57,7 +56,18 @@ func (e *Engine) Setup() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Transactional: if Apache's config test fails, everything is put back.
+	// Leaving an include Apache can't parse on disk would make the next
+	// restart of the customer's web server fail.
+	snap := snapshotIncludeTargets()
+	rollback := func() {
+		snap.restore()
+		os.RemoveAll(rulesDir)
+	}
+
+	os.MkdirAll(rulesDir, 0755)
 	if err := e.writeStaticRules(); err != nil {
+		rollback()
 		return fmt.Errorf("write static rules: %w", err)
 	}
 
@@ -69,15 +79,117 @@ func (e *Engine) Setup() error {
 	}
 
 	if err := e.ensureInclude(); err != nil {
+		rollback()
 		return fmt.Errorf("ensure include: %w", err)
 	}
 
 	if err := e.reloadApache(); err != nil {
-		return fmt.Errorf("reload apache: %w", err)
+		rollback()
+		return fmt.Errorf("reload apache (changes rolled back): %w", err)
 	}
 
 	log.Printf("[modsec] setup complete — static rules active")
 	return nil
+}
+
+// Remove undoes Setup: removes the Include InfraFence added and its rules,
+// then reloads Apache. If the config test fails the files are restored.
+func (e *Engine) Remove() error {
+	if e.apachectl == "" {
+		e.detectModSecurity()
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	snap := snapshotIncludeTargets()
+	changed := false
+	for _, target := range includeTargets {
+		content, err := os.ReadFile(target)
+		if err != nil || !strings.Contains(string(content), includeMarker) {
+			continue
+		}
+		var kept []string
+		skipNext := false
+		for _, line := range strings.Split(string(content), "\n") {
+			if skipNext {
+				skipNext = false
+				if strings.HasPrefix(strings.TrimSpace(line), "IncludeOptional "+rulesDir) {
+					continue
+				}
+			}
+			if strings.TrimSpace(line) == includeMarker {
+				skipNext = true
+				continue
+			}
+			kept = append(kept, line)
+		}
+		if err := os.WriteFile(target, []byte(strings.TrimRight(strings.Join(kept, "\n"), "\n")+"\n"), 0644); err == nil {
+			changed = true
+		}
+	}
+	for _, dir := range includeConfDirs {
+		if err := os.Remove(filepath.Join(dir, "infrafence-modsec.conf")); err == nil {
+			changed = true
+		}
+	}
+	if !changed {
+		os.RemoveAll(rulesDir)
+		return nil
+	}
+	if e.apachectl != "" {
+		if out, err := exec.Command(e.apachectl, "configtest").CombinedOutput(); err != nil {
+			snap.restore()
+			return fmt.Errorf("config test failed, nothing removed: %s", strings.TrimSpace(string(out)))
+		}
+		_ = exec.Command(e.apachectl, "graceful").Run()
+	}
+	os.RemoveAll(rulesDir)
+	return nil
+}
+
+var includeTargets = []string{
+	"/etc/modsecurity/modsecurity.conf",
+	"/etc/apache2/mods-enabled/security2.conf",
+	"/etc/httpd/conf.d/mod_security.conf",
+	"/usr/local/apache/conf/modsec2.conf",
+}
+
+var includeConfDirs = []string{"/etc/apache2/conf-enabled", "/etc/httpd/conf.d", "/usr/local/apache/conf/includes"}
+
+// includeSnapshot remembers the include targets (and whether our include
+// conf existed) so a failed change can be undone byte for byte.
+type includeSnapshot struct {
+	files   map[string][]byte
+	created map[string]bool
+}
+
+func snapshotIncludeTargets() includeSnapshot {
+	s := includeSnapshot{files: map[string][]byte{}, created: map[string]bool{}}
+	for _, t := range includeTargets {
+		if b, err := os.ReadFile(t); err == nil {
+			s.files[t] = b
+		}
+	}
+	for _, dir := range includeConfDirs {
+		p := filepath.Join(dir, "infrafence-modsec.conf")
+		if b, err := os.ReadFile(p); err == nil {
+			s.files[p] = b
+		} else {
+			s.created[p] = true
+		}
+	}
+	return s
+}
+
+func (s includeSnapshot) restore() {
+	for p, b := range s.files {
+		if err := os.WriteFile(p, b, 0644); err != nil {
+			log.Printf("[modsec] restore %s failed: %v", p, err)
+		}
+	}
+	for p := range s.created {
+		os.Remove(p)
+	}
 }
 
 // UpdateBannedIPs writes IP ban rules synced from the dashboard.
@@ -210,13 +322,6 @@ SecRule REQUEST_HEADERS:User-Agent "@rx (?i)(sqlmap|nikto|nmap|masscan|dirbuster
 }
 
 func (e *Engine) ensureInclude() error {
-	includeTargets := []string{
-		"/etc/modsecurity/modsecurity.conf",
-		"/etc/apache2/mods-enabled/security2.conf",
-		"/etc/httpd/conf.d/mod_security.conf",
-		"/usr/local/apache/conf/modsec2.conf",
-	}
-
 	for _, target := range includeTargets {
 		content, err := os.ReadFile(target)
 		if err != nil {
@@ -242,8 +347,7 @@ func (e *Engine) ensureInclude() error {
 		return nil
 	}
 
-	confDirs := []string{"/etc/apache2/conf-enabled", "/etc/httpd/conf.d", "/usr/local/apache/conf/includes"}
-	for _, dir := range confDirs {
+	for _, dir := range includeConfDirs {
 		if _, err := os.Stat(dir); err == nil {
 			confPath := filepath.Join(dir, "infrafence-modsec.conf")
 			content := fmt.Sprintf("%s\n<IfModule security2_module>\n    IncludeOptional %s/*.conf\n</IfModule>\n", includeMarker, rulesDir)
