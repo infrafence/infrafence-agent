@@ -116,8 +116,8 @@ Cada detecção soma pontos a uma pontuação por IP. As pontuações decaem -5 
 
 ### Scanner de malware
 - **Varredura por assinatura** — 24 padrões integrados para webshells, backdoors, mineradores de cripto, kits de phishing
-- **Correspondência de hash** — mais de 64.000 hashes de malware conhecidos do MalwareBazaar e Linux Malware Detect
-- **Motor YARA** — 229 regras relevantes para web (usa a CLI yara se instalada, opcional)
+- **Consulta de hash** — cada detecção inclui o SHA-256 do arquivo, que o dashboard pode verificar no MalwareBazaar
+- **Motor YARA** — cerca de 900 regras da comunidade relevantes para web do [YARA Forge](https://github.com/YARAHQ/yara-forge) (signature-base, ReversingLabs), atualizadas diariamente; apenas fontes cuja licença permite uso comercial. Usa a CLI yara se instalada (opcional)
 - **Detecção de framework** — detecta automaticamente Laravel, WordPress, Django, Symfony, CakePHP, CodeIgniter, Node/Express, Rails, Joomla, Drupal
 - **Verificações de segurança de framework** — exposição de .env, modo DEBUG, APP_KEY, permissões abertas demais, Telescope, wp-config
 - **Análise heurística** — detecção de entropia de Shannon, anomalias de timestamp em diretórios de upload

@@ -116,8 +116,8 @@ Each detection adds points to a per-IP score. Scores decay at -5 pts/min. Action
 
 ### Malware scanner
 - **Signature scanning** — 24 built-in patterns for webshells, backdoors, crypto miners, phishing kits
-- **Hash matching** — 64,000+ known malware hashes from MalwareBazaar and Linux Malware Detect
-- **YARA engine** — 229 web-relevant rules (uses yara CLI if installed, optional)
+- **Hash lookup** — every finding carries the file's SHA-256, which the dashboard can check against MalwareBazaar
+- **YARA engine** — ~900 web-relevant community rules from [YARA Forge](https://github.com/YARAHQ/yara-forge) (signature-base, ReversingLabs), refreshed daily; only sources whose license allows commercial use. Uses the yara CLI if installed (optional)
 - **Framework detection** — auto-detects Laravel, WordPress, Django, Symfony, CakePHP, CodeIgniter, Node/Express, Rails, Joomla, Drupal
 - **Framework security checks** — .env exposure, DEBUG mode, APP_KEY, loose permissions, Telescope, wp-config
 - **Heuristic analysis** — Shannon entropy detection, timestamp anomalies in upload directories
