@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/infrafence/infrafence-agent/internal/api"
+	"github.com/infrafence/infrafence-agent/internal/intel"
 	"github.com/infrafence/infrafence-agent/internal/watcher"
 	"github.com/infrafence/infrafence-agent/internal/webserver"
 )
@@ -42,9 +43,18 @@ func applyBotPolicy(fps []watcher.BotFingerprintInput, p api.BotPolicy) []watche
 }
 
 // setDownloadedBots installs a freshly downloaded (or cached) bot list.
+// Slugs are re-derived from the patterns: a list cached by an older agent
+// has slugs from an older rule (e.g. "cc" for [cC]laude[bB]ot), and the
+// dashboard's bot settings are keyed by the current ones.
 func setDownloadedBots(webW *watcher.WebWatcher, fps []watcher.BotFingerprintInput) {
 	if len(fps) == 0 {
 		return
+	}
+	fps = append([]watcher.BotFingerprintInput(nil), fps...)
+	for i := range fps {
+		if fps[i].Pattern != "" {
+			fps[i].Slug = intel.SlugOf(fps[i].Pattern)
+		}
 	}
 	botState.Lock()
 	botState.downloaded = fps
