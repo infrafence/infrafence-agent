@@ -309,19 +309,7 @@ func runAgent() {
 
 	// Start auth.log watcher
 	w := watcher.New(func(ip, reason string, count int) {
-		log.Printf("[watcher] banning %s: %s (count=%d)", ip, reason, count)
-
-		if err := firewall.BanIP(ip); err != nil {
-			log.Printf("[firewall] error: %v", err)
-		}
-
-		if err := apiClient.ReportBan(api.BanRequest{
-			IPAddress: ip,
-			Reason:    reason,
-			BanCount:  count,
-		}); err != nil {
-			log.Printf("[api] failed to report ban: %v", err)
-		}
+		banAndReport(apiClient, "watcher", ip, reason, count)
 	})
 
 	// Detections: in monitor mode instead of a ban, otherwise alongside it
@@ -391,17 +379,7 @@ func runAgent() {
 			webLogPaths,
 			domainMap,
 			func(ip, reason string, count int) {
-				log.Printf("[webwatcher] banning %s: %s (count=%d)", ip, reason, count)
-				if err := firewall.BanIP(ip); err != nil {
-					log.Printf("[firewall] error: %v", err)
-				}
-				if err := apiClient.ReportBan(api.BanRequest{
-					IPAddress: ip,
-					Reason:    reason,
-					BanCount:  count,
-				}); err != nil {
-					log.Printf("[api] failed to report ban: %v", err)
-				}
+				banAndReport(apiClient, "webwatcher", ip, reason, count)
 			},
 			func(ip, eventType, severity string, details map[string]string) {
 				if err := apiClient.ReportEvents([]api.EventRequest{{
@@ -424,18 +402,9 @@ func runAgent() {
 		})
 		webW.SetOnScoredBan(func(ip, reason string, score int, duration time.Duration) {
 			log.Printf("[webwatcher] scored ban %s: %s (score=%d, duration=%s)", ip, reason, score, duration)
-			if err := firewall.BanIP(ip); err != nil {
-				log.Printf("[firewall] error: %v", err)
-			}
-			// Don't send ExpiresAt — let the backend apply escalation logic
-			// (1st=24h, 2nd=7d, 3rd=30d, 4th+=permanent)
-			if err := apiClient.ReportBan(api.BanRequest{
-				IPAddress: ip,
-				Reason:    reason,
-				BanCount:  1,
-			}); err != nil {
-				log.Printf("[api] failed to report scored ban: %v", err)
-			}
+			// No ExpiresAt: the backend applies escalation
+			// (1st=24h, 2nd=7d, 3rd=30d, 4th+=permanent).
+			banAndReport(apiClient, "webwatcher", ip, reason, 1)
 		})
 		// Periodically clean up expired IP scores (every 5 minutes)
 		go func() {
@@ -469,17 +438,7 @@ func runAgent() {
 	var mailW *watcher.MailWatcher
 	if watcher.HasMailService() {
 		mailW = watcher.NewMailWatcher(func(ip, reason string, count int) {
-			log.Printf("[mailwatcher] banning %s: %s (count=%d)", ip, reason, count)
-			if err := firewall.BanIP(ip); err != nil {
-				log.Printf("[firewall] error: %v", err)
-			}
-			if err := apiClient.ReportBan(api.BanRequest{
-				IPAddress: ip,
-				Reason:    reason,
-				BanCount:  count,
-			}); err != nil {
-				log.Printf("[api] failed to report ban: %v", err)
-			}
+			banAndReport(apiClient, "mailwatcher", ip, reason, count)
 		})
 		if mailW != nil {
 			mailW.SetOnEvent(func(ip, eventType, severity string, details map[string]string) {
@@ -508,17 +467,7 @@ func runAgent() {
 	var dbW *watcher.DBWatcher
 	if watcher.HasDBService() {
 		dbW = watcher.NewDBWatcher(func(ip, reason string, count int) {
-			log.Printf("[dbwatcher] banning %s: %s (count=%d)", ip, reason, count)
-			if err := firewall.BanIP(ip); err != nil {
-				log.Printf("[firewall] error: %v", err)
-			}
-			if err := apiClient.ReportBan(api.BanRequest{
-				IPAddress: ip,
-				Reason:    reason,
-				BanCount:  count,
-			}); err != nil {
-				log.Printf("[api] failed to report ban: %v", err)
-			}
+			banAndReport(apiClient, "dbwatcher", ip, reason, count)
 		})
 		if dbW != nil {
 			dbW.SetOnEvent(func(ip, eventType, severity string, details map[string]string) {
@@ -547,17 +496,7 @@ func runAgent() {
 	var ftpW *watcher.FTPWatcher
 	if watcher.HasFTPService() {
 		ftpW = watcher.NewFTPWatcher(func(ip, reason string, count int) {
-			log.Printf("[ftpwatcher] banning %s: %s (count=%d)", ip, reason, count)
-			if err := firewall.BanIP(ip); err != nil {
-				log.Printf("[firewall] error: %v", err)
-			}
-			if err := apiClient.ReportBan(api.BanRequest{
-				IPAddress: ip,
-				Reason:    reason,
-				BanCount:  count,
-			}); err != nil {
-				log.Printf("[api] failed to report ban: %v", err)
-			}
+			banAndReport(apiClient, "ftpwatcher", ip, reason, count)
 		})
 		if ftpW != nil {
 			ftpW.SetOnEvent(func(ip, eventType, severity string, details map[string]string) {
@@ -2459,3 +2398,32 @@ func runFirewallGuard(client *api.Client) {
 }
 
 func modsecurityRemove() error { return modsecurity.New().Remove() }
+
+// banAndReport bans ip at the firewall and reports the ban to the dashboard
+// once. Watchers forget their recent bans after a while, so an IP could be
+// reported again and again while it was still banned, and every report adds
+// a ban row. An IP the agent already bans (its own detection or an active
+// dashboard ban) is no longer reported; once its ban expires and is cleaned
+// up, a new detection is reported as a new ban (which drives escalation).
+func banAndReport(client *api.Client, source, ip, reason string, count int) {
+	added, err := firewall.BanIPOnce(ip)
+	if !added {
+		if err != nil {
+			log.Printf("[%s] not banning %s: %v", source, ip, err)
+		} else {
+			log.Printf("[%s] %s already banned (%s) — not reported again", source, ip, reason)
+		}
+		return
+	}
+	log.Printf("[%s] banning %s: %s (count=%d)", source, ip, reason, count)
+	if err != nil {
+		log.Printf("[firewall] error: %v", err)
+	}
+	if err := client.ReportBan(api.BanRequest{
+		IPAddress: ip,
+		Reason:    reason,
+		BanCount:  count,
+	}); err != nil {
+		log.Printf("[api] failed to report ban: %v", err)
+	}
+}
