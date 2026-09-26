@@ -120,11 +120,19 @@ func TestFirewallIntegration(t *testing.T) {
 		if !canConnect() {
 			t.Fatal("client should connect after its ban expired")
 		}
-		if err := BanIP(clientIP); err != nil {
-			t.Fatal(err)
+		if added, err := BanIPOnce(clientIP); err != nil || !added {
+			t.Fatalf("re-ban after expiry: added=%v err=%v", added, err)
 		}
 		if canConnect() {
 			t.Fatal("re-banned client could connect")
+		}
+		// A second detection of a banned IP is not a new ban (no duplicate
+		// report), and the ban stays in force.
+		if added, err := BanIPOnce(clientIP); err != nil || added {
+			t.Fatalf("second ban of the same IP: added=%v err=%v", added, err)
+		}
+		if canConnect() {
+			t.Fatal("client could connect after a repeated ban")
 		}
 	})
 
