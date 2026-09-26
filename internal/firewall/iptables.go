@@ -12,23 +12,20 @@ import (
 
 const banSetName = "infrafence-bans"
 
-// Init initializes the firewall backend: detects ipset availability
-// and creates the infrafence-bans hash:ip set if ipset is present.
+// Init sets up the INFRAFENCE chains, jumps and sets (see chain.go) and
+// migrates rules earlier versions put directly into INPUT.
 func Init() {
-	if !checkIpset() {
+	checkIpset()
+	res, err := Ensure()
+	if err != nil {
+		log.Printf("[firewall] setup failed: %v", err)
 		return
 	}
-	// Create the bans set (hash:ip, 65536 max)
-	if err := createIpsetHashIP(banSetName); err != nil {
-		log.Printf("[firewall] failed to create ban set: %v", err)
-		return
+	mode := "iptables (limited capacity)"
+	if HasIpset() {
+		mode = "ipset"
 	}
-	// Add the single iptables rule for the bans set
-	if err := addIptablesIpsetRule(banSetName); err != nil {
-		log.Printf("[firewall] failed to add iptables rule for ban set: %v", err)
-		return
-	}
-	log.Printf("[firewall] ipset ban set ready: %s (hash:ip, 65536 max)", banSetName)
+	log.Printf("[firewall] %s chain ready (%s): %v", chainName, mode, res.Repairs)
 }
 
 // SetK8sHook registers a Kubernetes-level firewall implementation.
@@ -40,7 +37,7 @@ func SetK8sHook(hook interface{}) {
 
 // FirewallStatus returns the current firewall backend status.
 type Status struct {
-	Mode       string    // "ipset" or "iptables"
+	Mode       string // "ipset" or "iptables"
 	HasIpset   bool
 	Capacity   int
 	ActiveBans int
@@ -60,15 +57,9 @@ func FirewallStatus() Status {
 			CSF:        csf,
 		}
 	}
-	rules, err := ListRules()
-	bans := 0
-	if err == nil {
-		for _, r := range rules {
-			if r.Type == "block" && r.Source != "" && r.Port == 0 {
-				bans++
-			}
-		}
-	}
+	fw.Lock()
+	bans := len(fw.bans)
+	fw.Unlock()
 	return Status{Mode: "iptables", HasIpset: false, Capacity: 500, ActiveBans: bans, CSF: csf}
 }
 
@@ -81,39 +72,39 @@ type RuleSpec struct {
 	Port      *int    // destination port (only for tcp/udp)
 }
 
-// ApplyRule adds an iptables rule based on a RuleSpec.
-// Returns nil if the rule was applied successfully.
+// ApplyRule adds an explicit dashboard rule to the INFRAFENCE-RULES chain.
 func ApplyRule(spec RuleSpec) error {
 	args := buildRuleArgs(spec)
-
-	// Check if rule already exists
-	checkArgs := append([]string{"-C", "INPUT"}, args...)
-	if exec.Command("iptables", checkArgs...).Run() == nil {
-		log.Printf("[firewall] rule already exists, skipping")
-		return nil
+	fw.Lock()
+	for _, r := range fw.userRules {
+		if equal(r, args) {
+			fw.Unlock()
+			return nil
+		}
 	}
-
-	// Insert at top of chain
-	insertArgs := append([]string{"-I", "INPUT", "1"}, args...)
-	if err := exec.Command("iptables", insertArgs...).Run(); err != nil {
-		return fmt.Errorf("iptables apply rule: %w", err)
+	fw.userRules = append(fw.userRules, args)
+	fw.Unlock()
+	if _, err := Ensure(); err != nil {
+		return fmt.Errorf("apply rule: %w", err)
 	}
-
 	log.Printf("[firewall] applied rule: %v", args)
 	return nil
 }
 
-// RemoveRule removes an iptables rule matching the given RuleSpec.
+// RemoveRule removes an explicit dashboard rule.
 func RemoveRule(spec RuleSpec) error {
 	args := buildRuleArgs(spec)
-	deleteArgs := append([]string{"-D", "INPUT"}, args...)
-
-	if err := exec.Command("iptables", deleteArgs...).Run(); err != nil {
-		return fmt.Errorf("iptables remove rule: %w", err)
+	fw.Lock()
+	kept := fw.userRules[:0]
+	for _, r := range fw.userRules {
+		if !equal(r, args) {
+			kept = append(kept, r)
+		}
 	}
-
-	log.Printf("[firewall] removed rule: %v", args)
-	return nil
+	fw.userRules = kept
+	fw.Unlock()
+	_, err := Ensure()
+	return err
 }
 
 // buildRuleArgs constructs iptables arguments for a RuleSpec.
@@ -165,16 +156,31 @@ func source(spec RuleSpec) string {
 }
 
 // protectedIPs holds additional IPs that must never be banned (e.g. the API server).
-var protectedIPs = make(map[string]bool)
+var (
+	protectedIPs = make(map[string]bool)
+	protMu       sync.RWMutex
+)
 
 // AddProtectedIPs registers IPs that must never be banned (e.g. the InfraFence API server).
 func AddProtectedIPs(ips ...string) {
+	protMu.Lock()
+	defer protMu.Unlock()
 	for _, ip := range ips {
 		if parsed := net.ParseIP(ip); parsed != nil {
 			protectedIPs[parsed.String()] = true
 			log.Printf("[firewall] added protected IP: %s", parsed)
 		}
 	}
+}
+
+func protectedList() []string {
+	protMu.RLock()
+	defer protMu.RUnlock()
+	out := make([]string, 0, len(protectedIPs))
+	for ip := range protectedIPs {
+		out = append(out, ip)
+	}
+	return out
 }
 
 // localIPs caches the server's own IP addresses (collected once at first use).
@@ -219,12 +225,14 @@ func isReservedIP(ip net.IP) bool {
 
 // isSafeIP returns true if the IP must not be banned (reserved, own server, or protected).
 func isSafeIP(ip net.IP) bool {
-	return isReservedIP(ip) || isLocalIP(ip) || protectedIPs[ip.String()]
+	protMu.RLock()
+	protected := protectedIPs[ip.String()]
+	protMu.RUnlock()
+	return isReservedIP(ip) || isLocalIP(ip) || protected
 }
 
-// BanIP adds a DROP rule for the given IP address.
-// When ipset is available, adds to the infrafence-bans hash:ip set (O(1), 65K capacity).
-// Otherwise falls back to individual iptables rules.
+// BanIP blocks an IP in the INFRAFENCE chain (via the infrafence-bans ipset
+// when available, otherwise a rule in the chain).
 func BanIP(ip string) error {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
@@ -233,131 +241,118 @@ func BanIP(ip string) error {
 	if isSafeIP(parsed) {
 		return fmt.Errorf("refusing to ban safe IP: %s", ip)
 	}
+	fw.Lock()
+	fw.bans[parsed.String()] = true
+	fw.Unlock()
 
 	if HasIpset() {
 		return ipsetAdd(banSetName, ip)
 	}
-
-	return ApplyRule(RuleSpec{
-		Type:      "block",
-		Protocol:  "all",
-		IPAddress: &ip,
-	})
+	if parsed.To4() == nil {
+		return fmt.Errorf("IPv6 bans need ipset: %s", ip)
+	}
+	if _, err := run("iptables", "-C", chainName, "-s", ip, "-j", "DROP"); err == nil {
+		return nil
+	}
+	if out, err := run("iptables", "-A", chainName, "-s", ip, "-j", "DROP"); err != nil {
+		return fmt.Errorf("ban %s: %s (%w)", ip, out, err)
+	}
+	return nil
 }
 
-// UnbanIP removes the DROP rule for the given IP address.
+// UnbanIP removes an agent ban. It only ever touches the INFRAFENCE chain.
 func UnbanIP(ip string) error {
-	if net.ParseIP(ip) == nil {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
 		return fmt.Errorf("invalid IP address: %s", ip)
 	}
+	fw.Lock()
+	delete(fw.bans, parsed.String())
+	fw.Unlock()
 
 	if HasIpset() {
 		return ipsetDel(banSetName, ip)
 	}
-
-	return RemoveRule(RuleSpec{
-		Type:      "block",
-		Protocol:  "all",
-		IPAddress: &ip,
-	})
+	_, _ = run("iptables", "-D", chainName, "-s", ip, "-j", "DROP")
+	return nil
 }
 
-// ApplyBans applies a list of IPs from the server sync.
-// When ipset is available, uses batch restore for maximum speed.
+var legacyBansMigrated sync.Once
+
+// ApplyBans applies the ban list from the server sync.
 func ApplyBans(ips []string) {
-	if HasIpset() && len(ips) > 0 {
-		// Filter safe IPs before batch add
-		var safe []string
-		for _, ip := range ips {
-			parsed := net.ParseIP(ip)
-			if parsed != nil && !isSafeIP(parsed) {
-				safe = append(safe, ip)
-			}
+	var safe []string
+	for _, ip := range ips {
+		if parsed := net.ParseIP(ip); parsed != nil && !isSafeIP(parsed) {
+			safe = append(safe, parsed.String())
 		}
+	}
+	fw.Lock()
+	for _, ip := range safe {
+		fw.bans[ip] = true
+	}
+	fw.Unlock()
+
+	if HasIpset() {
 		if err := ipsetBatchAdd(banSetName, safe); err != nil {
 			log.Printf("[firewall] ipset batch ban failed: %v", err)
 		}
-		return
+	} else if _, err := Ensure(); err != nil {
+		log.Printf("[firewall] apply bans: %v", err)
 	}
-	for _, ip := range ips {
-		if err := BanIP(ip); err != nil {
-			log.Printf("[firewall] error applying ban for %s: %v", ip, err)
+	// Earlier versions put each ban straight into INPUT. Remove those, but
+	// only for IPs that are the agent's own bans.
+	legacyBansMigrated.Do(func() { migrateLegacyBans(safe) })
+}
+
+// CleanupStaleBans removes agent bans that are no longer active server-side.
+// It only touches the agent's own bans (INFRAFENCE chain / ipset), never
+// rules someone else put in INPUT.
+func CleanupStaleBans(activeBanIPs map[string]bool, activeRuleIPs map[string]bool) int {
+	fw.Lock()
+	var stale []string
+	for ip := range fw.bans {
+		if !activeBanIPs[ip] && !activeRuleIPs[ip] {
+			stale = append(stale, ip)
 		}
 	}
-}
-
-// CleanupStaleBans removes bans for IPs that are no longer in the active ban list.
-// When ipset is available, flushes the set and re-adds only active IPs (atomic swap).
-// When using iptables, removes individual DROP rules.
-func CleanupStaleBans(activeBanIPs map[string]bool, activeRuleIPs map[string]bool) int {
-	if HasIpset() {
-		return cleanupIpsetBans(activeBanIPs)
+	for _, ip := range stale {
+		delete(fw.bans, ip)
 	}
-	return cleanupIptablesBans(activeBanIPs, activeRuleIPs)
-}
-
-// cleanupIpsetBans syncs the ipset to match exactly the active bans.
-func cleanupIpsetBans(activeBanIPs map[string]bool) int {
-	// List current entries in the set
-	currentIPs := ipsetListMembers(banSetName)
-	if len(currentIPs) == 0 && len(activeBanIPs) == 0 {
-		return 0
-	}
+	fw.Unlock()
 
 	removed := 0
-	for _, ip := range currentIPs {
-		if !activeBanIPs[ip] {
-			if err := ipsetDel(banSetName, ip); err == nil {
-				removed++
+	if HasIpset() {
+		// Also drop set members the agent no longer knows about (e.g. from
+		// before a restart).
+		for _, ip := range ipsetListMembers(banSetName) {
+			if !activeBanIPs[ip] && !activeRuleIPs[ip] {
+				if err := ipsetDel(banSetName, ip); err == nil {
+					removed++
+				}
+			}
+		}
+	} else {
+		removed = len(stale)
+		if removed > 0 {
+			if _, err := Ensure(); err != nil {
+				log.Printf("[firewall] cleanup: %v", err)
 			}
 		}
 	}
-
 	if removed > 0 {
-		log.Printf("[firewall] cleanup: removed %d expired bans from ipset", removed)
-	}
-	return removed
-}
-
-// cleanupIptablesBans removes individual iptables DROP rules for expired bans.
-func cleanupIptablesBans(activeBanIPs map[string]bool, activeRuleIPs map[string]bool) int {
-	current, err := ListRules()
-	if err != nil {
-		log.Printf("[firewall] cleanup: cannot list rules: %v", err)
-		return 0
-	}
-
-	removed := 0
-	for _, r := range current {
-		if r.Type != "block" || r.Source == "" || r.Port != 0 || r.Protocol != "all" {
-			continue
-		}
-		if activeBanIPs[r.Source] {
-			continue
-		}
-		if activeRuleIPs[r.Source] {
-			continue
-		}
-		if err := UnbanIP(r.Source); err != nil {
-			log.Printf("[firewall] cleanup: failed to remove stale ban for %s: %v", r.Source, err)
-		} else {
-			removed++
-		}
-	}
-
-	if removed > 0 {
-		log.Printf("[firewall] cleanup: removed %d expired iptables bans", removed)
+		log.Printf("[firewall] cleanup: removed %d expired bans", removed)
 	}
 	return removed
 }
 
 // ParsedRule represents an iptables rule parsed from `iptables -S INPUT`.
 type ParsedRule struct {
-	RawRule   string
-	Type      string // "block" or "allow"
-	Protocol  string // "tcp", "udp", "icmp", "all"
-	Source    string // IP address (no CIDR /32)
-	Port      int    // 0 means no port
+	RawRule  string
+	Type     string // "block" or "allow"
+	Protocol string // "tcp", "udp", "icmp", "all"
+	Source   string // IP address (no CIDR /32)
+	Port     int    // 0 means no port
 }
 
 // ListRules reads existing INPUT chain rules via `iptables -S INPUT`

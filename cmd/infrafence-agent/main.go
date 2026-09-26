@@ -708,6 +708,7 @@ func runAgent() {
 
 	intel.SetVersion(version)
 	go runIntelUpdater(webW)
+	go runFirewallGuard(apiClient)
 
 	// NOTE: Realtime malware watcher is NOT started here.
 	// It only starts when malware scanning is enabled via dashboard config.
@@ -1105,8 +1106,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 	geo.SetBlocked(blockedCountries)
 
-	// Pass whitelisted IPs to geoblocker so they get ACCEPT rules before geo DROPs
-	geoBlocker.SetWhitelistedIPs(wlIPs)
+	// Whitelisted IPs/CIDRs are exempted from every InfraFence block (bans,
+	// threat feeds, geo). This does not open anything in the host firewall.
+	firewall.SetAllowList(append(append([]string{}, wlIPs...), wlCIDRs...))
 
 	// Apply proactive country blocks via ipset hash:net (kernel-level, all CIDRs)
 	if !sync.Config.MonitorMode {
@@ -2430,5 +2432,55 @@ func runYaraRulesUpdater(client *api.Client) {
 			}
 		}
 		time.Sleep(time.Hour)
+	}
+}
+
+// runFirewallGuard re-checks every minute that the INFRAFENCE chains, jumps
+// and sets are in place. Other tools (ufw/firewalld reloads, csf -r,
+// netfilter-persistent, iptables-restore) can remove them, which silently
+// stops every ban; this puts them back and reports it. Repeated repairs mean
+// something keeps rewriting the firewall, reported as a conflict.
+func runFirewallGuard(client *api.Client) {
+	var repairs []time.Time
+	var lastConflict time.Time
+	for range time.Tick(time.Minute) {
+		res, err := firewall.Ensure()
+		if err != nil {
+			log.Printf("[firewall] guard: %v", err)
+			continue
+		}
+		if res.First || len(res.Repairs) == 0 {
+			continue
+		}
+		log.Printf("[firewall] guard: restored %v", res.Repairs)
+		now := time.Now()
+		recent := repairs[:0]
+		for _, t := range repairs {
+			if now.Sub(t) < time.Hour {
+				recent = append(recent, t)
+			}
+		}
+		repairs = append(recent, now)
+		events := []api.EventRequest{{
+			Type:       "firewall_rules_restored",
+			Severity:   "warning",
+			Details:    map[string]string{"restored": strings.Join(res.Repairs, ", ")},
+			OccurredAt: now.UTC().Format(time.RFC3339),
+		}}
+		if len(repairs) >= 3 && now.Sub(lastConflict) >= time.Hour {
+			lastConflict = now
+			events = append(events, api.EventRequest{
+				Type:     "firewall_conflict",
+				Severity: "warning",
+				Details: map[string]string{
+					"restores_last_hour": strconv.Itoa(len(repairs)),
+					"hint":               "another tool keeps rewriting the firewall (ufw, firewalld, csf, netfilter-persistent, a config-management run?)",
+				},
+				OccurredAt: now.UTC().Format(time.RFC3339),
+			})
+		}
+		if err := client.ReportEvents(events); err != nil {
+			log.Printf("[firewall] guard: failed to report: %v", err)
+		}
 	}
 }

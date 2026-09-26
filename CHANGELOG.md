@@ -272,7 +272,7 @@ All notable changes to the InfraFence Agent.
 - Automated build + push on every release tag
 
 ## v0.9.60
-- **Threat feed blocking** — Spamhaus DROP/EDROP, Feodo Tracker, CINS Army applied to firewall
+- **Threat feed blocking** — public threat-intelligence blocklists applied to firewall
 - Pre-emptive blocking of known-bad IPs
 
 ## v0.9.59
