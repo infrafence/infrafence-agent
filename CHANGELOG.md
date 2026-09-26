@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.21
+- **feat: 24 hosting panels recognized, with one detection.** Panels were detected in two places that disagreed: the preflight scan (13 panels, decides whether web server edits are safe) and the panel shown in the dashboard (only cPanel, Plesk, DirectAdmin). Both now use the same detection, which also recognizes Easypanel, Dokploy, CapRover, aaPanel, CentOS Web Panel, Webmin, KeyHelp, Froxlor, Enhance, Laravel Forge and Ploi (markers taken from each panel's documentation or install script). The version is reported where the panel records it (cPanel/WHM, Plesk, DirectAdmin, HestiaCP, Webmin/Virtualmin). Every recognized panel prevents InfraFence from editing the web server configuration.
+
 ## v1.0.20
 - **fix: bot settings apply right after upgrading.** The agent loads the bot list from its cache at startup and re-downloads it once a day; after upgrading to v1.0.19 the cache still carried the old bot ids (`cc` for ClaudeBot), so a setting for `claudebot` didn't apply for up to 24 hours. Ids are now re-derived from the patterns whenever the list is loaded.
 
