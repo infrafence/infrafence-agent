@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/config"
 	"github.com/infrafence/infrafence-agent/internal/firewall"
 	"github.com/infrafence/infrafence-agent/internal/geoip"
+	"github.com/infrafence/infrafence-agent/internal/intel"
 	"github.com/infrafence/infrafence-agent/internal/kubernetes"
 	"github.com/infrafence/infrafence-agent/internal/malware"
 	"github.com/infrafence/infrafence-agent/internal/modsecurity"
@@ -444,7 +447,6 @@ func runAgent() {
 		webW.SetModsecDedup(modsecDedup)
 		webW.LoadBotFingerprintsCache()
 		webW.LoadWafRulesCache()
-		loadThreatFeedCache()
 	} else {
 		log.Printf("[webwatcher] no access logs found — web attack detection disabled (set WEB_LOG_PATH to override)")
 	}
@@ -703,6 +705,9 @@ func runAgent() {
 	if err := syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName); err != nil {
 		log.Printf("[sync] initial sync failed: %v", err)
 	}
+
+	intel.SetVersion(version)
+	go runIntelUpdater(webW)
 
 	// NOTE: Realtime malware watcher is NOT started here.
 	// It only starts when malware scanning is enabled via dashboard config.
@@ -1120,11 +1125,17 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		firewall.ApplyBans(banIPs)
 	}
 
-	// Apply threat feed blocks (IPs + CIDRs from Spamhaus, Feodo, etc.)
-	if !sync.Config.MonitorMode && len(sync.ThreatFeed) > 0 {
-		go applyThreatFeed(sync.ThreatFeed)
+	// Threat intel: lists the agent downloads itself (internal/intel) plus any
+	// the dashboard sends. Re-applied only when one of its inputs changes.
+	intelState.Lock()
+	intelState.monitorMode = sync.Config.MonitorMode
+	intelState.whitelist = append(append([]string{}, wlIPs...), wlCIDRs...)
+	if len(sync.ThreatFeed) > 0 {
+		intelState.dashboardFeed = sync.ThreatFeed
 		saveThreatFeedCache(sync.ThreatFeed)
 	}
+	intelState.Unlock()
+	go applyThreatIntel()
 
 	// Build set of IPs managed by user firewall rules (so cleanup doesn't remove them)
 	activeRuleIPs := make(map[string]bool)
@@ -1150,7 +1161,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		}
 	}
 
-	// Apply bot fingerprints to web watcher
+	// Apply bot fingerprints to web watcher. When the dashboard supplies none,
+	// the list downloaded by runIntelUpdater is used instead.
+	dashboardBots.Store(len(sync.BotFingerprints) > 0)
 	if webW != nil && len(sync.BotFingerprints) > 0 {
 		fps := make([]watcher.BotFingerprintInput, len(sync.BotFingerprints))
 		for i, fp := range sync.BotFingerprints {
@@ -1987,24 +2000,6 @@ func reportHealthCheck(client *api.Client, monitorType string, result monitor.Sc
 
 const threatFeedCache = "/etc/infrafence/threat_feed.json"
 
-func applyThreatFeed(entries []api.ThreatEntry) {
-	threatFeedIndex.Update(entries)
-
-	for _, e := range entries {
-		if e.IP != nil && *e.IP != "" {
-			if err := firewall.BanIP(*e.IP); err != nil {
-				log.Printf("[threat-feed] ban %s (%s): %v", *e.IP, e.Source, err)
-			}
-		} else if e.CIDR != nil && *e.CIDR != "" {
-			cidr := *e.CIDR
-			if err := firewall.ApplyRule(firewall.RuleSpec{Type: "block", IPRange: &cidr}); err != nil {
-				log.Printf("[threat-feed] block cidr %s (%s): %v", cidr, e.Source, err)
-			}
-		}
-	}
-	log.Printf("[threat-feed] applied %d entries", len(entries))
-}
-
 func saveThreatFeedCache(entries []api.ThreatEntry) {
 	data, err := json.Marshal(entries)
 	if err != nil {
@@ -2018,18 +2013,131 @@ func saveThreatFeedCache(entries []api.ThreatEntry) {
 	}
 }
 
-func loadThreatFeedCache() {
+func loadThreatFeedCache() []api.ThreatEntry {
 	data, err := os.ReadFile(threatFeedCache)
 	if err != nil {
-		return
+		return nil
 	}
 	var entries []api.ThreatEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		log.Printf("[threat-feed] failed to parse cache: %v", err)
+		return nil
+	}
+	return entries
+}
+
+var intelState struct {
+	sync.Mutex
+	monitorMode   bool
+	whitelist     []string
+	dashboardFeed []api.ThreatEntry
+	downloaded    []api.ThreatEntry
+	appliedKey    string
+}
+
+var dashboardBots atomic.Bool
+
+// applyThreatIntel updates the egress/DNS lookup index and the inbound
+// blocklist from the downloaded and dashboard feeds. Inbound blocking needs
+// ipset (thousands of entries don't fit as individual iptables rules) and is
+// off in monitor mode; detection works either way.
+func applyThreatIntel() {
+	intelState.Lock()
+	defer intelState.Unlock()
+
+	all := append(append([]api.ThreatEntry{}, intelState.downloaded...), intelState.dashboardFeed...)
+	key := fmt.Sprintf("%d|%d|%v|%s", len(intelState.downloaded), len(intelState.dashboardFeed),
+		intelState.monitorMode, strings.Join(intelState.whitelist, ","))
+	if key == intelState.appliedKey {
 		return
 	}
-	log.Printf("[threat-feed] applying %d cached entries at startup", len(entries))
-	applyThreatFeed(entries)
+	intelState.appliedKey = key
+
+	threatFeedIndex.Update(all)
+	if intelState.monitorMode {
+		firewall.ClearThreatSet()
+		log.Printf("[threat-feed] %d entries loaded for detection (monitor mode: not blocking)", len(all))
+		return
+	}
+	var nets []string
+	for _, e := range all {
+		if e.IP != nil && *e.IP != "" {
+			nets = append(nets, *e.IP)
+		} else if e.CIDR != nil && *e.CIDR != "" {
+			nets = append(nets, *e.CIDR)
+		}
+	}
+	applied, skipped, err := firewall.ApplyThreatSet(nets, intelState.whitelist)
+	switch {
+	case errors.Is(err, firewall.ErrNoIpset):
+		log.Printf("[threat-feed] %d entries loaded for egress/DNS detection; inbound blocking needs ipset (not installed)", len(all))
+	case err != nil:
+		log.Printf("[threat-feed] inbound blocklist update failed: %v", err)
+	default:
+		log.Printf("[threat-feed] %d entries: %d blocked inbound, %d skipped (protected/whitelisted/too broad)", len(all), applied, skipped)
+	}
+}
+
+// runIntelUpdater keeps the downloaded threat feeds and bot fingerprints
+// current: loaded from cache at startup, re-downloaded once a day.
+func runIntelUpdater(webW *watcher.WebWatcher) {
+	if cached := loadThreatFeedCache(); len(cached) > 0 {
+		intelState.Lock()
+		if len(intelState.dashboardFeed) == 0 {
+			intelState.dashboardFeed = cached
+		}
+		intelState.Unlock()
+	}
+	feeds, feedsAt := intel.LoadCache[api.ThreatEntry]("threat_feeds.json")
+	bots, botsAt := intel.LoadCache[watcher.BotFingerprintInput]("bot_fingerprints.json")
+	intelState.Lock()
+	intelState.downloaded = feeds
+	intelState.Unlock()
+	applyThreatIntel()
+	applyDownloadedBots(webW, bots)
+
+	for {
+		if time.Since(feedsAt) >= intel.RefreshInterval {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			entries, errs := intel.FetchThreatFeeds(ctx)
+			cancel()
+			for _, err := range errs {
+				log.Printf("[threat-feed] download: %v", err)
+			}
+			if len(entries) > 0 {
+				feedsAt = time.Now()
+				if err := intel.SaveCache("threat_feeds.json", entries); err != nil {
+					log.Printf("[threat-feed] cache: %v", err)
+				}
+				intelState.Lock()
+				intelState.downloaded = entries
+				intelState.Unlock()
+				applyThreatIntel()
+			}
+		}
+		if time.Since(botsAt) >= intel.RefreshInterval {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			fps, err := intel.FetchBotFingerprints(ctx)
+			cancel()
+			if err != nil {
+				log.Printf("[bots] download: %v", err)
+			} else {
+				botsAt = time.Now()
+				if err := intel.SaveCache("bot_fingerprints.json", fps); err != nil {
+					log.Printf("[bots] cache: %v", err)
+				}
+				applyDownloadedBots(webW, fps)
+			}
+		}
+		time.Sleep(time.Hour)
+	}
+}
+
+func applyDownloadedBots(webW *watcher.WebWatcher, fps []watcher.BotFingerprintInput) {
+	if webW == nil || len(fps) == 0 || dashboardBots.Load() {
+		return
+	}
+	webW.UpdateBotFingerprints(fps)
 }
 
 // runMalwareScan detects web roots, runs malware signature scanning and framework checks.
