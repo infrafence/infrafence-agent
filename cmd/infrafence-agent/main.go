@@ -23,6 +23,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/api"
 	"github.com/infrafence/infrafence-agent/internal/collector"
 	"github.com/infrafence/infrafence-agent/internal/config"
+	"github.com/infrafence/infrafence-agent/internal/dnswatch"
 	"github.com/infrafence/infrafence-agent/internal/firewall"
 	"github.com/infrafence/infrafence-agent/internal/geoip"
 	"github.com/infrafence/infrafence-agent/internal/intel"
@@ -53,6 +54,23 @@ var malwareCustomPaths []string
 var modsecEngine *modsecurity.Engine
 var sessionTracker *session.SessionTracker
 var threatFeedIndex = monitor.NewThreatFeedIndex()
+
+// dnsInspector inspects DNS packets (internal/dnswatch); started by the
+// first sync unless the dashboard turned it off.
+var dnsInspector = dnswatch.NewInspector(
+	func(ev []api.EventRequest) {
+		if apiClient := currentAPIClient.Load(); apiClient != nil {
+			if err := apiClient.ReportEvents(ev); err != nil {
+				log.Printf("[dns-inspect] failed to report: %v", err)
+			}
+		}
+	},
+	threatFeedIndex.Lookup,
+	monitor.ConfiguredResolvers,
+)
+
+// currentAPIClient lets package-level components report events.
+var currentAPIClient atomic.Pointer[api.Client]
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -150,6 +168,7 @@ func runAgent() {
 	}
 
 	apiClient := api.New(cfg.ServerURL, cfg.AgentToken)
+	currentAPIClient.Store(apiClient)
 	apiClient.SetVersion(version)
 
 	// Callback for the updater to report update outcomes to the server
@@ -1799,6 +1818,7 @@ func runSecurityMonitors(client *api.Client) {
 	integrity := monitor.NewIntegrityDetector()
 	egress := monitor.NewEgressDetector(threatFeedIndex)
 	dns := monitor.NewDNSDetector(threatFeedIndex)
+	dns.SkipResolverChecks = dnsInspector.Running
 
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
