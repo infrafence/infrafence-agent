@@ -57,6 +57,10 @@ type DNSDetector struct {
 	connSource  func() ([]UDPFlow, error)
 	owners      func(inodes map[uint64]bool) map[uint64]*ProcInfo
 	readConfigs func() map[string]bool
+
+	// SkipResolverChecks, when it returns true, leaves resolver checks to
+	// the packet-level DNS inspector (which sees every query).
+	SkipResolverChecks func() bool
 }
 
 func NewDNSDetector(feed *ThreatFeedIndex) *DNSDetector {
@@ -71,6 +75,9 @@ func NewDNSDetector(feed *ThreatFeedIndex) *DNSDetector {
 	d.configured, d.configuredAt = d.readConfigs(), time.Now()
 	return d
 }
+
+// ConfiguredResolvers returns the DNS servers the host is configured to use.
+func ConfiguredResolvers() map[string]bool { return readConfiguredResolvers(resolverFiles) }
 
 // readConfiguredResolvers parses "nameserver <ip>" lines from files.
 func readConfiguredResolvers(files []string) map[string]bool {
@@ -100,6 +107,9 @@ func (d *DNSDetector) configuredList() string {
 }
 
 func (d *DNSDetector) Scan() ScanResult {
+	if d.SkipResolverChecks != nil && d.SkipResolverChecks() {
+		return ScanResult{Summary: map[string]string{"dns": "inspected at packet level"}}
+	}
 	flows, err := d.connSource()
 	if err != nil {
 		log.Printf("[dns] error reading /proc/net/udp: %v", err)
@@ -183,7 +193,7 @@ func (d *DNSDetector) Scan() ScanResult {
 
 		// The machine's own DNS service talking to its upstream or root
 		// servers is what it's for.
-		if isSystemResolver(owner) {
+		if IsSystemResolver(owner) {
 			continue
 		}
 		d.seenResolvers[ipStr] = now
