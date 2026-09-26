@@ -121,6 +121,7 @@ type WebWatcher struct {
 	wafDetectOnly map[string]bool
 	wafThresholds map[string]int
 	wafScorePoints map[string]int  // per-type score weights from panel
+	wafDisabled    map[string]bool // built-in pattern IDs disabled from panel
 	monitorMode   bool // when true, all event types are detect-only
 
 	// Bot fingerprints from panel sync
@@ -1650,6 +1651,10 @@ var instantBanPatterns = []struct {
 	}, "web_exploit"},
 }
 
+var headerInjectionPatterns = []string{"\r\n", "%0d%0a", "content-type:", "set-cookie:"}
+
+const shellshockPattern = "() {"
+
 var scannerAgents = []string{
 	"sqlmap", "nikto", "nmap", "masscan", "dirbuster", "wpscan",
 	"gobuster", "dirb", "nuclei", "acunetix", "nessus", "openvas",
@@ -1774,6 +1779,9 @@ func (w *WebWatcher) processLine(logPath, line string) {
 			continue
 		}
 		for _, pat := range rule.patterns {
+			if w.wafDisabled[rule.name+":"+pat] {
+				continue
+			}
 			if strings.Contains(uriLower, pat) || strings.Contains(uriRaw, pat) {
 				eventType := rule.eventType
 				if eventType == "web_shell" {
@@ -1833,6 +1841,9 @@ func (w *WebWatcher) processLine(logPath, line string) {
 	// ── Score-based: known scanner user-agents ──
 	if w.isTypeEnabled("scanner_detected") {
 		for _, agent := range scannerAgents {
+			if w.wafDisabled["scanner_ua:"+agent] {
+				continue
+			}
 			if strings.Contains(uaLower, agent) {
 				w.addScore(ip, "scanner_detected", logPath, line, map[string]string{
 				"domain":     entry.domain,
@@ -1927,7 +1938,8 @@ func (w *WebWatcher) processLine(logPath, line string) {
 	}
 
 	// ── Score-based: Shellshock (CVE-2014-6271) ──
-	if w.isTypeEnabled("shellshock") && (strings.Contains(refLower, "() {") || strings.Contains(uaLower, "() {")) {
+	if w.isTypeEnabled("shellshock") && !w.wafDisabled["shellshock:"+shellshockPattern] &&
+		(strings.Contains(refLower, shellshockPattern) || strings.Contains(uaLower, shellshockPattern)) {
 		w.addScore(ip, "shellshock", logPath, line, map[string]string{
 				"domain":     entry.domain,
 			"uri":        entry.uri,
@@ -1939,7 +1951,10 @@ func (w *WebWatcher) processLine(logPath, line string) {
 
 	// ── Score-based: Header injection ──
 	if w.isTypeEnabled("header_injection") {
-		for _, pat := range []string{"\r\n", "%0d%0a", "content-type:", "set-cookie:"} {
+		for _, pat := range headerInjectionPatterns {
+			if w.wafDisabled["header_injection:"+pat] {
+				continue
+			}
 			if strings.Contains(uaLower, pat) || strings.Contains(refLower, pat) {
 				w.addScore(ip, "header_injection", logPath, line, map[string]string{
 				"domain":     entry.domain,
@@ -2170,6 +2185,9 @@ type WAFConfig struct {
 	DetectOnlyTypes []string       `json:"detect_only_types"`
 	Thresholds      map[string]int `json:"thresholds"`
 	ScorePoints     map[string]int `json:"score_points"`
+	// DisabledPatterns lists built-in pattern IDs ("group:pattern", see
+	// BuiltinWAFCatalog) to skip, e.g. for a false positive on one site.
+	DisabledPatterns []string `json:"disabled_patterns"`
 }
 
 // UpdateWAFConfig applies WAF configuration from the panel.
@@ -2183,7 +2201,16 @@ func (w *WebWatcher) UpdateWAFConfig(cfg *WAFConfig) {
 		w.wafEnabled = nil
 		w.wafDetectOnly = nil
 		w.wafThresholds = nil
+		w.wafDisabled = nil
 		return
+	}
+
+	w.wafDisabled = nil
+	if len(cfg.DisabledPatterns) > 0 {
+		w.wafDisabled = make(map[string]bool, len(cfg.DisabledPatterns))
+		for _, id := range cfg.DisabledPatterns {
+			w.wafDisabled[id] = true
+		}
 	}
 
 	if cfg.EnabledTypes != nil {

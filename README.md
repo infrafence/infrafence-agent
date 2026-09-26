@@ -102,14 +102,14 @@ helm install infrafence-agent \
 | RCE / Web shell / Shellshock | +50 | Score-based |
 | Scanner UA (sqlmap, nikto, nmap, nuclei...) | +50 | Score-based |
 | SQL injection / SSRF / Web exploit | +40 | Score-based |
-| Honeypot trap (50+ decoy endpoints) | +40 | Score-based |
+| Honeypot trap (decoy paths you define as custom rules) | +40 | Score-based |
 | Path traversal / Header injection | +30 | Score-based |
 | WordPress brute force | +30 | Threshold (10 req / 2 min) |
 | XSS / `.env` probe / XMLRPC | +25 | Score-based |
 | Config probing / Scanner pattern | +20 | Score-based |
 | 404 flood | +15 | Threshold (30 req / 5 min) |
 
-Each detection adds points to a per-IP score. Scores decay at -5 pts/min. Action levels: **observe** (30) → **throttle** (60) → **block 1h** (80) → **blacklist 24h** (100+). All weights configurable per server.
+Each detection adds points to a per-IP score. Scores decay at -5 pts/min. Action levels: **observe** (30) → **throttle** (60) → **block 1h** (80) → **blacklist 24h** (100+). From the dashboard you can see every built-in rule, change weights, thresholds and per-type mode, turn off individual patterns, and add your own rules (URL, User-Agent or Referer, plain text or regex).
 
 ### Bot management
 70+ bot fingerprints (search engines, AI crawlers, SEO tools, scanners). Per-org policies: **allow** / **log** / **block**. Blocked bots are rejected at nginx/Apache level — connection closed before your app is reached.

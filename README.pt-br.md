@@ -102,14 +102,14 @@ helm install infrafence-agent \
 | RCE / Web shell / Shellshock | +50 | Por pontuação |
 | User agent de scanner (sqlmap, nikto, nmap, nuclei...) | +50 | Por pontuação |
 | SQL injection / SSRF / Exploit web | +40 | Por pontuação |
-| Honeypot (50+ endpoints isca) | +40 | Por pontuação |
+| Honeypot (caminhos isca definidos como regras personalizadas) | +40 | Por pontuação |
 | Path traversal / Header injection | +30 | Por pontuação |
 | Força bruta WordPress | +30 | Limite (10 req / 2 min) |
 | XSS / sondagem `.env` / XMLRPC | +25 | Por pontuação |
 | Sondagem de config / Padrão de scanner | +20 | Por pontuação |
 | Flood 404 | +15 | Limite (30 req / 5 min) |
 
-Cada detecção soma pontos a uma pontuação por IP. As pontuações decaem -5 pts/min. Níveis de ação: **observar** (30) → **conter** (60) → **bloquear 1h** (80) → **lista negra 24h** (100+). Todos os pesos são configuráveis por servidor.
+Cada detecção soma pontos a uma pontuação por IP. As pontuações decaem -5 pts/min. Níveis de ação: **observar** (30) → **conter** (60) → **bloquear 1h** (80) → **lista negra 24h** (100+). Pelo dashboard você vê todas as regras integradas, muda pesos, limites e modo por tipo, desativa padrões individuais e adiciona suas próprias regras (URL, User-Agent ou Referer, texto ou regex).
 
 ### Gestão de bots
 70+ fingerprints de bots (motores de busca, crawlers de IA, ferramentas de SEO, scanners). Políticas por organização: **permitir** / **registrar** / **bloquear**. Bots bloqueados são rejeitados no nível do nginx/Apache — conexão encerrada antes de chegar à sua aplicação.
