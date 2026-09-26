@@ -92,6 +92,7 @@ func (s *syncRunner) Loop(ctx context.Context) {
 		case <-s.requests:
 		default:
 		}
+		log.Printf("[sync] syncing now (%s)", reason)
 		_ = s.Now(reason)
 	}
 }
