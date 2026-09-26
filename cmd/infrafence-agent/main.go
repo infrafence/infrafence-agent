@@ -320,9 +320,9 @@ func runAgent() {
 		}
 	})
 
-	// Set event callback for monitor mode (report detections without banning)
+	// Detections: in monitor mode instead of a ban, otherwise alongside it
 	w.SetOnEvent(func(ip, eventType, severity string, details map[string]string) {
-		log.Printf("[watcher] detected %s from %s (monitor mode)", eventType, ip)
+		log.Printf("[watcher] detected %s from %s (action=%s)", eventType, ip, details["action"])
 		apiClient.ReportEvents([]api.EventRequest{{
 			Type:       eventType,
 			Severity:   severity,
