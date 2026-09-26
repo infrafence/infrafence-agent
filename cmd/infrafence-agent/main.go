@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -623,6 +624,8 @@ func runAgent() {
 			yaraScanner.UpdateRules(cached.Rules)
 		}
 	}
+
+	go runYaraRulesUpdater(apiClient)
 
 	// Realtime watcher: polls upload directories for new PHP files
 	malwareRTWatcher = malware.NewRealtimeWatcher(func(path, domain string) {
@@ -1286,9 +1289,16 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 
 	// Process quarantine requests from dashboard
 	if len(sync.QuarantinePending) > 0 {
+		webRoots := malware.DetectWebRoots(malwareCustomPaths)
 		for _, filePath := range sync.QuarantinePending {
 			log.Printf("[quarantine] processing request: %s", filePath)
-			if _, err := malware.QuarantineFile(filePath); err != nil {
+			err := malware.ValidateQuarantinePath(filePath, webRoots)
+			if err != nil {
+				err = fmt.Errorf("refused: %w", err)
+			} else {
+				_, err = malware.QuarantineFile(filePath)
+			}
+			if err != nil {
 				log.Printf("[quarantine] failed to quarantine %s: %v", filePath, err)
 				if reportErr := client.ReportEvents([]api.EventRequest{{
 					Type:       "quarantine_failed",
@@ -2166,6 +2176,9 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 				FilePath: f.FilePath, SignatureID: f.SignatureID, Name: f.Name,
 				Severity: f.Severity, Type: f.Type, MatchLine: f.MatchLine,
 				MatchText: f.MatchText, Domain: f.Domain, Framework: f.Framework,
+				FileSHA256:      malware.FileSHA256(f.FilePath),
+				RuleDescription: f.RuleDescription, RuleAuthor: f.RuleAuthor,
+				RuleReference: f.RuleReference, RuleSource: f.RuleSource, RuleLicense: f.RuleLicense,
 			})
 		}
 		allFindings = append(allFindings, rootResult.Findings...)
@@ -2276,5 +2289,37 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 	}}); err != nil {
 		log.Printf("[malware] failed to report malware_scan_completed: %v", err)
+	}
+}
+
+// runYaraRulesUpdater keeps the YARA Forge rule set current: checked hourly
+// while none is installed (e.g. right after YARA gets installed), otherwise
+// once a day. YARA Forge publishes weekly, so most daily checks are no-ops.
+func runYaraRulesUpdater(client *api.Client) {
+	time.Sleep(2 * time.Minute)
+	var lastCheck time.Time
+	for {
+		ys := yaraScanner
+		if ys != nil && ys.IsAvailable() && (!ys.HasRules() || time.Since(lastCheck) >= 24*time.Hour) {
+			lastCheck = time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			version, count, changed, err := ys.ForgeUpdate(ctx)
+			cancel()
+			switch {
+			case err != nil:
+				log.Printf("[yara] rules update failed: %v", err)
+			case changed:
+				log.Printf("[yara] installed YARA Forge rules %s (%d web rules)", version, count)
+				if err := client.ReportEvents([]api.EventRequest{{
+					Type:       "yara_rules_updated",
+					Severity:   "info",
+					Details:    map[string]string{"version": version, "rules": fmt.Sprintf("%d", count), "source": "YARA Forge"},
+					OccurredAt: time.Now().UTC().Format(time.RFC3339),
+				}}); err != nil {
+					log.Printf("[yara] failed to report yara_rules_updated: %v", err)
+				}
+			}
+		}
+		time.Sleep(time.Hour)
 	}
 }

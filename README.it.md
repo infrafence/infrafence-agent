@@ -116,8 +116,8 @@ Ogni rilevamento aggiunge punti a un punteggio per-IP. I punteggi decadono di -5
 
 ### Scanner malware
 - **Scansione a firme** — 24 pattern integrati per webshell, backdoor, crypto miner, phishing kit
-- **Hash matching** — oltre 64.000 hash di malware noti da MalwareBazaar e Linux Malware Detect
-- **Motore YARA** — 229 regole rilevanti per il web (usa la CLI yara se installata, opzionale)
+- **Controllo hash** — ogni rilevamento include lo SHA-256 del file, verificabile su MalwareBazaar dalla dashboard
+- **Motore YARA** — circa 900 regole della community rilevanti per il web da [YARA Forge](https://github.com/YARAHQ/yara-forge) (signature-base, ReversingLabs), aggiornate ogni giorno; solo fonti con licenza che consente l'uso commerciale. Usa la CLI yara se installata (opzionale)
 - **Rilevamento framework** — auto-rileva Laravel, WordPress, Django, Symfony, CakePHP, CodeIgniter, Node/Express, Rails, Joomla, Drupal
 - **Controlli di sicurezza sui framework** — esposizione .env, modalità DEBUG, APP_KEY, permessi troppo aperti, Telescope, wp-config
 - **Analisi euristica** — rilevamento entropia di Shannon, anomalie nei timestamp nelle directory di upload
