@@ -397,17 +397,85 @@ func managedConfigFiles(env Env) []string {
 	return out
 }
 
+// packageLocks are held (fcntl) by apt, dpkg and unattended-upgrade while
+// they actually work.
+var packageLocks = []string{
+	"/var/lib/dpkg/lock-frontend",
+	"/var/lib/dpkg/lock",
+	"/var/lib/apt/lists/lock",
+	"/var/cache/apt/archives/lock",
+}
+
+// runningPackageOps lists package operations in progress: a package manager
+// process, or a dpkg/apt lock that is actually held. Idle daemons don't
+// count: unattended-upgrade-shutdown runs permanently on Ubuntu (its process
+// name is "unattended-upgr") and packagekitd idles in the background.
 func runningPackageOps(env Env) []string {
 	var busy []string
-	for _, p := range []string{"apt", "apt-get", "dpkg", "unattended-upgr", "dnf", "yum", "rpm", "zypper", "packagekitd"} {
-		if !env.LookPath("pgrep") {
-			break
+	if env.LookPath("pgrep") {
+		for _, p := range []string{"apt", "apt-get", "dpkg", "dnf", "yum", "rpm", "zypper"} {
+			if out, err := env.Run("pgrep", "-x", p); err == nil && out != "" {
+				busy = append(busy, p)
+			}
 		}
-		if out, err := env.Run("pgrep", "-x", p); err == nil && out != "" {
-			busy = append(busy, p)
+	}
+	for _, h := range packageLockHolders(env) {
+		if !contains(busy, h) {
+			busy = append(busy, h)
 		}
 	}
 	return busy
+}
+
+// packageLockHolders returns the processes holding a package-manager lock,
+// read from /proc/locks (read-only: no lock is taken).
+func packageLockHolders(env Env) []string {
+	locks, err := env.ReadFile("/proc/locks")
+	if err != nil {
+		return nil
+	}
+	// "1: POSIX  ADVISORY  WRITE 1234 fd:01:5678 0 EOF" -> inode 5678 held by pid 1234
+	held := map[string]string{}
+	for _, line := range strings.Split(locks, "\n") {
+		f := strings.Fields(line)
+		for i := 1; i < len(f); i++ {
+			if parts := strings.Split(f[i], ":"); len(parts) == 3 {
+				held[parts[2]] = f[i-1]
+				break
+			}
+		}
+	}
+	var out []string
+	for _, lock := range packageLocks {
+		if !env.Exists(lock) {
+			continue
+		}
+		ino, err := env.Run("stat", "-c", "%i", lock)
+		if err != nil || ino == "" {
+			continue
+		}
+		pid, ok := held[strings.TrimSpace(ino)]
+		if !ok {
+			continue
+		}
+		name := "pid " + pid
+		if comm, err := env.ReadFile("/proc/" + pid + "/comm"); err == nil && strings.TrimSpace(comm) != "" {
+			name = strings.TrimSpace(comm)
+		}
+		if !contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func meminfoKB(s, key string) uint64 {
