@@ -2,11 +2,11 @@
 // authentication messages from, and follows the systemd journal when there
 // is no log file.
 //
-// Distributions that install rsyslog write these messages to
-// /var/log/auth.log (Debian/Ubuntu) or /var/log/secure (RHEL family). Recent
-// Debian, Fedora and Amazon Linux don't install rsyslog: the messages are
-// only in the journal. Reading the journal's auth and authpriv facilities
-// gives exactly the lines rsyslog would have written, in the same
+// On systemd hosts every authentication message goes to the journal first;
+// rsyslog, where installed, copies it to /var/log/auth.log (Debian/Ubuntu)
+// or /var/log/secure (RHEL family). Recent Debian, Fedora and Amazon Linux
+// don't install rsyslog at all. Reading the journal's auth and authpriv
+// facilities gives exactly the lines rsyslog writes, in the same
 // "Mon DD HH:MM:SS host prog[pid]: message" format, so every parser works on
 // either source unchanged.
 package authlog
@@ -60,29 +60,40 @@ func journalAvailable() bool {
 	return journalReady()
 }
 
-// Detect picks the source: AUTH_LOG_PATH if that file exists, otherwise
-// the distribution's auth log file, otherwise the journal. A configured file
-// that doesn't exist falls back too (installers before v1.0.25 always set
-// AUTH_LOG_PATH, even where the file never existed).
+// Detect picks the source. On systemd hosts the journal comes first: sshd
+// and PAM log to it (/dev/log is journald's socket) and rsyslog only copies
+// from it, so the journal has every message even when rsyslog is stopped or
+// its journal reader is stuck — which left /var/log/secure empty on Rocky
+// Linux 9 in our tests while the journal had every failed login.
+//
+// A log file is used when there is no journal (the agent in a container,
+// non-systemd hosts), or when AUTH_LOG_PATH names a file other than the
+// standard ones (a custom setup the admin chose). The standard paths are
+// what installers before v1.0.25 wrote into the service by default.
 func Detect() Source {
-	if p := os.Getenv("AUTH_LOG_PATH"); p != "" {
-		if exists(p) {
-			return Source{Path: p}
-		}
-		if !journalAvailable() {
-			// Nothing better: wait for the configured file to appear.
-			return Source{Path: p}
-		}
-	}
-	for _, p := range logFiles {
-		if exists(p) {
+	if p := os.Getenv("AUTH_LOG_PATH"); p != "" && !isStandard(p) {
+		if exists(p) || !journalAvailable() {
 			return Source{Path: p}
 		}
 	}
 	if journalAvailable() {
 		return Source{Journal: true}
 	}
+	for _, p := range logFiles {
+		if exists(p) {
+			return Source{Path: p}
+		}
+	}
 	return Source{Path: logFiles[0]}
+}
+
+func isStandard(p string) bool {
+	for _, f := range logFiles {
+		if p == f {
+			return true
+		}
+	}
+	return false
 }
 
 // journalArgs follow new auth/authpriv messages only (no history), in the
