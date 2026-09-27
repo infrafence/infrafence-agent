@@ -74,7 +74,12 @@ else
   for f in /var/log/auth.log /var/log/secure; do
     [ -f "$f" ] && { echo "[diag] tail $f:"; tail -5 "$f"; }
   done
-  echo "[diag] journal sshd:"; journalctl --no-pager -n 10 SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 2>&1 | tail -10
+  echo "[diag] journal auth:"; journalctl --no-pager -n 10 SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 2>&1 | tail -10
+  echo "[diag] journal sshd unit:"; journalctl --no-pager -n 10 -u sshd -u ssh 2>&1 | tail -10
+  ls -la /dev/log /run/systemd/journal/ 2>&1 | sed 's/^/[diag] /'
+  logger -p authpriv.info "infrafence-diag-logger-test"; sleep 2
+  echo "[diag] logger test in journal: $(journalctl --no-pager -n 50 2>/dev/null | grep -c infrafence-diag-logger-test)"
+  grep -iE '^(SyslogFacility|LogLevel)' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null | sed 's/^/[diag] /'
   journalctl -u rsyslog --no-pager -n 10 2>&1 | sed 's/^/[diag] rsyslog: /'
 fi
 
