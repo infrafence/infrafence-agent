@@ -41,12 +41,12 @@ type ParsedLine struct {
 var (
 	// SSH login: sshd[PID]: Accepted METHOD for USER from IP port PORT
 	reSSHLogin = regexp.MustCompile(
-		`sshd\[(\d+)\]: Accepted (\w+) for (\S+) from ([\d.]+) port (\d+)`,
+		`sshd(?:-session)?\[(\d+)\]: Accepted (\w+) for (\S+) from ([\d.]+) port (\d+)`,
 	)
 
 	// SSH logout: sshd[PID]: pam_unix(sshd:session): session closed for user USER
 	reSSHLogout = regexp.MustCompile(
-		`sshd\[(\d+)\]: pam_unix\(sshd:session\): session closed for user (\S+)`,
+		`sshd(?:-session)?\[(\d+)\]: pam_unix\(sshd:session\): session closed for user (\S+)`,
 	)
 
 	// Sudo: sudo:   USER  : TTY=... ; PWD=... ; USER=... ; COMMAND=...

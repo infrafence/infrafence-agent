@@ -478,3 +478,7 @@ func diskFreeMB(path string) (uint64, bool) {
 	}
 	return st.Bavail * uint64(st.Bsize) / (1 << 20), true
 }
+
+// PackageOperationsRunning lists package operations running right now on
+// this host (package manager processes or held dpkg/apt locks).
+func PackageOperationsRunning() []string { return runningPackageOps(hostEnv{}) }

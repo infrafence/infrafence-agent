@@ -318,6 +318,8 @@ type SyncResponse struct {
 	SoftwareAuditRequested bool `json:"software_audit_requested"`
 	// Fixes an admin asked for; each is applied once and reported back.
 	HardeningFixes []HardeningFix `json:"hardening_fixes"`
+	// Security updates an admin asked for (source package names).
+	PackageUpdates []PackageUpdate `json:"package_updates"`
 	// Org-wide bans to enforce in ModSecurity (servers behind a proxy/CDN,
 	// where the firewall only sees the proxy's address).
 	ModsecBanIPs []string `json:"modsec_ban_ips"`
@@ -331,6 +333,13 @@ type HardeningFix struct {
 	ID      int64  `json:"id"`
 	CheckID string `json:"check_id"`
 	Action  string `json:"action"` // "apply" (default) or "revert"
+}
+
+// PackageUpdate is one requested security update: upgrade the installed
+// packages built from these source packages.
+type PackageUpdate struct {
+	ID       int64    `json:"id"`
+	Packages []string `json:"packages"`
 }
 
 // CSFPortAction is a pending CSF port management command from the panel.
