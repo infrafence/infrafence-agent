@@ -3,13 +3,16 @@ package scanner
 import (
 	"os"
 	"strings"
+	"time"
 )
 
-// checkWebServer detects the web server and checks its configuration.
-// Only reads config files — no process execution, no network calls.
+// checkWebServer detects the web servers and checks their configuration.
+// With nginx in front of Apache (common on panels) both are checked; the
+// header and TLS checks come from nginx, which is what visitors reach.
 func checkWebServer() []Finding {
-	ws := detectWebServerType()
-	if ws == "" {
+	hasNginx := fileExists("/etc/nginx/nginx.conf")
+	hasApache := fileExists("/etc/apache2/apache2.conf") || fileExists("/etc/httpd/conf/httpd.conf")
+	if !hasNginx && !hasApache {
 		return []Finding{{
 			Category:    "webserver_config",
 			Severity:    "info",
@@ -21,25 +24,14 @@ func checkWebServer() []Finding {
 	}
 
 	var findings []Finding
-
-	if ws == "nginx" {
+	if hasNginx {
 		findings = append(findings, checkNginx()...)
-	} else {
-		findings = append(findings, checkApache()...)
+	}
+	if hasApache {
+		findings = append(findings, checkApache(!hasNginx)...)
 	}
 
 	return findings
-}
-
-// detectWebServerType checks for Nginx or Apache config files.
-func detectWebServerType() string {
-	if fileExists("/etc/nginx/nginx.conf") {
-		return "nginx"
-	}
-	if fileExists("/etc/apache2/apache2.conf") || fileExists("/etc/httpd/conf/httpd.conf") {
-		return "apache"
-	}
-	return ""
 }
 
 // ─── Nginx Checks ───
@@ -47,15 +39,11 @@ func detectWebServerType() string {
 func checkNginx() []Finding {
 	var findings []Finding
 
-	content, err := os.ReadFile("/etc/nginx/nginx.conf")
-	if err != nil {
+	conf, ok := nginxConfig()
+	if !ok {
 		return findings
 	}
-	conf := string(content)
-
-	// Also read sites-enabled configs for header/SSL checks
-	sitesConf := readDirConfigs("/etc/nginx/sites-enabled")
-	allConf := conf + "\n" + sitesConf
+	allConf := conf
 
 	// WS_SERVER_TOKENS — hide Nginx version
 	hasServerTokensOff := containsDirective(conf, "server_tokens", "off")
@@ -140,7 +128,7 @@ func checkNginx() []Finding {
 
 // ─── Apache Checks ───
 
-func checkApache() []Finding {
+func checkApache(frontend bool) []Finding {
 	var findings []Finding
 
 	// Try both Debian and RHEL paths
@@ -153,17 +141,17 @@ func checkApache() []Finding {
 	if err != nil {
 		return findings
 	}
-	conf := string(content)
 
-	// Also read sites-enabled or conf.d
-	sitesConf := readDirConfigs("/etc/apache2/sites-enabled")
-	if sitesConf == "" {
-		sitesConf = readDirConfigs("/etc/httpd/conf.d")
-	}
-	allConf := conf + "\n" + sitesConf
+	// Files in the order Apache loads them: the main file, then conf-enabled
+	// (Debian) or conf.d (RHEL), then the sites. For server-wide directives
+	// the last value loaded is the one in effect.
+	allConf := string(content) + "\n" +
+		readDirConfigs("/etc/apache2/conf-enabled") +
+		readDirConfigs("/etc/httpd/conf.d") +
+		readDirConfigs("/etc/apache2/sites-enabled")
 
 	// WS_SERVER_SIGNATURE — hide Apache info in error pages
-	hasSignatureOff := containsDirective(allConf, "ServerSignature", "Off")
+	hasSignatureOff := strings.EqualFold(lastDirective(allConf, "ServerSignature"), "Off")
 	findings = append(findings, Finding{
 		Category:       "webserver_security",
 		Severity:       "medium",
@@ -175,7 +163,8 @@ func checkApache() []Finding {
 	})
 
 	// WS_SERVER_TOKENS_APACHE — minimize version info
-	hasTokensProd := containsDirective(allConf, "ServerTokens", "Prod")
+	tokens := lastDirective(allConf, "ServerTokens")
+	hasTokensProd := strings.EqualFold(tokens, "Prod") || strings.EqualFold(tokens, "ProductOnly")
 	findings = append(findings, Finding{
 		Category:       "webserver_security",
 		Severity:       "medium",
@@ -199,7 +188,7 @@ func checkApache() []Finding {
 	})
 
 	// WS_TRACE_METHOD — disable TRACE
-	hasTraceOff := containsDirective(allConf, "TraceEnable", "Off") || containsDirective(allConf, "TraceEnable", "off")
+	hasTraceOff := strings.EqualFold(lastDirective(allConf, "TraceEnable"), "Off")
 	findings = append(findings, Finding{
 		Category:       "webserver_security",
 		Severity:       "medium",
@@ -209,6 +198,10 @@ func checkApache() []Finding {
 		Recommendation: "Add 'TraceEnable Off' to disable the TRACE HTTP method",
 		Passed:         hasTraceOff,
 	})
+
+	if !frontend {
+		return findings
+	}
 
 	// WS_SEC_HEADERS — individual security header checks
 	findings = append(findings, checkSecurityHeaders(allConf, "apache")...)
@@ -359,6 +352,32 @@ func containsDirective(conf, key, value string) bool {
 		}
 	}
 	return false
+}
+
+// lastDirective returns the value of the last active occurrence of key.
+func lastDirective(conf, key string) string {
+	value := ""
+	for _, line := range strings.Split(conf, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) >= 2 && !strings.HasPrefix(fields[0], "#") && strings.EqualFold(fields[0], key) {
+			value = strings.TrimRight(fields[1], ";")
+		}
+	}
+	return value
+}
+
+// nginxConfig returns the full nginx configuration: `nginx -T` when it
+// works (every included file), otherwise nginx.conf plus the usual include
+// directories.
+func nginxConfig() (string, bool) {
+	if out, err := runTimeout(10*time.Second, "nginx", "-T"); err == nil && len(out) > 0 {
+		return out, true
+	}
+	content, err := os.ReadFile("/etc/nginx/nginx.conf")
+	if err != nil {
+		return "", false
+	}
+	return string(content) + "\n" + readDirConfigs("/etc/nginx/conf.d") + readDirConfigs("/etc/nginx/sites-enabled"), true
 }
 
 func readDirConfigs(dir string) string {
