@@ -45,7 +45,12 @@ func currentReport() preflight.Report {
 // applyHostSettings reads the dashboard settings from monitor_config.
 func applyHostSettings(cfg *api.MonitorConfig) {
 	webserverEdits, blockFeeds, notify, dnsInspect := false, false, false, true
+	scanDetect, scanBan := true, false
 	if cfg != nil {
+		if cfg.PortScanDetection != nil {
+			scanDetect = *cfg.PortScanDetection
+		}
+		scanBan = cfg.PortScanBan
 		webserverEdits = cfg.WebserverChanges
 		blockFeeds = cfg.BlockThreatFeeds
 		notify = cfg.AutoUpdate == "notify"
@@ -54,6 +59,8 @@ func applyHostSettings(cfg *api.MonitorConfig) {
 		}
 	}
 	dnsInspector.SetEnabled(dnsInspect)
+	portScanWatcher.SetEnabled(scanDetect)
+	portScanBan.Store(scanBan)
 	allowWebserverEdits.Store(webserverEdits)
 	autoUpdateNotify.Store(notify)
 	intelState.Lock()
