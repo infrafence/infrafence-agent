@@ -1,0 +1,46 @@
+name: Distro matrix
+
+# Real install, SSH brute force, ban, blocked connection and clean uninstall
+# on every supported distribution (test/distro/run.sh), on x86-64 runners.
+on:
+  pull_request:
+    paths:
+      - "install.sh"
+      - "cmd/**"
+      - "internal/**"
+      - "test/distro/**"
+      - ".github/workflows/distro-matrix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  distro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - ubuntu-20.04
+          - ubuntu-22.04
+          - ubuntu-24.04
+          - debian-12
+          - debian-13
+          - rocky-8
+          - rocky-9
+          - almalinux-8
+          - almalinux-9
+          - centos-stream-9
+          - oracle-9
+          - fedora-41
+          - fedora-42
+          - amazonlinux-2023
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: ${{ matrix.distro }}
+        run: bash test/distro/run.sh ${{ matrix.distro }}
