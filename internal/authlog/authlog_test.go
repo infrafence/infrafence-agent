@@ -38,14 +38,16 @@ func TestDetect(t *testing.T) {
 		journal bool
 		want    Source
 	}{
-		{"debian with rsyslog", "", []string{"/var/log/auth.log"}, true, Source{Path: "/var/log/auth.log"}},
-		{"rhel with rsyslog", "", []string{"/var/log/secure"}, true, Source{Path: "/var/log/secure"}},
+		{"systemd with rsyslog: journal first", "", []string{"/var/log/auth.log"}, true, Source{Journal: true}},
+		{"rhel with rsyslog: journal first", "", []string{"/var/log/secure"}, true, Source{Journal: true}},
 		{"journald only", "", nil, true, Source{Journal: true}},
+		{"no journal (container)", "", []string{"/var/log/auth.log"}, false, Source{Path: "/var/log/auth.log"}},
+		{"no journal, rhel file", "", []string{"/var/log/secure"}, false, Source{Path: "/var/log/secure"}},
 		{"nothing at all", "", nil, false, Source{Path: "/var/log/auth.log"}},
-		{"configured file exists", "/custom/auth", []string{"/custom/auth", "/var/log/auth.log"}, true, Source{Path: "/custom/auth"}},
-		{"installer set a missing file", "/var/log/auth.log", nil, true, Source{Journal: true}},
-		{"missing file, secure exists", "/var/log/auth.log", []string{"/var/log/secure"}, true, Source{Path: "/var/log/secure"}},
-		{"missing file, no journal", "/custom/auth", nil, false, Source{Path: "/custom/auth"}},
+		{"installer default path: journal first", "/var/log/auth.log", []string{"/var/log/auth.log"}, true, Source{Journal: true}},
+		{"custom path set by the admin", "/custom/auth", []string{"/custom/auth", "/var/log/auth.log"}, true, Source{Path: "/custom/auth"}},
+		{"custom path missing, journal available", "/custom/auth", nil, true, Source{Journal: true}},
+		{"custom path missing, no journal", "/custom/auth", nil, false, Source{Path: "/custom/auth"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
