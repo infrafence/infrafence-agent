@@ -69,6 +69,13 @@ if [ "$R_DETECT" = ok ]; then
   [ -f /var/log/auth.log ] || [ -f /var/log/secure ] || SOURCE=journald
 else
   log "no ban reported; agent log:"; journalctl -u infrafence-agent --no-pager -n 40
+  log "diagnostics:"
+  systemctl is-active rsyslog systemd-journald 2>&1 | sed 's/^/[diag] active: /'
+  for f in /var/log/auth.log /var/log/secure; do
+    [ -f "$f" ] && { echo "[diag] tail $f:"; tail -5 "$f"; }
+  done
+  echo "[diag] journal sshd:"; journalctl --no-pager -n 10 SYSLOG_FACILITY=4 SYSLOG_FACILITY=10 2>&1 | tail -10
+  journalctl -u rsyslog --no-pager -n 10 2>&1 | sed 's/^/[diag] rsyslog: /'
 fi
 
 if ipset list infrafence-bans 2>/dev/null | grep -q '^203.0.113.2' || iptables -S INFRAFENCE 2>/dev/null | grep -q '203.0.113.2'; then

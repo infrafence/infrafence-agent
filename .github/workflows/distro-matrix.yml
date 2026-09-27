@@ -11,6 +11,10 @@ on:
       - "test/distro/**"
       - ".github/workflows/distro-matrix.yml"
   workflow_dispatch:
+    inputs:
+      distros:
+        description: "Space-separated distributions (empty: all)"
+        required: false
 
 permissions:
   contents: read
