@@ -5,11 +5,11 @@
 # uninstall. Prints one RESULT line; exit status 0 only if everything passed.
 set -uo pipefail
 
-R_INSTALL=fail R_SERVICE=fail R_DETECT=fail R_BAN=fail R_BLOCK=fail R_UNINSTALL=fail
+R_INSTALL=fail R_SERVICE=fail R_SCAN=fail R_DETECT=fail R_BAN=fail R_BLOCK=fail R_UNINSTALL=fail
 SOURCE=none
 log() { echo "[inside] $*"; }
 result() {
-  echo "RESULT distro=${DISTRO} install=${R_INSTALL} service=${R_SERVICE} detect=${R_DETECT} source=${SOURCE} ban=${R_BAN} blocked=${R_BLOCK} uninstall=${R_UNINSTALL}"
+  echo "RESULT distro=${DISTRO} install=${R_INSTALL} service=${R_SERVICE} portscan=${R_SCAN} detect=${R_DETECT} source=${SOURCE} ban=${R_BAN} blocked=${R_BLOCK} uninstall=${R_UNINSTALL}"
 }
 trap result EXIT
 
@@ -52,6 +52,16 @@ done
 sleep 12
 journalctl -u infrafence-agent --no-pager | grep -iE "watch|auth|journal" | head -5 | sed 's/^/[agent] /'
 
+# ── port scan: 30 closed ports in a few seconds (reported, not banned) ──
+for p in $(seq 1000 1029); do
+  ip netns exec cl timeout 1 bash -c "</dev/tcp/203.0.113.1/$p" 2>/dev/null
+done
+for _ in $(seq 1 15); do
+  if curl -s http://127.0.0.1:8080/state | grep -q '"type":"port_scan"'; then R_SCAN=ok; break; fi
+  sleep 1
+done
+[ "$R_SCAN" = ok ] || { log "no port_scan event"; journalctl -u infrafence-agent --no-pager | grep -i portscan | tail -5; }
+
 # ── attack: 8 logins as a user that doesn't exist ──
 for i in $(seq 1 8); do
   ip netns exec cl timeout 5 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
@@ -60,8 +70,11 @@ for i in $(seq 1 8); do
 done
 
 for _ in $(seq 1 30); do
-  st=$(curl -s http://127.0.0.1:8080/state)
-  if grep -q '203.0.113.2' <<<"$st"; then R_DETECT=ok; break; fi
+  # A ban report for the attacker (the port scan event carries its address
+  # too, so matching the address anywhere would pass too early).
+  bans=$(curl -s http://127.0.0.1:8080/state | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("bans") or []))' 2>/dev/null ||
+         curl -s http://127.0.0.1:8080/state | sed -n 's/.*"bans":\(\[[^]]*\]\).*/\1/p')
+  if grep -q '203.0.113.2' <<<"$bans"; then R_DETECT=ok; break; fi
   sleep 1
 done
 if [ "$R_DETECT" = ok ]; then
@@ -104,4 +117,4 @@ if [ -z "$left" ]; then R_UNINSTALL=ok; else log "left behind:$left"; fi
 # And sshd still answers the attacker's address now that the ban is gone.
 ip netns exec cl timeout 3 bash -c '</dev/tcp/203.0.113.1/22' 2>/dev/null || { R_UNINSTALL=fail; log "ssh still blocked after uninstall"; }
 
-[ "$R_INSTALL$R_SERVICE$R_DETECT$R_BAN$R_BLOCK$R_UNINSTALL" = okokokokokok ]
+[ "$R_INSTALL$R_SERVICE$R_SCAN$R_DETECT$R_BAN$R_BLOCK$R_UNINSTALL" = okokokokokokok ]
