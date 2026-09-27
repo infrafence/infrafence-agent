@@ -95,7 +95,7 @@ func (w *Watcher) run(ctx context.Context) {
 			return
 		}
 		count++
-		if s, ok := a.Observe(src, port, now); ok {
+		for _, s := range a.Observe(src, port, now) {
 			w.onScan(s)
 		}
 	})
