@@ -45,7 +45,11 @@ func onPortScan(s scanwatch.Scan) {
 	if client == nil {
 		return
 	}
-	log.Printf("[portscan] %s tried %d ports in %s (%v)", s.IP, s.Ports, scanwatch.Window, s.Sample)
+	if s.Scope == "network" {
+		log.Printf("[portscan] network %s: %d addresses tried %d ports in %s (%v)", s.Network, s.Addresses, s.Ports, scanwatch.Window, s.Sample)
+	} else {
+		log.Printf("[portscan] %s tried %d ports in %s (%v)", s.IP, s.Ports, scanwatch.Window, s.Sample)
+	}
 	if err := client.ReportEvents([]api.EventRequest{{
 		Type:       "port_scan",
 		Severity:   "warning",
@@ -55,7 +59,9 @@ func onPortScan(s scanwatch.Scan) {
 	}}); err != nil {
 		log.Printf("[portscan] failed to report: %v", err)
 	}
-	if portScanBan.Load() {
+	// Banning, when turned on, applies to single scanning addresses only: a
+	// whole network would catch legitimate users of the same provider.
+	if s.Scope == "address" && portScanBan.Load() {
 		intelState.Lock()
 		monitor := intelState.monitorMode
 		intelState.Unlock()
