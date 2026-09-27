@@ -19,6 +19,8 @@ type fakeHost struct {
 	bins  map[string]bool
 	run   func(name string, args ...string) (string, error)
 	calls []string
+	// removeErr, when set, makes every Remove fail (a stuck rollback).
+	removeErr error
 }
 
 func newHost() *fakeHost {
@@ -51,6 +53,9 @@ func (h *fakeHost) WriteFile(p string, d []byte, m os.FileMode) error {
 	return nil
 }
 func (h *fakeHost) Remove(p string) error {
+	if h.removeErr != nil {
+		return h.removeErr
+	}
 	if _, ok := h.files[p]; ok {
 		delete(h.files, p)
 		return nil
@@ -80,7 +85,7 @@ func (h *fakeHost) Lstat(p string) (os.FileInfo, error) {
 	return h.Stat(p)
 }
 func (h *fakeHost) Chmod(p string, m os.FileMode) error { h.modes[p] = m; return nil }
-func (h *fakeHost) Symlink(o, n string) error          { h.links[n] = o; return nil }
+func (h *fakeHost) Symlink(o, n string) error           { h.links[n] = o; return nil }
 func (h *fakeHost) MkdirAll(p string, m os.FileMode) error {
 	h.dirs[p] = true
 	return nil
@@ -148,6 +153,21 @@ func TestSSHFixRolledBackWhenConfigTestFails(t *testing.T) {
 	}
 	if contains(h.calls, "systemctl reload ssh") {
 		t.Fatal("must not reload after a failed config test")
+	}
+}
+
+func TestFailedRollbackIsReported(t *testing.T) {
+	h := sshHost()
+	h.run = func(name string, args ...string) (string, error) {
+		if name == "sshd" && args[0] == "-t" {
+			h.removeErr = errors.New("read-only file system")
+			return "bad configuration option", errors.New("exit 255")
+		}
+		return "", nil
+	}
+	_, err := Apply(h, "SSH_X11_FORWARDING", safe)
+	if err == nil || !strings.Contains(err.Error(), "FAILED (read-only file system)") || strings.Contains(err.Error(), "change undone") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -334,12 +354,30 @@ func TestRemoveAll(t *testing.T) {
 	h.files[NginxDropIn] = header + "server_tokens off;\n"
 	h.files[ApacheDebAvail] = header + "ServerTokens Prod\n"
 	h.links[ApacheDebLink] = "../conf-available/zz-infrafence-hardening.conf"
-	done := RemoveAll(h)
-	if len(done) != 4 {
-		t.Fatalf("removed %v", done)
+	done, err := RemoveAll(h)
+	if err != nil || len(done) != 4 {
+		t.Fatalf("removed %v, err %v", done, err)
 	}
 	if len(h.files) != 0 || len(h.links) != 0 {
 		t.Fatalf("left behind: %v %v", h.files, h.links)
+	}
+}
+
+func TestRemoveAllReportsFailedReload(t *testing.T) {
+	h := sshHost()
+	h.files[SSHDropIn] = header + "MaxAuthTries 4\n"
+	h.run = func(name string, args ...string) (string, error) {
+		if name == "systemctl" || name == "service" {
+			return "", errors.New("unit not found")
+		}
+		return "", nil
+	}
+	done, err := RemoveAll(h)
+	if len(done) != 1 || err == nil || !strings.Contains(err.Error(), "reload sshd") {
+		t.Fatalf("done %v, err %v", done, err)
+	}
+	if _, ok := h.files[SSHDropIn]; ok {
+		t.Fatal("drop-in must be removed even when the reload fails")
 	}
 }
 
