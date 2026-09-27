@@ -65,18 +65,21 @@ func detectFTPLogPath() string {
 		return p
 	}
 
-	// Check known FTP log paths for FTP-related content
-	candidates := []string{
-		"/var/log/vsftpd.log",
-		"/var/log/proftpd/proftpd.log",
-		"/var/log/auth.log",
-	}
-	for _, p := range candidates {
+	// vsftpd and ProFTPD write their own log files.
+	for _, p := range []string{"/var/log/vsftpd.log", "/var/log/proftpd/proftpd.log"} {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-
+	// Pure-FTPd logs through syslog, to the auth log — only when it is
+	// installed (every Debian/Ubuntu server has an auth log).
+	if _, err := exec.LookPath("pure-ftpd"); err == nil {
+		for _, p := range []string{"/var/log/auth.log", "/var/log/secure", "/var/log/messages"} {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
 	return ""
 }
 

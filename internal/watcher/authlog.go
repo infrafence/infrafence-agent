@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"context"
 	"io"
 	"log"
 	"net"
@@ -11,9 +12,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-)
 
-const defaultLogPath = "/var/log/auth.log"
+	"github.com/infrafence/infrafence-agent/internal/authlog"
+)
 
 // SSHPattern pairs a compiled regex with the ban reason it represents.
 type SSHPattern struct {
@@ -80,6 +81,7 @@ type Config struct {
 // Watcher tails auth.log and calls onBan when an IP exceeds the threshold.
 type Watcher struct {
 	logPath string
+	source  authlog.Source
 	onBan   BanFunc
 	onEvent EventFunc
 	checkIP CheckIPFunc
@@ -94,26 +96,12 @@ type Watcher struct {
 	monitorMode bool            // when true, detect but do not ban
 }
 
-// detectLogPath returns the auth log path, checking the environment variable
-// first, then auto-detecting between Debian/Ubuntu and RHEL/CentOS paths.
-func detectLogPath() string {
-	if p := os.Getenv("AUTH_LOG_PATH"); p != "" {
-		return p
-	}
-	if _, err := os.Stat("/var/log/auth.log"); err == nil {
-		return "/var/log/auth.log"
-	}
-	if _, err := os.Stat("/var/log/secure"); err == nil {
-		return "/var/log/secure"
-	}
-	return defaultLogPath
-}
-
 func New(onBan BanFunc) *Watcher {
-	path := detectLogPath()
+	src := authlog.Detect()
 
 	return &Watcher{
-		logPath:   path,
+		logPath:   src.Path,
+		source:    src,
 		threshold: 5,
 		window:    5 * time.Minute,
 		onBan:     onBan,
@@ -262,11 +250,17 @@ func (w *Watcher) isWhitelisted(ip string) bool {
 
 // Run starts tailing the log file. Blocks indefinitely.
 func (w *Watcher) Run() {
-	log.Printf("[watcher] watching %s (threshold: %d in %s)", w.logPath, w.threshold, w.window)
+	log.Printf("[watcher] watching %s (threshold: %d in %s)", w.source, w.threshold, w.window)
 
 	go w.cleanupLoop()
 
 	for {
+		if w.source.Journal {
+			err := authlog.FollowJournal(context.Background(), w.processLine)
+			log.Printf("[watcher] journal: %v — retrying in 5s", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
 		if err := w.tail(); err != nil {
 			log.Printf("[watcher] error: %v — retrying in 5s", err)
 			time.Sleep(5 * time.Second)

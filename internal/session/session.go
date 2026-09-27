@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/authlog"
 )
 
 // Config holds session tracker configuration.
@@ -126,8 +128,8 @@ type SessionTracker struct {
 	mu       sync.Mutex
 	config   Config
 	onEvent  EventFunc
-	sessions map[string]*Session // keyed by sshd PID
-	knownIPs map[string]bool     // IPs seen before (persisted across sessions on this server)
+	sessions map[string]*Session  // keyed by sshd PID
+	knownIPs map[string]bool      // IPs seen before (persisted across sessions on this server)
 	lastEmit map[string]time.Time // dedup: "ip:user" → last event time
 	cancel   context.CancelFunc
 	running  atomic.Bool
@@ -196,17 +198,24 @@ func (t *SessionTracker) Run() {
 	t.cancel = cancel
 	t.mu.Unlock()
 
-	logPath := detectAuthLogPath()
-	log.Printf("[session] starting tracker on %s", logPath)
+	src := authlog.Detect()
+	logPath := src.Path
+	log.Printf("[session] starting tracker on %s", src)
 
 	// Tail goroutine
 	go func() {
 		for {
-			if err := t.tail(ctx, logPath); err != nil {
+			var err error
+			if src.Journal {
+				err = authlog.FollowJournal(ctx, t.processLine)
+			} else {
+				err = t.tail(ctx, logPath)
+			}
+			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("[session] error tailing %s: %v — retrying in 5s", logPath, err)
+				log.Printf("[session] error reading %s: %v — retrying in 5s", src, err)
 				// A plain time.Sleep here would ignore ctx cancellation for
 				// up to 5s, delaying Stop() and briefly overlapping this
 				// goroutine with a new one if Run() is called again quickly.
@@ -563,19 +572,4 @@ func (t *SessionTracker) closeSession(s *Session, reason string) {
 	}
 
 	t.onEvent("ssh_session", severity, details)
-}
-
-// detectAuthLogPath returns the auth log path: checks AUTH_LOG_PATH env,
-// then auto-detects between Debian/Ubuntu (/var/log/auth.log) and RHEL/CentOS (/var/log/secure).
-func detectAuthLogPath() string {
-	if p := os.Getenv("AUTH_LOG_PATH"); p != "" {
-		return p
-	}
-	if _, err := os.Stat("/var/log/auth.log"); err == nil {
-		return "/var/log/auth.log"
-	}
-	if _, err := os.Stat("/var/log/secure"); err == nil {
-		return "/var/log/secure"
-	}
-	return "/var/log/auth.log"
 }

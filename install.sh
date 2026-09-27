@@ -126,13 +126,15 @@ detect_init() {
     info "Init system: ${INIT_SYSTEM}"
 }
 
+# Empty when there is no auth log file (no rsyslog: recent Debian, Fedora,
+# Amazon Linux): the agent then reads the systemd journal.
 detect_auth_log() {
     if [[ -f /var/log/auth.log ]]; then
         echo "/var/log/auth.log"
     elif [[ -f /var/log/secure ]]; then
         echo "/var/log/secure"
     else
-        echo "/var/log/auth.log"
+        echo ""
     fi
 }
 
