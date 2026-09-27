@@ -287,8 +287,13 @@ func cmdUninstall(args []string) {
 		failed = true
 	}
 	// Hardening fixes applied from the dashboard live in files of their own.
-	for _, p := range remediation.RemoveAll(remediation.System) {
+	removed, err := remediation.RemoveAll(remediation.System)
+	for _, p := range removed {
 		fmt.Println("removed", p)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hardening fixes removed, but reload them by hand: %v\n", err)
+		failed = true
 	}
 	if failed {
 		os.Exit(1)
