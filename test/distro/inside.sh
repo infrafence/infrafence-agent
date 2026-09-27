@@ -70,8 +70,11 @@ for i in $(seq 1 8); do
 done
 
 for _ in $(seq 1 30); do
-  st=$(curl -s http://127.0.0.1:8080/state)
-  if grep -q '203.0.113.2' <<<"$st"; then R_DETECT=ok; break; fi
+  # A ban report for the attacker (the port scan event carries its address
+  # too, so matching the address anywhere would pass too early).
+  bans=$(curl -s http://127.0.0.1:8080/state | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("bans") or []))' 2>/dev/null ||
+         curl -s http://127.0.0.1:8080/state | sed -n 's/.*"bans":\(\[[^]]*\]\).*/\1/p')
+  if grep -q '203.0.113.2' <<<"$bans"; then R_DETECT=ok; break; fi
   sleep 1
 done
 if [ "$R_DETECT" = ok ]; then
