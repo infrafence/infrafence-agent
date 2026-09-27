@@ -396,6 +396,11 @@ type MonitorConfig struct {
 	// DNSInspection turns the packet-level DNS inspection off when false
 	// (default on: it is read-only and changes nothing on the host).
 	DNSInspection *bool `json:"dns_inspection,omitempty"`
+	// PortScanDetection turns the packet-level port scan detection off when
+	// false (default on: read-only). PortScanBan bans detected scanners
+	// (default off: monitoring services and search engines scan too).
+	PortScanDetection *bool `json:"port_scan_detection,omitempty"`
+	PortScanBan       bool  `json:"port_scan_ban"`
 }
 
 // SigmaConfig controls Sigma rule-based detection.
