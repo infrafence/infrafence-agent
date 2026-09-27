@@ -1803,9 +1803,13 @@ func runSecurityMonitors(client *api.Client) {
 		tick++
 
 		// Port scan + flood + egress + DNS: every 60s
-		lastPS = portScan.Scan()
-		if len(lastPS.Events) > 0 {
-			reportScanResult(client, "port_scan", lastPS)
+		// The packet-level watcher replaces the connection-table check
+		// where it runs (it sees attempts on closed ports too).
+		if !portScanWatcher.Running() {
+			lastPS = portScan.Scan()
+			if len(lastPS.Events) > 0 {
+				reportScanResult(client, "port_scan", lastPS)
+			}
 		}
 
 		lastFL = flood.Scan()

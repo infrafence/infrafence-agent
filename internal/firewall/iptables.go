@@ -497,3 +497,8 @@ func parseLine(line string) (ParsedRule, bool) {
 
 	return rule, true
 }
+
+// IsSafeIP reports whether ip must never be banned or reported as an
+// attacker: reserved or private, one of this server's addresses, or
+// protected (the dashboard).
+func IsSafeIP(ip net.IP) bool { return isSafeIP(ip) }
