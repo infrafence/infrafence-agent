@@ -1324,6 +1324,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	if len(sync.HardeningFixes) > 0 {
 		go applyHardeningFixes(client, sync.HardeningFixes)
 	}
+	if len(sync.PackageUpdates) > 0 {
+		go applyPackageUpdates(client, sync.PackageUpdates)
+	}
 
 	// Apply CSF port actions if requested from dashboard
 	if len(sync.CSFPortActions) > 0 && firewall.HasCSF() {
@@ -2220,20 +2223,20 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 	secScore := malware.CalculateScore(allFindings, allFwFindings)
 	log.Printf("[malware] security score: %d/100 (grade %s)", secScore.Score, secScore.Grade)
 
-	// Complete the scan
+	// Complete the scan. Always sent: it carries the security score, and the
+	// dashboard's chunk endpoint didn't return a scan id before 2026-09-27,
+	// which silently dropped the score.
 	duration := time.Since(scanStart)
-	if scanID > 0 {
-		if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
-			ScanID:          scanID,
-			DurationSeconds: duration.Seconds(),
-			SecurityScore: &api.MalwareSecurityScore{
-				Score: secScore.Score, Grade: secScore.Grade,
-				MalwareDeductions: secScore.MalwareDeductions, FrameworkDeductions: secScore.FrameworkDeductions,
-				CredentialDeductions: secScore.CredentialDeductions, IntegrityDeductions: secScore.IntegrityDeductions,
-			},
-		}); err != nil {
-			log.Printf("[malware] failed to complete scan: %v", err)
-		}
+	if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
+		ScanID:          scanID,
+		DurationSeconds: duration.Seconds(),
+		SecurityScore: &api.MalwareSecurityScore{
+			Score: secScore.Score, Grade: secScore.Grade,
+			MalwareDeductions: secScore.MalwareDeductions, FrameworkDeductions: secScore.FrameworkDeductions,
+			CredentialDeductions: secScore.CredentialDeductions, IntegrityDeductions: secScore.IntegrityDeductions,
+		},
+	}); err != nil {
+		log.Printf("[malware] failed to complete scan: %v", err)
 	}
 
 	// Report WordPress inventory if collected
