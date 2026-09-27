@@ -2220,20 +2220,20 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 	secScore := malware.CalculateScore(allFindings, allFwFindings)
 	log.Printf("[malware] security score: %d/100 (grade %s)", secScore.Score, secScore.Grade)
 
-	// Complete the scan
+	// Complete the scan. Always sent: it carries the security score, and the
+	// dashboard's chunk endpoint didn't return a scan id before 2026-09-27,
+	// which silently dropped the score.
 	duration := time.Since(scanStart)
-	if scanID > 0 {
-		if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
-			ScanID:          scanID,
-			DurationSeconds: duration.Seconds(),
-			SecurityScore: &api.MalwareSecurityScore{
-				Score: secScore.Score, Grade: secScore.Grade,
-				MalwareDeductions: secScore.MalwareDeductions, FrameworkDeductions: secScore.FrameworkDeductions,
-				CredentialDeductions: secScore.CredentialDeductions, IntegrityDeductions: secScore.IntegrityDeductions,
-			},
-		}); err != nil {
-			log.Printf("[malware] failed to complete scan: %v", err)
-		}
+	if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
+		ScanID:          scanID,
+		DurationSeconds: duration.Seconds(),
+		SecurityScore: &api.MalwareSecurityScore{
+			Score: secScore.Score, Grade: secScore.Grade,
+			MalwareDeductions: secScore.MalwareDeductions, FrameworkDeductions: secScore.FrameworkDeductions,
+			CredentialDeductions: secScore.CredentialDeductions, IntegrityDeductions: secScore.IntegrityDeductions,
+		},
+	}); err != nil {
+		log.Printf("[malware] failed to complete scan: %v", err)
 	}
 
 	// Report WordPress inventory if collected
