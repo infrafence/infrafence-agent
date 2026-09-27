@@ -2,6 +2,10 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.27
+- **feat: distributed port scans.** On the demo server, v1.0.26 reported no scan: they came spread over many addresses of one network, each trying only 2–6 random ports, so no single address stood out. The agent now also reports a network (/24 for IPv4, /64 for IPv6) from which at least 3 addresses tried 30 or more distinct ports within 10 minutes, with the network, how many addresses and how many ports (one report per network per 30 minutes). Replaying 3 minutes of the demo's real traffic: two such scans (29 and 14 addresses), no false positive. Banning, when turned on, still applies to single scanning addresses only, never to a whole network.
+- **change: slow scans.** One address trying 15 or more distinct ports is now a scan within 10 minutes instead of 1, catching slow scanners; normal clients never use more than two or three ports.
+
 ## v1.0.26
 - **fix: port scans are actually detected.** The detector looked at the connection table once a minute for half-open connections to listening ports. Scans mostly hit closed ports, which leave no trace there, and a half-open connection lasts milliseconds: on a server with a handful of open ports it could never reach its threshold of 15, and the demo server — scanned all day — never reported one. The agent now sees every incoming connection attempt (TCP SYN, IPv4 and IPv6) through a filter run in the kernel, read-only like the DNS inspection, and reports an address that tries 15 or more ports, open or closed, within 60 seconds (one report per address per 10 minutes; at most 5,000 attempts analyzed per second). Reserved, own, protected and whitelisted addresses are never reported. Port scans also raise the risk of open SSH sessions (Sigma correlation). Detection is on by default and can be turned off in the dashboard; **banning scanners is off by default** (monitoring services and search engines such as Shodan scan too) and can be turned on. Where packet capture isn't available, the previous check stays.
 - **tests:** the distribution matrix now also runs a 30-port scan and requires the port_scan event.
