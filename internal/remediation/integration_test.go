@@ -102,8 +102,11 @@ func TestRealHost(t *testing.T) {
 	}
 
 	// Undo everything, services still answer.
-	removed := remediation.RemoveAll(remediation.System)
+	removed, err := remediation.RemoveAll(remediation.System)
 	t.Logf("removed: %v", removed)
+	if err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
 	if !strings.Contains(sshdT(t), "x11forwarding yes") {
 		t.Fatal("sshd not back to its own settings")
 	}

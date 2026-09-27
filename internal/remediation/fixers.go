@@ -188,19 +188,26 @@ func Revert(h Host, checkID string) (string, error) {
 }
 
 // RemoveAll deletes every file InfraFence added and reloads the services
-// that used them. Used by uninstall.
-func RemoveAll(h Host) []string {
+// that used them. Used by uninstall. The error lists the services that could
+// not be reloaded: their files are gone, but the running process still has
+// the old settings until someone reloads it.
+func RemoveAll(h Host) ([]string, error) {
 	var done []string
+	var errs []error
 	if exists(h, SSHDropIn) {
 		if err := h.Remove(SSHDropIn); err == nil {
-			reloadSSH(h)
+			if err := reloadSSH(h); err != nil {
+				errs = append(errs, fmt.Errorf("reload sshd: %w", err))
+			}
 			done = append(done, SSHDropIn)
 		}
 	}
 	if exists(h, NginxDropIn) {
 		if err := h.Remove(NginxDropIn); err == nil {
 			if _, err := h.Run("nginx", "-t"); err == nil {
-				reloadNginx(h)
+				if err := reloadNginx(h); err != nil {
+					errs = append(errs, fmt.Errorf("reload nginx: %w", err))
+				}
 			}
 			done = append(done, NginxDropIn)
 		}
@@ -217,11 +224,13 @@ func RemoveAll(h Host) []string {
 	if apacheChanged {
 		if ctl := apachectl(h); ctl != "" {
 			if _, err := h.Run(ctl, "configtest"); err == nil {
-				h.Run(ctl, "graceful")
+				if _, err := h.Run(ctl, "graceful"); err != nil {
+					errs = append(errs, fmt.Errorf("reload Apache: %w", err))
+				}
 			}
 		}
 	}
-	return done
+	return done, errors.Join(errs...)
 }
 
 // ── SSH ─────────────────────────────────────────────────────────────────────
@@ -249,22 +258,19 @@ func setSSH(h Host, key, value string) (string, error) {
 	if err := writeOrRemove(h, SSHDropIn, next, 0o600); err != nil {
 		return "", err
 	}
-	restore := func() { restoreFile(h, SSHDropIn, old, hadOld, 0o600) }
+	restore := func() error { return restoreFile(h, SSHDropIn, old, hadOld, 0o600) }
 
 	if out, err := h.Run(sshd, "-t"); err != nil {
-		restore()
-		return "", fmt.Errorf("sshd -t failed, change undone: %s", strings.TrimSpace(out))
+		return "", fmt.Errorf("sshd -t failed, %s: %s", undone(restore()), strings.TrimSpace(out))
 	}
 	if value != "" {
 		out, err := h.Run(sshd, "-T")
 		if err != nil || !hasEffective(out, key, value) {
-			restore()
-			return "", fmt.Errorf("another setting overrides %s, change undone", key)
+			return "", fmt.Errorf("another setting overrides %s, %s", key, undone(restore()))
 		}
 	}
 	if err := reloadSSH(h); err != nil {
-		restore()
-		return "", fmt.Errorf("could not reload sshd, change undone: %v", err)
+		return "", fmt.Errorf("could not reload sshd, %s: %v", undone(restore()), err)
 	}
 	if value == "" {
 		return fmt.Sprintf("removed %s from %s; sshd reloaded", key, SSHDropIn), nil
@@ -336,29 +342,28 @@ func setNginx(h Host, key, value string) (string, error) {
 	if err := writeOrRemove(h, NginxDropIn, next, 0o644); err != nil {
 		return "", err
 	}
-	restore := func() { restoreFile(h, NginxDropIn, old, hadOld, 0o644) }
+	restore := func() error { return restoreFile(h, NginxDropIn, old, hadOld, 0o644) }
 
 	if value != "" {
 		// The file must actually be loaded, inside the http block.
 		dump, err := h.Run("nginx", "-T")
 		if err != nil || !strings.Contains(dump, "# configuration file "+NginxDropIn) {
-			restore()
+			rb := undone(restore())
 			if err != nil && strings.Contains(dump, "duplicate") {
-				return "", fmt.Errorf("%s is already set elsewhere in the nginx configuration, change undone", key)
+				return "", fmt.Errorf("%s is already set elsewhere in the nginx configuration, %s", key, rb)
 			}
-			return "", fmt.Errorf("%w: nginx does not load conf.d, change undone", ErrUnsupported)
+			return "", fmt.Errorf("%w: nginx does not load conf.d, %s", ErrUnsupported, rb)
 		}
 	}
 	if out, err := h.Run("nginx", "-t"); err != nil {
-		restore()
+		rb := undone(restore())
 		if strings.Contains(out, "duplicate") {
-			return "", fmt.Errorf("%s is already set elsewhere in the nginx configuration, change undone", key)
+			return "", fmt.Errorf("%s is already set elsewhere in the nginx configuration, %s", key, rb)
 		}
-		return "", fmt.Errorf("nginx -t failed, change undone: %s", strings.TrimSpace(out))
+		return "", fmt.Errorf("nginx -t failed, %s: %s", rb, strings.TrimSpace(out))
 	}
 	if err := reloadNginx(h); err != nil {
-		restore()
-		return "", fmt.Errorf("could not reload nginx, change undone: %v", err)
+		return "", fmt.Errorf("could not reload nginx, %s: %v", undone(restore()), err)
 	}
 	if value == "" {
 		return fmt.Sprintf("removed %s from %s; nginx reloaded", key, NginxDropIn), nil
@@ -400,33 +405,36 @@ func setApache(h Host, key, value string) (string, error) {
 	if link != "" {
 		if next != "" && !hadLink {
 			if err := h.Symlink("../conf-available/"+filepath.Base(file), link); err != nil {
-				restoreFile(h, file, old, hadOld, 0o644)
-				return "", err
+				return "", fmt.Errorf("enable %s, %s: %w", link, undone(restoreFile(h, file, old, hadOld, 0o644)), err)
 			}
 		}
 		if next == "" && hadLink {
-			h.Remove(link)
+			// A link left pointing at the removed file would break configtest.
+			if err := h.Remove(link); err != nil && !os.IsNotExist(err) {
+				return "", fmt.Errorf("disable %s, %s: %w", link, undone(restoreFile(h, file, old, hadOld, 0o644)), err)
+			}
 		}
 	}
-	restore := func() {
-		restoreFile(h, file, old, hadOld, 0o644)
+	restore := func() error {
+		errs := []error{restoreFile(h, file, old, hadOld, 0o644)}
 		if link != "" {
 			if hadLink && !isLink(h, link) {
-				h.Symlink("../conf-available/"+filepath.Base(file), link)
+				errs = append(errs, h.Symlink("../conf-available/"+filepath.Base(file), link))
 			}
 			if !hadLink {
-				h.Remove(link)
+				if err := h.Remove(link); err != nil && !os.IsNotExist(err) {
+					errs = append(errs, err)
+				}
 			}
 		}
+		return errors.Join(errs...)
 	}
 
 	if out, err := h.Run(ctl, "configtest"); err != nil {
-		restore()
-		return "", fmt.Errorf("apachectl configtest failed, change undone: %s", strings.TrimSpace(out))
+		return "", fmt.Errorf("apachectl configtest failed, %s: %s", undone(restore()), strings.TrimSpace(out))
 	}
 	if _, err := h.Run(ctl, "graceful"); err != nil {
-		restore()
-		return "", fmt.Errorf("could not reload Apache, change undone: %v", err)
+		return "", fmt.Errorf("could not reload Apache, %s: %v", undone(restore()), err)
 	}
 	if value == "" {
 		return fmt.Sprintf("removed %s from %s; Apache reloaded", key, file), nil
@@ -527,10 +535,23 @@ func writeOrRemove(h Host, p, content string, mode os.FileMode) error {
 	return h.WriteFile(p, []byte(content), mode)
 }
 
-func restoreFile(h Host, p, old string, hadOld bool, mode os.FileMode) {
+// restoreFile puts p back as it was before a change: the old content, or no
+// file at all.
+func restoreFile(h Host, p, old string, hadOld bool, mode os.FileMode) error {
 	if hadOld {
-		h.WriteFile(p, []byte(old), mode)
-		return
+		return h.WriteFile(p, []byte(old), mode)
 	}
-	h.Remove(p)
+	if err := h.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// undone describes the outcome of a rollback for an error message. A failed
+// rollback is spelled out, since the host may be left with our change in it.
+func undone(restoreErr error) string {
+	if restoreErr != nil {
+		return fmt.Sprintf("and undoing the change FAILED (%v), check it by hand", restoreErr)
+	}
+	return "change undone"
 }

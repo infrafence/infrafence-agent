@@ -222,7 +222,9 @@ func (e *Engine) UpdateBannedIPs(ips []string) error {
 		return err
 	}
 	if out, err := exec.Command(e.apachectl, "configtest").CombinedOutput(); err != nil {
-		os.WriteFile(path, old, 0644)
+		if werr := os.WriteFile(path, old, 0644); werr != nil {
+			return fmt.Errorf("config test failed and restoring the ban rules FAILED (%v), check %s by hand: %s", werr, path, strings.TrimSpace(string(out)))
+		}
 		return fmt.Errorf("config test failed, ban rules restored: %s", strings.TrimSpace(string(out)))
 	}
 	return e.scheduleReload()
