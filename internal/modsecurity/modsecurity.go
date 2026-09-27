@@ -3,9 +3,11 @@ package modsecurity
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,7 @@ type Engine struct {
 	modsecDir     string
 	lastReload    time.Time
 	reloadPending bool
+	setUp         bool // Setup succeeded: our rules are included by Apache
 }
 
 // New detects if ModSecurity is installed and returns an engine.
@@ -88,6 +91,7 @@ func (e *Engine) Setup() error {
 		return fmt.Errorf("reload apache (changes rolled back): %w", err)
 	}
 
+	e.setUp = true
 	log.Printf("[modsec] setup complete — static rules active")
 	return nil
 }
@@ -192,35 +196,74 @@ func (s includeSnapshot) restore() {
 	}
 }
 
-// UpdateBannedIPs writes IP ban rules synced from the dashboard.
+// UpdateBannedIPs writes the active bans as ModSecurity rules, so a banned
+// address is refused by Apache too. This matters behind a proxy or CDN,
+// where the firewall only sees the proxy's address and ModSecurity (with
+// mod_remoteip) sees the visitor's. Only once Setup has succeeded; nothing
+// is written or reloaded when the list hasn't changed; if Apache's config
+// test fails the previous file is put back.
 func (e *Engine) UpdateBannedIPs(ips []string) error {
-	if !e.available || len(ips) == 0 {
+	if !e.available {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.setUp {
 		return nil
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	var rules strings.Builder
-	rules.WriteString("# InfraFence banned IPs (synced from dashboard)\n")
-
-	for i, ip := range ips {
-		if i >= 500 {
-			break // cap to prevent huge configs
-		}
-		id := 9900000 + i + 1
-		rules.WriteString(fmt.Sprintf(
-			"SecRule REMOTE_ADDR \"@ipMatch %s\" \"id:%d,phase:1,deny,status:403,nolog,msg:'InfraFence: Banned IP'\"\n",
-			ip, id,
-		))
-	}
-
+	content := banRules(ips)
 	path := filepath.Join(rulesDir, ipBanRules)
-	if err := os.WriteFile(path, []byte(rules.String()), 0644); err != nil {
+	old, _ := os.ReadFile(path)
+	if string(old) == content {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return err
 	}
-
+	if out, err := exec.Command(e.apachectl, "configtest").CombinedOutput(); err != nil {
+		os.WriteFile(path, old, 0644)
+		return fmt.Errorf("config test failed, ban rules restored: %s", strings.TrimSpace(string(out)))
+	}
 	return e.scheduleReload()
+}
+
+// banRules renders the rule file: one @ipMatch rule per 100 addresses
+// (valid IPs and CIDRs only — nothing else reaches Apache's config), capped
+// at 5,000 addresses.
+func banRules(ips []string) string {
+	var valid []string
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if seen[ip] {
+			continue
+		}
+		if net.ParseIP(ip) == nil {
+			if _, _, err := net.ParseCIDR(ip); err != nil {
+				continue
+			}
+		}
+		seen[ip] = true
+		valid = append(valid, ip)
+		if len(valid) >= 5000 {
+			break
+		}
+	}
+	sort.Strings(valid)
+
+	var b strings.Builder
+	b.WriteString("# InfraFence banned IPs (synced from dashboard)\n")
+	for i := 0; i < len(valid); i += 100 {
+		end := i + 100
+		if end > len(valid) {
+			end = len(valid)
+		}
+		fmt.Fprintf(&b,
+			"SecRule REMOTE_ADDR \"@ipMatch %s\" \"id:%d,phase:1,deny,status:403,nolog,msg:'InfraFence: Banned IP'\"\n",
+			strings.Join(valid[i:end], ","), 9900001+i/100)
+	}
+	return b.String()
 }
 
 func (e *Engine) detectModSecurity() bool {
