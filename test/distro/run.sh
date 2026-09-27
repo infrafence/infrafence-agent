@@ -74,7 +74,7 @@ while IFS='|' read -r name image pm rsyslog; do
   done
   out=$(docker exec -e DISTRO="$name" "$cid" bash /distro/inside.sh 2>&1)
   rc=$?
-  echo "$out" | grep -v '^RESULT' | tail -40
+  echo "$out" | grep -v '^RESULT' | tail -150
   line=$(echo "$out" | grep '^RESULT' | tail -1)
   [ -n "$line" ] || line="RESULT distro=$name error=no-result"
   results+=("$line arch=$goarch")
