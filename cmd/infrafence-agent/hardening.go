@@ -3,12 +3,15 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/api"
 	"github.com/infrafence/infrafence-agent/internal/collector"
+	"github.com/infrafence/infrafence-agent/internal/pkgupdate"
+	"github.com/infrafence/infrafence-agent/internal/preflight"
 	"github.com/infrafence/infrafence-agent/internal/remediation"
 	"github.com/infrafence/infrafence-agent/internal/scanner"
 )
@@ -180,4 +183,61 @@ func runDailyAudits(client func() *api.Client) {
 		}
 		time.Sleep(24 * time.Hour)
 	}
+}
+
+var (
+	updateMu      sync.Mutex
+	updatesDone   = map[int64]bool{}
+	updatesDoneMu sync.Mutex
+)
+
+// applyPackageUpdates installs the requested security updates one request
+// at a time, reports each result, then re-runs the software audit so the
+// dashboard's vulnerability list reflects the new versions.
+func applyPackageUpdates(client *api.Client, updates []api.PackageUpdate) {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+
+	var todo []api.PackageUpdate
+	updatesDoneMu.Lock()
+	for _, u := range updates {
+		if !updatesDone[u.ID] {
+			updatesDone[u.ID] = true
+			todo = append(todo, u)
+		}
+	}
+	updatesDoneMu.Unlock()
+	if len(todo) == 0 {
+		return
+	}
+
+	host := pkgupdate.NewHost(preflight.PackageOperationsRunning)
+	for _, u := range todo {
+		id := fmt.Sprint(u.ID)
+		pkgs := pkgupdate.ValidNames(u.Packages)
+		log.Printf("[pkgupdate] update %s: %s", id, strings.Join(pkgs, " "))
+		reportEvent(client, "package_update_started", "info", map[string]string{
+			"update_id": id, "packages": strings.Join(pkgs, " "),
+		})
+		res, err := pkgupdate.Update(host, pkgs)
+		details := map[string]string{
+			"update_id":           id,
+			"packages":            strings.Join(pkgs, " "),
+			"manager":             res.Manager,
+			"upgraded":            strings.Join(res.Upgraded, "\n"),
+			"unchanged":           strings.Join(res.Unchanged, " "),
+			"services_to_restart": strings.Join(res.ServicesToRestart, " "),
+			"reboot_required":     fmt.Sprint(res.RebootRequired),
+			"output":              res.Output,
+		}
+		if err != nil {
+			log.Printf("[pkgupdate] update %s failed: %v", id, err)
+			details["error"] = err.Error()
+			reportEvent(client, "package_update_failed", "warning", details)
+			continue
+		}
+		log.Printf("[pkgupdate] update %s done: %d upgraded, reboot required: %v", id, len(res.Upgraded), res.RebootRequired)
+		reportEvent(client, "package_update_done", "info", details)
+	}
+	runSoftwareAudit(client, 0)
 }

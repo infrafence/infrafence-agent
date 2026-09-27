@@ -1324,6 +1324,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	if len(sync.HardeningFixes) > 0 {
 		go applyHardeningFixes(client, sync.HardeningFixes)
 	}
+	if len(sync.PackageUpdates) > 0 {
+		go applyPackageUpdates(client, sync.PackageUpdates)
+	}
 
 	// Apply CSF port actions if requested from dashboard
 	if len(sync.CSFPortActions) > 0 && firewall.HasCSF() {
