@@ -1,12 +1,12 @@
 module github.com/infrafence/infrafence-agent
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/oschwald/maxminddb-golang v1.13.1
 	golang.org/x/net v0.47.0
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.48.0
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
 	k8s.io/client-go v0.35.3
