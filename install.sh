@@ -579,7 +579,9 @@ BINARY="/usr/local/bin/infrafence-agent"
 BACKUP="/usr/local/bin/infrafence-agent.bak"
 GITHUB_REPO="infrafence/infrafence-agent"
 RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/latest/download"
-MARKER="/tmp/infrafence-agent-recovered"
+STATE_DIR="/var/lib/infrafence"
+MARKER="${STATE_DIR}/agent-recovered"
+CRASH_COUNT="${STATE_DIR}/agent-crash-count"
 
 log_msg() {
     if command -v systemd-cat >/dev/null 2>&1; then
@@ -612,8 +614,8 @@ restore_from_backup() {
         mv "${BINARY}.recover" "$BINARY"
         if verify_binary "$BINARY"; then
             log_msg "backup restore successful"
-            echo "backup" > "$MARKER"
-            rm -f /tmp/infrafence-agent-crash-count
+            mkdir -p -m 700 "$STATE_DIR" && echo "backup" > "$MARKER"
+            rm -f "$CRASH_COUNT"
             return 0
         fi
     fi
@@ -679,8 +681,8 @@ KEYEOF
     cp "$tmp" "${BINARY}.recover" && chmod 755 "${BINARY}.recover" && mv "${BINARY}.recover" "$BINARY"
     rm -rf "$dir"
     log_msg "fresh binary installed successfully"
-    echo "download" > "$MARKER"
-    rm -f /tmp/infrafence-agent-crash-count
+    mkdir -p -m 700 "$STATE_DIR" && echo "download" > "$MARKER"
+    rm -f "$CRASH_COUNT"
     return 0
 }
 
@@ -937,8 +939,8 @@ uninstall() {
     rm -f "${INSTALL_DIR}/${BINARY_NAME}"
     rm -f "${INSTALL_DIR}/${BINARY_NAME}.bak"
     rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
-    rm -f /tmp/infrafence-agent-crash-count
-    rm -f /tmp/infrafence-agent-recovered
+    rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
+    rm -f /tmp/infrafence-agent-crash-count /tmp/infrafence-agent-recovered  # before v1.0.29
     rm -rf "$CONFIG_DIR"
 
     success "InfraFence Agent uninstalled."
