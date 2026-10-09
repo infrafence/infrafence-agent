@@ -45,6 +45,39 @@ func TestThreatFeedBlockingDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestAutomaticUpdatesOnlyWhenChosen(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cfg  *api.MonitorConfig
+		want bool
+	}{
+		{"no settings", nil, false},
+		{"never chosen", &api.MonitorConfig{}, false},
+		{"notify", &api.MonitorConfig{AutoUpdate: "notify"}, false},
+		{"unknown value", &api.MonitorConfig{AutoUpdate: "yes"}, false},
+		{"auto", &api.MonitorConfig{AutoUpdate: "auto"}, true},
+	} {
+		applyHostSettings(c.cfg)
+		if got := autoUpdate.Load(); got != c.want {
+			t.Errorf("%s: automatic updates=%v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestNoChoiceMeansNotifyOnly(t *testing.T) {
+	applyHostSettings(&api.MonitorConfig{})
+	var reports int
+	report := func(eventType, severity string, details map[string]string) {
+		if eventType == "update_available" {
+			reports++
+		}
+	}
+	maybeUpdate(nil, "98.0.0", "https://example.invalid", report)
+	if reports != 1 {
+		t.Errorf("update_available reported %d times, want 1 (and no install)", reports)
+	}
+}
+
 func TestNotifyOnlyUpdateReportsOnceAndDoesNotInstall(t *testing.T) {
 	applyHostSettings(&api.MonitorConfig{AutoUpdate: "notify"})
 	var reports int

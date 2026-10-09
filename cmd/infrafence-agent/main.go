@@ -955,7 +955,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		if webW != nil {
 			webW.SetMonitorMode(true)
 		}
-		// Still check for agent updates so the agent can be updated while suspended
+		// Still check for agent updates so the agent can be updated while
+		// suspended (host settings aren't applied in this state, so read the
+		// customer's update choice here).
+		autoUpdate.Store(autoUpdateChosen(sync.Config.MonitorConfig))
 		if sync.AgentUpdate != nil && sync.AgentUpdate.LatestVersion != "" {
 			go maybeUpdate(client, sync.AgentUpdate.LatestVersion, sync.AgentUpdate.DownloadBaseURL, reportUpdateEvent)
 		}

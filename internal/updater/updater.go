@@ -70,9 +70,9 @@ func CheckStartupHealth(currentVersion string, reportEvent EventReporter) {
 			log.Printf("[updater] rollback failed — manual intervention needed")
 			if reportEvent != nil {
 				reportEvent("update_rollback_failed", "critical", map[string]string{
-					"version":  currentVersion,
-					"crashes":  fmt.Sprintf("%d", crashes),
-					"reason":   "rollback_copy_or_rename_failed",
+					"version": currentVersion,
+					"crashes": fmt.Sprintf("%d", crashes),
+					"reason":  "rollback_copy_or_rename_failed",
 				})
 			}
 		}
@@ -90,8 +90,8 @@ func CheckStartupHealth(currentVersion string, reportEvent EventReporter) {
 			log.Printf("[updater] agent stable for 2min — cleared crash counter (was %d)", crashes)
 			if reportEvent != nil {
 				reportEvent("update_stable", "info", map[string]string{
-					"version":           currentVersion,
-					"previous_crashes":  fmt.Sprintf("%d", crashes),
+					"version":          currentVersion,
+					"previous_crashes": fmt.Sprintf("%d", crashes),
 				})
 			}
 		}
@@ -102,10 +102,23 @@ func CheckStartupHealth(currentVersion string, reportEvent EventReporter) {
 // If a newer version is available, it downloads, verifies, runs a preflight
 // check, and only then replaces the binary with automatic rollback on failure.
 // The reportEvent callback is used to notify the server about update outcomes.
+//
+// The download always comes from the official GitHub release of that version
+// (downloadBaseURL, sent by the dashboard, is only compared and logged), and
+// the binary must carry a valid InfraFence release signature.
 func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, reportEvent EventReporter) {
-	if latestVersion == "" || downloadBaseURL == "" {
+	if latestVersion == "" {
 		return
 	}
+	official, err := officialBase(latestVersion)
+	if err != nil {
+		log.Printf("[updater] ignoring update: %v", err)
+		return
+	}
+	if downloadBaseURL != "" && strings.TrimRight(downloadBaseURL, "/") != official {
+		log.Printf("[updater] dashboard sent download address %q: using the official release %s instead", downloadBaseURL, official)
+	}
+	downloadBaseURL = official
 
 	if !isNewer(currentVersion, latestVersion) {
 		return
@@ -148,11 +161,6 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	binaryURL := fmt.Sprintf("%s/%s", strings.TrimRight(downloadBaseURL, "/"), binaryName)
 	checksumURL := fmt.Sprintf("%s/%s", strings.TrimRight(downloadBaseURL, "/"), checksumName)
 
-	// Fallback mirror when GitHub is unreachable
-	fallbackBase := "https://infrafence.com/downloads"
-	fallbackBinaryURL := fmt.Sprintf("%s/%s", fallbackBase, binaryName)
-	fallbackChecksumURL := fmt.Sprintf("%s/%s", fallbackBase, checksumName)
-
 	versionDetails := map[string]string{
 		"current_version": currentVersion,
 		"target_version":  latestVersion,
@@ -163,68 +171,66 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	// Report update_started so we know an attempt was made even if process dies mid-update
 	reportEvent("update_started", "info", versionDetails)
 
-	// 1. Download checksum (with fallback to infrafence.com mirror)
-	expectedHash, err := downloadText(checksumURL)
-	if err != nil {
-		log.Printf("[updater] GitHub checksum download failed, trying mirror: %v", err)
-		expectedHash, err = downloadText(fallbackChecksumURL)
-		if err != nil {
-			log.Printf("[updater] mirror checksum download also failed: %v", err)
-			reportFailure(reportEvent, "high", mergeDetails(versionDetails, map[string]string{
-				"reason": "download_failed", "error": fmt.Sprintf("checksum download failed from both GitHub and mirror: %v", err),
-			}))
-			return
+	// 1. Download checksum, binary and signature from the official release.
+	// The binary is kept in memory: the bytes checked below are the bytes
+	// written, tested and installed (nothing can swap the file in between).
+	checksumText, err := downloadText(checksumURL)
+	var expectedHash string
+	if err == nil {
+		if f := strings.Fields(checksumText); len(f) > 0 {
+			expectedHash = f[0]
+		} else {
+			err = fmt.Errorf("empty checksum file")
 		}
-		// Switch to mirror for binary too
-		binaryURL = fallbackBinaryURL
-		log.Printf("[updater] using infrafence.com mirror for download")
 	}
-	expectedHash = strings.TrimSpace(strings.Fields(expectedHash)[0])
-
-	// 2. Download binary to temp file.
-	// Use /etc/infrafence/ instead of /tmp — some systems mount /tmp with noexec
-	// which prevents the pre-flight check from running the downloaded binary.
-	tmpFile, err := os.CreateTemp("/etc/infrafence", "infrafence-agent-update-*")
+	var binary []byte
+	if err == nil {
+		binary, err = downloadBytes(binaryURL, maxBinarySize)
+	}
+	var sig string
+	if err == nil {
+		sig, err = downloadText(binaryURL + ".sig")
+	}
 	if err != nil {
-		log.Printf("[updater] failed to create temp file: %v", err)
-		return
-	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-
-	if err := downloadFile(binaryURL, tmpPath); err != nil {
-		log.Printf("[updater] failed to download binary: %v", err)
-		os.Remove(tmpPath)
+		log.Printf("[updater] download failed: %v", err)
 		reportFailure(reportEvent, "high", mergeDetails(versionDetails, map[string]string{
-			"reason": "download_failed", "error": fmt.Sprintf("binary download: %v", err),
+			"reason": "download_failed", "error": err.Error(),
 		}))
 		return
 	}
 
-	// 3. Verify checksum
-	actualHash, err := fileHash(tmpPath)
-	if err != nil {
-		log.Printf("[updater] failed to hash downloaded binary: %v", err)
-		os.Remove(tmpPath)
-		return
-	}
-
-	if actualHash != expectedHash {
-		log.Printf("[updater] checksum mismatch: expected %s, got %s", expectedHash, actualHash)
-		os.Remove(tmpPath)
+	// 2. Verify checksum
+	sum := sha256.Sum256(binary)
+	actualHash := hex.EncodeToString(sum[:])
+	if len(expectedHash) != len(actualHash) || actualHash != expectedHash {
+		log.Printf("[updater] checksum mismatch: expected %q, got %s", expectedHash, actualHash)
 		reportFailure(reportEvent, "high", mergeDetails(versionDetails, map[string]string{
 			"reason": "checksum_mismatch",
-			"error":  fmt.Sprintf("expected %s, got %s", expectedHash[:16], actualHash[:16]),
+			"error":  fmt.Sprintf("expected %.16s, got %.16s", expectedHash, actualHash),
 		}))
 		return
 	}
-
 	log.Printf("[updater] checksum verified")
 
-	// 4. Make downloaded binary executable
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		log.Printf("[updater] failed to chmod: %v", err)
-		os.Remove(tmpPath)
+	// 3. Verify the release signature: only a binary signed by InfraFence is installed.
+	if err := verifyRelease(binary, sig); err != nil {
+		log.Printf("[updater] signature check FAILED: %v — not installing", err)
+		reportFailure(reportEvent, "critical", mergeDetails(versionDetails, map[string]string{
+			"reason": "signature_invalid", "error": err.Error(),
+		}))
+		return
+	}
+	log.Printf("[updater] release signature verified")
+
+	// 4. Write the verified bytes next to the installed binary (root-owned
+	// directory, same filesystem for the atomic rename below).
+	stagingPath := targetPath + ".new"
+	if err := writeExecutable(stagingPath, binary); err != nil {
+		log.Printf("[updater] failed to stage new binary: %v — aborting (old binary still in place)", err)
+		os.Remove(stagingPath)
+		reportFailure(reportEvent, "critical", mergeDetails(versionDetails, map[string]string{
+			"reason": "replace_failed", "error": fmt.Sprintf("staging write: %v", err),
+		}))
 		return
 	}
 
@@ -233,14 +239,14 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	// Go binary startup can take 10-15s due to heavy imports (YARA, malware, etc.)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, tmpPath, "check").CombinedOutput()
+	out, err := exec.CommandContext(ctx, stagingPath, "check").CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "OK") {
 		errMsg := ""
 		if err != nil {
 			errMsg = err.Error()
 		}
 		log.Printf("[updater] pre-flight check FAILED (err=%v, output=%q) — aborting update", err, string(out))
-		os.Remove(tmpPath)
+		os.Remove(stagingPath)
 		reportFailure(reportEvent, "critical", mergeDetails(versionDetails, map[string]string{
 			"reason": "preflight_failed",
 			"error":  errMsg,
@@ -253,25 +259,15 @@ func CheckAndUpdate(currentVersion, latestVersion, downloadBaseURL string, repor
 	// 6. BACKUP current binary before replacing
 	if err := copyFile(targetPath, backupPath); err != nil {
 		log.Printf("[updater] failed to backup current binary: %v", err)
-		os.Remove(tmpPath)
+		os.Remove(stagingPath)
 		return
 	}
 	log.Printf("[updater] backed up current binary to %s", backupPath)
 
-	// 7. Replace binary — use staging on same filesystem + atomic rename.
+	// 7. Replace binary with an atomic rename of the staged file.
 	// On Linux, rename(2) atomically replaces the target even if it's a running
 	// executable (unlike open(O_WRONLY) which gives ETXTBSY). We NEVER remove
 	// the old binary first, so there's no window where the binary is missing.
-	stagingPath := targetPath + ".new"
-	if err := copyFile(tmpPath, stagingPath); err != nil {
-		log.Printf("[updater] CRITICAL: failed to stage new binary: %v — aborting (old binary still in place)", err)
-		os.Remove(tmpPath)
-		reportFailure(reportEvent, "critical", mergeDetails(versionDetails, map[string]string{
-			"reason": "replace_failed", "error": fmt.Sprintf("staging copy: %v", err),
-		}))
-		return
-	}
-	os.Remove(tmpPath)
 	if err := os.Rename(stagingPath, targetPath); err != nil {
 		log.Printf("[updater] CRITICAL: failed to rename staging binary: %v — aborting (old binary still in place)", err)
 		os.Remove(stagingPath)
@@ -417,70 +413,58 @@ func compareSemver(a, b string) int {
 	return 0
 }
 
+// Size limits for downloads: a checksum or signature is a few hundred bytes,
+// the agent binary a few tens of MB.
+const (
+	maxTextSize   = 64 << 10
+	maxBinarySize = 300 << 20
+)
+
 func downloadText(url string) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	data, err := downloadBytes(url, maxTextSize)
+	return string(data), err
 }
 
-func downloadFile(url, dest string) error {
+// downloadBytes fetches url into memory, refusing bodies over limit bytes.
+func downloadBytes(url string, limit int64) ([]byte, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s: HTTP %d", url, resp.StatusCode)
 	}
 
-	f, err := os.Create(dest)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s: larger than %d bytes", url, limit)
+	}
+	return data, nil
+}
+
+// writeExecutable writes data to path (replacing any leftover) as 0755 and
+// syncs it, so exec right after doesn't hit "text file busy".
+func writeExecutable(path string, data []byte) error {
+	os.Remove(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0755)
 	if err != nil {
 		return err
 	}
-
-	_, err = io.Copy(f, resp.Body)
-	if err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
 	}
-
-	// Sync + Close explicitly to avoid "text file busy" when exec follows immediately.
-	// Without Sync, the kernel may still be flushing pages when we try to exec the file.
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
 	}
 	return f.Close()
-}
-
-func fileHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // recentLogs captures the last N lines from the agent's systemd journal.
