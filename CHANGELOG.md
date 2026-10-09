@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.28
+- **fix: the agent follows the dashboard when it moves to another server.** The agent kept its HTTPS connection to the dashboard open and reused it for every request; with a heartbeat every minute plus events and syncs it never stayed idle long enough to close, so the dashboard's address was never looked up again. When infrafence.com moved to a new server, the demo agent kept talking to the old one and, once that was switched off, got "503: no available server" for every request and showed as offline until it was restarted. Connections to the dashboard are now renewed every 5 minutes, closed after 30 seconds of inactivity, and closed right after a network error or a 502/503/504, so the next request connects again and finds the new address — within a minute in that case. Nothing changes on the host.
+
 ## v1.0.27
 - **feat: distributed port scans.** On the demo server, v1.0.26 reported no scan: they came spread over many addresses of one network, each trying only 2–6 random ports, so no single address stood out. The agent now also reports a network (/24 for IPv4, /64 for IPv6) from which at least 3 addresses tried 30 or more distinct ports within 10 minutes, with the network, how many addresses and how many ports (one report per network per 30 minutes). Replaying 3 minutes of the demo's real traffic: two such scans (29 and 14 addresses), no false positive. Banning, when turned on, still applies to single scanning addresses only, never to a whole network.
 - **change: slow scans.** One address trying 15 or more distinct ports is now a scan within 10 minutes instead of 1, catching slow scanners; normal clients never use more than two or three ports.
