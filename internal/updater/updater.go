@@ -20,7 +20,11 @@ var updateMu sync.Mutex
 
 const targetPath = "/usr/local/bin/infrafence-agent"
 const backupPath = "/usr/local/bin/infrafence-agent.bak"
-const crashMarkerPath = "/tmp/infrafence-agent-crash-count"
+
+// State that decides about rollbacks lives in a root-only directory: in /tmp
+// any local user could write a crash count and force a rollback.
+const stateDir = "/var/lib/infrafence"
+const crashMarkerPath = stateDir + "/agent-crash-count"
 const updateAttemptMarker = "/etc/infrafence/.last-update-attempt"
 const maxCrashesBeforeRollback = 3
 
@@ -30,8 +34,8 @@ type EventReporter func(eventType, severity string, details map[string]string)
 
 // CheckStartupHealth should be called once at agent startup. It detects
 // repeated crash loops after an update and automatically rolls back to the
-// previous binary. The crash marker is a simple file in /tmp that holds
-// a count — it gets cleared after 2 minutes of stable running.
+// previous binary. The crash marker is a small file in stateDir (root only)
+// that holds a count — it gets cleared after 2 minutes of stable running.
 func CheckStartupHealth(currentVersion string, reportEvent EventReporter) {
 	// Read crash counter
 	data, err := os.ReadFile(crashMarkerPath)
@@ -80,7 +84,11 @@ func CheckStartupHealth(currentVersion string, reportEvent EventReporter) {
 	}
 
 	// Increment crash counter (assume we might crash)
-	os.WriteFile(crashMarkerPath, []byte(fmt.Sprintf("%d", crashes+1)), 0644)
+	if err := ensureStateDir(); err != nil {
+		log.Printf("[updater] crash counter unavailable: %v", err)
+	} else {
+		os.WriteFile(crashMarkerPath, []byte(fmt.Sprintf("%d", crashes+1)), 0600)
+	}
 
 	// After 2 minutes of stable running, clear the counter
 	go func() {
@@ -586,4 +594,20 @@ func systemResources() string {
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// ensureStateDir creates stateDir as a root-only directory (0700), tightening
+// it if it already exists, and refuses anything that isn't a real directory.
+func ensureStateDir() error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(stateDir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a directory", stateDir)
+	}
+	return os.Chmod(stateDir, 0o700)
 }
