@@ -17,6 +17,12 @@ type Client struct {
 	token      string
 	userAgent  string
 	httpClient *http.Client
+	// longClient has no overall timeout (large uploads); both share transport.
+	longClient *http.Client
+	transport  *http.Transport
+	// lastRecycle (unix nanoseconds) is when idle connections were last
+	// dropped; see recycleConns.
+	lastRecycle atomic.Int64
 
 	// Async event queue: producers (watchers) push via QueueEvent(); a single
 	// consumer goroutine batches and flushes to /events. Decouples detection
@@ -32,6 +38,18 @@ type Client struct {
 	eventObserver func(EventRequest)
 }
 
+// Kept-alive connections pin the dashboard's address: with a request every
+// few seconds a connection never goes idle, so the agent would keep talking to
+// the old server after the dashboard moves (DNS change) — on 2026-10-09 the
+// demo agent got "503 no available server" from the old proxy until it was
+// restarted. Idle connections are therefore dropped every connMaxAge, after
+// connIdleTimeout of inactivity, and right after a network error or a
+// 502/503/504, so the next request dials again and re-resolves the name.
+var (
+	connMaxAge      = 5 * time.Minute
+	connIdleTimeout = 30 * time.Second
+)
+
 const (
 	eventQueueSize  = 2000
 	eventBatchSize  = 50
@@ -39,15 +57,47 @@ const (
 )
 
 func New(baseURL, token string) *Client {
-	return &Client{
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.IdleConnTimeout = connIdleTimeout
+	c := &Client{
 		baseURL:   baseURL,
 		token:     token,
 		userAgent: "InfraFenceAgent/1.0",
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout:   15 * time.Second,
+			Transport: t,
 		},
-		eventCh: make(chan EventRequest, eventQueueSize),
+		longClient: &http.Client{Transport: t},
+		transport:  t,
+		eventCh:    make(chan EventRequest, eventQueueSize),
 	}
+	c.lastRecycle.Store(time.Now().UnixNano())
+	return c
+}
+
+// do sends req, first dropping idle connections older than connMaxAge, and
+// drops them again after a failure that may mean the server moved.
+func (c *Client) do(hc *http.Client, req *http.Request) (*http.Response, error) {
+	if now := time.Now().UnixNano(); now-c.lastRecycle.Load() >= int64(connMaxAge) {
+		c.recycleConns(now)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		c.recycleConns(time.Now().UnixNano())
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		c.recycleConns(time.Now().UnixNano())
+	}
+	return resp, nil
+}
+
+// recycleConns closes the idle connections: the next request dials again,
+// resolving the dashboard's name afresh. Requests in flight are not affected.
+func (c *Client) recycleConns(now int64) {
+	c.lastRecycle.Store(now)
+	c.transport.CloseIdleConnections()
 }
 
 // QueueEvent enqueues an event for async batched delivery. Non-blocking: if the
@@ -162,34 +212,34 @@ type SystemMetrics struct {
 
 // HeartbeatRequest is sent every 60s.
 type HeartbeatRequest struct {
-	Status             string         `json:"status"`
-	Version            string         `json:"version"`
-	Timestamp          string         `json:"timestamp"`
-	IPAddress          string         `json:"ip_address,omitempty"`
-	ZombieCount        int            `json:"zombie_count"`
-	WebServer          string         `json:"web_server,omitempty"`
-	WebServerVersion   string         `json:"web_server_version,omitempty"`
-	Metrics            *SystemMetrics `json:"metrics,omitempty"`
-	MonitoredDomains   []string       `json:"monitored_domains,omitempty"`
-	MonitoredLogPaths  []string       `json:"monitored_log_paths,omitempty"`
-	FirewallMode       string         `json:"firewall_mode,omitempty"`
-	BanCapacity        int            `json:"ban_capacity,omitempty"`
-	ActiveBans         int            `json:"active_bans,omitempty"`
-	KubernetesInfo     interface{}    `json:"kubernetes_info,omitempty"`
-	YaraInstalled      bool           `json:"yara_installed,omitempty"`
-	ModsecActive       bool              `json:"modsec_active,omitempty"`
-	RequestsAnalyzed   uint64            `json:"requests_analyzed,omitempty"`
-	ListeningServices  []ListeningService `json:"listening_services,omitempty"`
-	Runtime            *RuntimeStats     `json:"runtime,omitempty"`
-	CSFInstalled       bool           `json:"csf_installed,omitempty"`
-	CSFVersion         string         `json:"csf_version,omitempty"`
-	CSFPortsIn         string         `json:"csf_ports_in,omitempty"`
-	CSFPortsOut        string         `json:"csf_ports_out,omitempty"`
-	CSFDenyCount       int            `json:"csf_deny_count,omitempty"`
-	CSFAllowCount      int            `json:"csf_allow_count,omitempty"`
-	ControlPanel        string         `json:"control_panel,omitempty"`
-	ControlPanelVersion string         `json:"control_panel_version,omitempty"`
-	PanelDomains        []string       `json:"panel_domains,omitempty"`
+	Status              string             `json:"status"`
+	Version             string             `json:"version"`
+	Timestamp           string             `json:"timestamp"`
+	IPAddress           string             `json:"ip_address,omitempty"`
+	ZombieCount         int                `json:"zombie_count"`
+	WebServer           string             `json:"web_server,omitempty"`
+	WebServerVersion    string             `json:"web_server_version,omitempty"`
+	Metrics             *SystemMetrics     `json:"metrics,omitempty"`
+	MonitoredDomains    []string           `json:"monitored_domains,omitempty"`
+	MonitoredLogPaths   []string           `json:"monitored_log_paths,omitempty"`
+	FirewallMode        string             `json:"firewall_mode,omitempty"`
+	BanCapacity         int                `json:"ban_capacity,omitempty"`
+	ActiveBans          int                `json:"active_bans,omitempty"`
+	KubernetesInfo      interface{}        `json:"kubernetes_info,omitempty"`
+	YaraInstalled       bool               `json:"yara_installed,omitempty"`
+	ModsecActive        bool               `json:"modsec_active,omitempty"`
+	RequestsAnalyzed    uint64             `json:"requests_analyzed,omitempty"`
+	ListeningServices   []ListeningService `json:"listening_services,omitempty"`
+	Runtime             *RuntimeStats      `json:"runtime,omitempty"`
+	CSFInstalled        bool               `json:"csf_installed,omitempty"`
+	CSFVersion          string             `json:"csf_version,omitempty"`
+	CSFPortsIn          string             `json:"csf_ports_in,omitempty"`
+	CSFPortsOut         string             `json:"csf_ports_out,omitempty"`
+	CSFDenyCount        int                `json:"csf_deny_count,omitempty"`
+	CSFAllowCount       int                `json:"csf_allow_count,omitempty"`
+	ControlPanel        string             `json:"control_panel,omitempty"`
+	ControlPanelVersion string             `json:"control_panel_version,omitempty"`
+	PanelDomains        []string           `json:"panel_domains,omitempty"`
 }
 
 // RuntimeStats reports the agent's own resource usage so we can detect leaks
@@ -213,11 +263,11 @@ type ListeningService struct {
 
 // HeartbeatResponse is the server's reply to a heartbeat.
 type HeartbeatResponse struct {
-	Status              string  `json:"status"`
-	LastSeenAt          string  `json:"last_seen_at"`
-	LatestAgentVersion  *string `json:"latest_agent_version,omitempty"`
+	Status               string  `json:"status"`
+	LastSeenAt           string  `json:"last_seen_at"`
+	LatestAgentVersion   *string `json:"latest_agent_version,omitempty"`
 	AgentDownloadBaseURL *string `json:"agent_download_base_url,omitempty"`
-	K8sDomainLimit      int     `json:"k8s_domain_limit,omitempty"`
+	K8sDomainLimit       int     `json:"k8s_domain_limit,omitempty"`
 	// Reverb is only present once the server has real-time push configured.
 	// Agents that registered before it existed (or before it was enabled)
 	// pick it up here instead of needing --force-register.
@@ -255,7 +305,7 @@ type BanRequest struct {
 
 // AgentUpdateInfo contains version information for auto-updates.
 type AgentUpdateInfo struct {
-	LatestVersion  string `json:"latest_version"`
+	LatestVersion   string `json:"latest_version"`
 	DownloadBaseURL string `json:"download_base_url"`
 }
 
@@ -298,21 +348,21 @@ type DetectionRule struct {
 
 // SyncResponse is the initial state fetched at startup.
 type SyncResponse struct {
-	Config            SyncConfig          `json:"config"`
-	Rules             []Rule              `json:"rules"`
-	Bans              []Ban               `json:"bans"`
-	Whitelists        []WhitelistEntry    `json:"whitelists"`
-	AgentUpdate       *AgentUpdateInfo    `json:"agent_update,omitempty"`
-	DetectionRules    []DetectionRule     `json:"detection_rules"`
-	BotFingerprints   []BotFingerprint    `json:"bot_fingerprints"`
-	BotPolicy         *BotPolicy          `json:"bot_policy,omitempty"`
-	WafRules          []WafRule           `json:"waf_rules"`
-	ThreatFeed        []ThreatEntry       `json:"threat_feed"`
-	MalwareAllowlist   []MalwareIgnoreEntry  `json:"malware_allowlist"`
-	MalwareSignatures  []MalwareSyncSignature `json:"malware_signatures"`
-	YaraRules              *YaraRulesSync         `json:"yara_rules,omitempty"`
-	YaraInstallRequested    bool                   `json:"yara_install_requested"`
-	MalwareScanRequested   bool                   `json:"malware_scan_requested"`
+	Config               SyncConfig             `json:"config"`
+	Rules                []Rule                 `json:"rules"`
+	Bans                 []Ban                  `json:"bans"`
+	Whitelists           []WhitelistEntry       `json:"whitelists"`
+	AgentUpdate          *AgentUpdateInfo       `json:"agent_update,omitempty"`
+	DetectionRules       []DetectionRule        `json:"detection_rules"`
+	BotFingerprints      []BotFingerprint       `json:"bot_fingerprints"`
+	BotPolicy            *BotPolicy             `json:"bot_policy,omitempty"`
+	WafRules             []WafRule              `json:"waf_rules"`
+	ThreatFeed           []ThreatEntry          `json:"threat_feed"`
+	MalwareAllowlist     []MalwareIgnoreEntry   `json:"malware_allowlist"`
+	MalwareSignatures    []MalwareSyncSignature `json:"malware_signatures"`
+	YaraRules            *YaraRulesSync         `json:"yara_rules,omitempty"`
+	YaraInstallRequested bool                   `json:"yara_install_requested"`
+	MalwareScanRequested bool                   `json:"malware_scan_requested"`
 	// Hardening check and software (CVE) audit requested from the dashboard.
 	HardeningScanRequested bool `json:"hardening_scan_requested"`
 	SoftwareAuditRequested bool `json:"software_audit_requested"`
@@ -322,9 +372,9 @@ type SyncResponse struct {
 	PackageUpdates []PackageUpdate `json:"package_updates"`
 	// Org-wide bans to enforce in ModSecurity (servers behind a proxy/CDN,
 	// where the firewall only sees the proxy's address).
-	ModsecBanIPs []string `json:"modsec_ban_ips"`
-	QuarantinePending      []string               `json:"quarantine_pending"`
-	CSFPortActions         []CSFPortAction        `json:"csf_port_actions"`
+	ModsecBanIPs      []string        `json:"modsec_ban_ips"`
+	QuarantinePending []string        `json:"quarantine_pending"`
+	CSFPortActions    []CSFPortAction `json:"csf_port_actions"`
 }
 
 // HardeningFix is one requested fix: apply or revert the automatic fix for
@@ -373,17 +423,17 @@ type MalwareIgnoreEntry struct {
 }
 
 type SyncConfig struct {
-	Suspended         bool              `json:"suspended"`
-	BFThreshold       int               `json:"bf_threshold"`
-	BFWindow          int               `json:"bf_window"`
-	BFBanDuration     *int              `json:"bf_ban_duration"`
-	MonitorMode       bool              `json:"monitor_mode"`
-	WAFConfig         *WAFConfig        `json:"waf_config"`
-	BlockedCountries  []string          `json:"blocked_countries"`
-	MonitorConfig     *MonitorConfig    `json:"monitor_config,omitempty"`
+	Suspended         bool               `json:"suspended"`
+	BFThreshold       int                `json:"bf_threshold"`
+	BFWindow          int                `json:"bf_window"`
+	BFBanDuration     *int               `json:"bf_ban_duration"`
+	MonitorMode       bool               `json:"monitor_mode"`
+	WAFConfig         *WAFConfig         `json:"waf_config"`
+	BlockedCountries  []string           `json:"blocked_countries"`
+	MonitorConfig     *MonitorConfig     `json:"monitor_config,omitempty"`
 	MalwareScanConfig *MalwareScanConfig `json:"malware_scan_config,omitempty"`
-	SigmaConfig       *SigmaConfig      `json:"sigma_config,omitempty"`
-	SessionConfig     *SessionConfig    `json:"session_config,omitempty"`
+	SigmaConfig       *SigmaConfig       `json:"sigma_config,omitempty"`
+	SessionConfig     *SessionConfig     `json:"session_config,omitempty"`
 }
 
 // MonitorConfig holds monitoring settings synced from the panel.
@@ -423,11 +473,11 @@ type MalwareScanConfig struct {
 }
 
 type WAFConfig struct {
-	EnabledTypes    []string       `json:"enabled_types"`
-	DetectOnlyTypes []string       `json:"detect_only_types"`
-	Thresholds      map[string]int `json:"thresholds"`
-	ScorePoints     map[string]int `json:"score_points"`
-	DisabledPatterns []string      `json:"disabled_patterns"`
+	EnabledTypes     []string       `json:"enabled_types"`
+	DetectOnlyTypes  []string       `json:"detect_only_types"`
+	Thresholds       map[string]int `json:"thresholds"`
+	ScorePoints      map[string]int `json:"score_points"`
+	DisabledPatterns []string       `json:"disabled_patterns"`
 }
 
 type Rule struct {
@@ -521,11 +571,11 @@ func (c *Client) SubmitScanResults(req ScanResultRequest) error {
 
 // ImportedRule represents a single iptables rule to import.
 type ImportedRule struct {
-	RawRule   string `json:"raw_rule"`
-	Type      string `json:"type"`
-	Protocol  string `json:"protocol"`
-	Source    string `json:"source,omitempty"`
-	Port      int    `json:"port,omitempty"`
+	RawRule  string `json:"raw_rule"`
+	Type     string `json:"type"`
+	Protocol string `json:"protocol"`
+	Source   string `json:"source,omitempty"`
+	Port     int    `json:"port,omitempty"`
 }
 
 // ImportRulesRequest sends discovered iptables rules to the server.
@@ -649,11 +699,11 @@ func (c *Client) SubmitMalwareScanResults(req MalwareScanResultRequest) error {
 
 // MalwareScanChunkRequest sends results for a single web root (incremental).
 type MalwareScanChunkRequest struct {
-	WebRoot           MalwareScanWebRoot     `json:"web_root"`
-	Findings          []MalwareScanFinding   `json:"findings"`
+	WebRoot           MalwareScanWebRoot      `json:"web_root"`
+	Findings          []MalwareScanFinding    `json:"findings"`
 	FrameworkFindings []MalwareFrameworkIssue `json:"framework_findings"`
-	FilesScanned      int64                  `json:"files_scanned"`
-	FilesSkipped      int64                  `json:"files_skipped"`
+	FilesScanned      int64                   `json:"files_scanned"`
+	FilesSkipped      int64                   `json:"files_skipped"`
 }
 
 type MalwareScanChunkResponse struct {
@@ -672,8 +722,8 @@ func (c *Client) SubmitMalwareScanChunk(req MalwareScanChunkRequest) (*MalwareSc
 
 // MalwareScanCompleteRequest finalizes an incremental scan.
 type MalwareScanCompleteRequest struct {
-	ScanID          int64                `json:"scan_id"`
-	DurationSeconds float64             `json:"duration_seconds"`
+	ScanID          int64                 `json:"scan_id"`
+	DurationSeconds float64               `json:"duration_seconds"`
 	SecurityScore   *MalwareSecurityScore `json:"security_score,omitempty"`
 }
 
@@ -769,7 +819,7 @@ func (c *Client) post(path, token string, body, out any) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(c.httpClient, req)
 	if err != nil {
 		return err
 	}
@@ -812,8 +862,8 @@ func (c *Client) postLong(path, token string, body, out any) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	// Use a fresh client without the 15s default timeout
-	resp, err := (&http.Client{}).Do(req)
+	// No 15s overall timeout here: the context above bounds it
+	resp, err := c.do(c.longClient, req)
 	if err != nil {
 		return err
 	}
@@ -841,7 +891,7 @@ func (c *Client) get(path string, out any) error {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("User-Agent", c.userAgent)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(c.httpClient, req)
 	if err != nil {
 		return err
 	}
