@@ -1,0 +1,4 @@
+e50fc920a09a8cc0944e7637b4f03594a6721025a4a7e88fe9c0d3557d5e6f54  infrafence-agent-linux-amd64-k8s
+a161765f4a2ecc6bf9a0556d1e7ee17322edf2887034250e938fd72354eae6ac  infrafence-agent-linux-amd64
+a3e5fdd6ddb0ca4bb3836acac14ed89285f1d436fc5f64c5cc22389b20aae394  infrafence-agent-linux-arm64-k8s
+54a6e71224154d558708f5ce6b27823c89ae2c9799cbe7c555258f50a673958b  infrafence-agent-linux-arm64

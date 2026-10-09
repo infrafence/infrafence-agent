@@ -26,7 +26,9 @@ import (
 var (
 	hostReport          atomic.Pointer[preflight.Report]
 	allowWebserverEdits atomic.Bool
-	autoUpdateNotify    atomic.Bool
+	// autoUpdate is on only when the dashboard says "auto": installing a new
+	// binary is something the customer chooses explicitly (off until then).
+	autoUpdate atomic.Bool
 
 	webserverMu        sync.Mutex
 	modsecSetupAt      time.Time
@@ -44,7 +46,7 @@ func currentReport() preflight.Report {
 
 // applyHostSettings reads the dashboard settings from monitor_config.
 func applyHostSettings(cfg *api.MonitorConfig) {
-	webserverEdits, blockFeeds, notify, dnsInspect := false, false, false, true
+	webserverEdits, blockFeeds, dnsInspect := false, false, true
 	scanDetect, scanBan := true, false
 	if cfg != nil {
 		if cfg.PortScanDetection != nil {
@@ -53,7 +55,6 @@ func applyHostSettings(cfg *api.MonitorConfig) {
 		scanBan = cfg.PortScanBan
 		webserverEdits = cfg.WebserverChanges
 		blockFeeds = cfg.BlockThreatFeeds
-		notify = cfg.AutoUpdate == "notify"
 		if cfg.DNSInspection != nil {
 			dnsInspect = *cfg.DNSInspection
 		}
@@ -62,7 +63,7 @@ func applyHostSettings(cfg *api.MonitorConfig) {
 	portScanWatcher.SetEnabled(scanDetect)
 	portScanBan.Store(scanBan)
 	allowWebserverEdits.Store(webserverEdits)
-	autoUpdateNotify.Store(notify)
+	autoUpdate.Store(autoUpdateChosen(cfg))
 	intelState.Lock()
 	intelState.blockInbound = blockFeeds
 	intelState.Unlock()
@@ -146,15 +147,22 @@ func applyWebserverChanges(client *api.Client, wsType string, blockFps []webserv
 	}
 }
 
-// maybeUpdate installs a new agent version, or only reports it when the
-// dashboard is set to "notify" (customers who schedule their own changes).
+// autoUpdateChosen is true only for an explicit "auto" in the dashboard;
+// no setting, "notify" or anything else means notify only.
+func autoUpdateChosen(cfg *api.MonitorConfig) bool {
+	return cfg != nil && cfg.AutoUpdate == "auto"
+}
+
+// maybeUpdate installs a new agent version when the customer chose automatic
+// updates, otherwise only reports it once (customers who schedule their own
+// changes, and everyone who never chose).
 func maybeUpdate(client *api.Client, latest, baseURL string, report updater.EventReporter) {
 	if latest == "" || latest == version {
 		return
 	}
-	if autoUpdateNotify.Load() {
+	if !autoUpdate.Load() {
 		if _, seen := notifiedUpdate.LoadOrStore(latest, struct{}{}); !seen {
-			log.Printf("[updater] v%s available — auto-update is off (notify only)", latest)
+			log.Printf("[updater] v%s available — automatic updates are not turned on (notify only)", latest)
 			report("update_available", "info", map[string]string{"current": version, "latest": latest})
 		}
 		return
