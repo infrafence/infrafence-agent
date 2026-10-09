@@ -60,3 +60,24 @@ func TestRealUpdateToSignedRelease(t *testing.T) {
 	}
 	t.Logf("events: %v", events)
 }
+
+func TestCrashCounterIsRootOnly(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("needs root in a disposable container")
+	}
+	// A counter planted in /tmp (where any user can write) no longer counts.
+	if err := os.WriteFile("/tmp/infrafence-agent-crash-count", []byte("99"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	CheckStartupHealth("1.0.29", func(string, string, map[string]string) {})
+	b, err := os.ReadFile(crashMarkerPath)
+	if err != nil || strings.TrimSpace(string(b)) != "1" {
+		t.Fatalf("counter = %q, %v; want 1 (the /tmp file must be ignored)", b, err)
+	}
+	for path, want := range map[string]os.FileMode{stateDir: 0o700 | os.ModeDir, crashMarkerPath: 0o600} {
+		fi, err := os.Stat(path)
+		if err != nil || fi.Mode() != want {
+			t.Fatalf("%s mode %v, want %v (%v)", path, fi.Mode(), want, err)
+		}
+	}
+}
