@@ -2,6 +2,9 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.30
+- **fix: Kubernetes clusters can register.** The Helm chart passed its key to the agent as a single-use install token, so only the first node could ever register, and the container's cluster registration called an `api.` subdomain that isn't the dashboard. The DaemonSet now passes the key as a **cluster key** (`INFRAFENCE_API_KEY`, created in the dashboard under Settings → Kubernetes) and registration goes to the dashboard URL itself (override with `INFRAFENCE_API_URL`). Every node registers as its own server; a node that registers again (rebuilt node, wiped `/etc/infrafence`) keeps its server and gets a new token. Nothing changes for servers installed with `install.sh` or Docker with an install token.
+
 ## v1.0.29
 - **feat: automatic updates only for those who choose them.** The agent installs a new version by itself only when the dashboard setting "Agent updates" is "Install automatically"; with no choice made, "Notify only" or anything else it only reports the new version. The dashboard now defaults to "Notify only" and sends the new version only to organizations that chose automatic updates.
 - **security: only signed InfraFence releases are installed.** Updates are downloaded only from the official GitHub release of that version (the address sent by the dashboard is ignored, the unversioned infrafence.com mirror is gone) and installed only if the cosign release signature matches the InfraFence public key built into the agent. The signature is checked on the downloaded bytes, and those same bytes are tested and installed. Download sizes are capped.
