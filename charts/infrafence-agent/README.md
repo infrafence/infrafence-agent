@@ -6,21 +6,25 @@ Deploy the [InfraFence](https://infrafence.com) security agent as a DaemonSet on
 
 - Kubernetes 1.22+
 - Helm 3+
-- A InfraFence account with an install token from [infrafence.com](https://infrafence.com)
+- An InfraFence account and a **cluster key**: dashboard → Settings → Kubernetes → "Create cluster key". One key registers every node; each node shows up as its own server (the Starter plan covers one server, Pro has no limit).
 
 ## Install
 
 ```bash
 helm install infrafence-agent oci://ghcr.io/infrafence/charts/infrafence-agent \
-  --set apiKey="YOUR_API_KEY"
+  --namespace infrafence --create-namespace \
+  --set apiKey="IFK-..." \
+  --set clusterName="production"
 ```
 
 ## Upgrade
 
 ```bash
 helm upgrade infrafence-agent oci://ghcr.io/infrafence/charts/infrafence-agent \
-  --version 0.6.0
+  --namespace infrafence --reuse-values
 ```
+
+A node that registers again (rebuilt node, wiped `/etc/infrafence`) keeps its server in the dashboard and gets a new token; revoking a cluster key stops new nodes from joining but leaves registered nodes running.
 
 ## Uninstall
 
@@ -32,9 +36,9 @@ helm uninstall infrafence-agent
 
 | Parameter | Description | Default |
 |---|---|---|
-| `apiKey` | API key from InfraFence panel | `""` (required) |
+| `apiKey` | Cluster key from the dashboard (Settings → Kubernetes) | `""` (required) |
 | `serverUrl` | InfraFence panel URL | `https://infrafence.com` |
-| `clusterName` | Cluster name (auto-detected if not set) | `""` |
+| `clusterName` | Cluster name; nodes are grouped by it in the dashboard (auto-detected if not set) | `""` |
 | `image.repository` | Container image | `ghcr.io/infrafence/infrafence-agent` |
 | `image.tag` | Image tag (defaults to chart `appVersion`) | `""` |
 | `image.pullPolicy` | Image pull policy | `Always` |
