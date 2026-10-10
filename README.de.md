@@ -198,6 +198,18 @@ docker run -d --name infrafence-agent --restart unless-stopped \
 
 Multi-Architektur-Image (amd64 + arm64), mit jedem Release veröffentlicht. Ein Stack für Docker Swarm liegt in [docker-compose.swarm.yml](docker-compose.swarm.yml).
 
+### Kubernetes
+
+Erstelle im Dashboard einen Cluster-Schlüssel (Einstellungen → Kubernetes), dann:
+
+```bash
+helm install infrafence-agent oci://ghcr.io/infrafence/charts/infrafence-agent \
+  --namespace infrafence --create-namespace \
+  --set apiKey="IFK-..." --set clusterName="production"
+```
+
+Jeder Knoten registriert sich als eigener Server. Die Optionen stehen im [Chart-README](charts/infrafence-agent/README.md).
+
 ### Deinstallation
 
 ```bash
@@ -233,10 +245,6 @@ Setzen Sie sie mit `sudo systemctl edit infrafence-agent` (`[Service]` → `Envi
 
 Eine ehrliche Liste dessen, was es heute noch nicht gibt:
 
-- **Kubernetes** — Helm-Chart und DaemonSet existieren, aber das Dashboard kann Agenten eines Clusters noch nicht registrieren
-- **Weitergabe von Sperren** — eine Sperre gilt auf dem Server, der sie erkannt hat, noch nicht auf all Ihren Servern
-- **Härtungsprüfungen und CVE-Scan** — der Code ist im Agenten, aber das Dashboard kann sie noch nicht starten
-- **Sicherheitswert** (0-100) — vom Agenten berechnet, im Dashboard noch nicht angezeigt
 - **SSH-Erkennungsmuster pro Server** aus dem Dashboard
 - **IP-Sperren in ModSecurity**, synchronisiert aus dem Dashboard
 - **Logs nur in journald** — die SSH-Erkennung benötigt `/var/log/auth.log` oder `/var/log/secure`; Server ohne rsyslog (Debian 12+ minimal, Fedora) sind noch nicht abgedeckt
