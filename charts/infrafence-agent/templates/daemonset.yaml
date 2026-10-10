@@ -40,7 +40,8 @@ spec:
           securityContext:
             privileged: true
           env:
-            - name: INFRAFENCE_TOKEN
+            # Cluster key (multi-use): every node registers itself as one server.
+            - name: INFRAFENCE_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "infrafence-agent.fullname" . }}
