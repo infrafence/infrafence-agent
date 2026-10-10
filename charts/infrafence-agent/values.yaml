@@ -1,6 +1,7 @@
 # InfraFence Agent Helm Chart — values.yaml
 
-# Required: your organization API key from infrafence.com
+# Required: a cluster key from the dashboard (Settings → Kubernetes). One key registers every
+# node of the cluster; each node shows up as its own server.
 apiKey: ""
 
 # InfraFence server URL (change only for self-hosted)

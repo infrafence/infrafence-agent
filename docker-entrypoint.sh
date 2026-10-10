@@ -41,8 +41,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
         # Build JSON payload (avoid multiline -d issues in Alpine curl)
         PAYLOAD="{\"api_key\":\"${INFRAFENCE_API_KEY}\",\"name\":\"${NODE_NAME}\",\"hostname\":\"${NODE_NAME}\",\"ip_address\":\"${IP_ADDR}\",\"os\":\"${OS_INFO}\",\"os_version\":\"${OS_VERSION}\",\"version\":\"${AGENT_VERSION}\",\"node_name\":\"${NODE_NAME}\",\"cluster_name\":\"${CLUSTER_NAME}\"}"
 
-        # API URL: always use api. subdomain (separable from web server)
-        API_BASE="${INFRAFENCE_API_URL:-$(echo "$SERVER_URL" | sed 's|://|://api.|')}"
+        # The dashboard serves the agent API itself (override with INFRAFENCE_API_URL).
+        API_BASE="${INFRAFENCE_API_URL:-$SERVER_URL}"
 
         HTTP_CODE=$(curl -sS -o /tmp/register-response.json -w "%{http_code}" \
             -X POST "${API_BASE}/api/v1/agents/register-k8s" \
