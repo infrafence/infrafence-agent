@@ -57,8 +57,17 @@ while IFS='|' read -r name image pm rsyslog; do
     [ "$rsyslog" = yes ] && pkgs="$pkgs rsyslog"
     prep="(dnf install -y -q --allowerasing $pkgs curl || yum install -y -q $pkgs curl) && (command -v curl || dnf install -y -q curl-minimal)"
   fi
+  # CentOS Stream mirrors lag behind the metalink after each compose and fail its
+  # checksum, so the test image installs from the official mirror only.
+  copy=""
+  case "$name" in centos-stream-*)
+    v=${name#centos-stream-}
+    printf '[baseos]\nname=BaseOS\nbaseurl=https://mirror.stream.centos.org/%s-stream/BaseOS/$basearch/os/\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial\n[appstream]\nname=AppStream\nbaseurl=https://mirror.stream.centos.org/%s-stream/AppStream/$basearch/os/\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial\n' "$v" "$v" >"$work/official.repo"
+    copy='COPY official.repo /etc/yum.repos.d/official.repo\nRUN rm -f /etc/yum.repos.d/centos.repo /etc/yum.repos.d/centos-addons.repo\n'
+    ;;
+  esac
   tag="infrafence-distro:$name-$goarch"
-  printf 'FROM %s\nRUN %s >/dev/null 2>&1 && (systemctl enable rsyslog 2>/dev/null || true) && (systemctl mask systemd-logind getty@tty1 console-getty 2>/dev/null || true)\nCMD ["/sbin/init"]\n' \
+  printf "FROM %s\n${copy}RUN %s >/dev/null 2>&1 && (systemctl enable rsyslog 2>/dev/null || true) && (systemctl mask systemd-logind getty@tty1 console-getty 2>/dev/null || true)\nCMD [\"/sbin/init\"]\n" \
     "$image" "$prep" >"$work/Dockerfile"
   if ! docker build "${plat[@]}" -q -t "$tag" "$work" >/dev/null 2>"$work/build.err"; then
     echo "image build failed:"; tail -5 "$work/build.err"
