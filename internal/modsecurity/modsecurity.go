@@ -63,9 +63,15 @@ func (e *Engine) Setup() error {
 	// Leaving an include Apache can't parse on disk would make the next
 	// restart of the customer's web server fail.
 	snap := snapshotIncludeTargets()
+	// A rules dir that was already there holds applied virtual patches: a
+	// failed re-run must not delete them.
+	_, statErr := os.Stat(rulesDir)
+	rulesDirExisted := statErr == nil
 	rollback := func() {
 		snap.restore()
-		os.RemoveAll(rulesDir)
+		if !rulesDirExisted {
+			os.RemoveAll(rulesDir)
+		}
 	}
 
 	os.MkdirAll(rulesDir, 0755)
@@ -281,6 +287,10 @@ func (e *Engine) detectModSecurity() bool {
 	}
 
 	out, err := exec.Command(e.apachectl, "-M").CombinedOutput()
+	if err != nil {
+		// RHEL's apachectl is a systemctl wrapper without -M: ask httpd.
+		out, err = exec.Command("httpd", "-M").CombinedOutput()
+	}
 	if err != nil {
 		return false
 	}

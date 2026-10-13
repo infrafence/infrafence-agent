@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -36,6 +39,15 @@ type Client struct {
 	// without coupling every call site to that logic. Set once at startup,
 	// before any producer goroutines are launched — not synchronized.
 	eventObserver func(EventRequest)
+
+	// eventEnricher, if set, may complete each event before it is sent
+	// (source address, country). Set once at startup, like eventObserver.
+	eventEnricher func(*EventRequest)
+
+	// peers holds every address a connection to the dashboard reached (the
+	// agent must never block its egress to them).
+	peersMu sync.Mutex
+	peers   map[string]bool
 }
 
 // Kept-alive connections pin the dashboard's address: with a request every
@@ -59,7 +71,18 @@ const (
 func New(baseURL, token string) *Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.IdleConnTimeout = connIdleTimeout
-	c := &Client{
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	var c *Client
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err == nil {
+			if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+				c.notePeer(a.IP)
+			}
+		}
+		return conn, err
+	}
+	c = &Client{
 		baseURL:   baseURL,
 		token:     token,
 		userAgent: "InfraFenceAgent/1.0",
@@ -73,6 +96,33 @@ func New(baseURL, token string) *Client {
 	}
 	c.lastRecycle.Store(time.Now().UnixNano())
 	return c
+}
+
+// maxPeers bounds the remembered dashboard addresses.
+const maxPeers = 256
+
+func (c *Client) notePeer(ip net.IP) {
+	c.peersMu.Lock()
+	defer c.peersMu.Unlock()
+	if c.peers == nil {
+		c.peers = map[string]bool{}
+	}
+	if len(c.peers) < maxPeers {
+		c.peers[ip.String()] = true
+	}
+}
+
+// PeerIPs returns every address a connection to the dashboard (or the proxy
+// in front of it) reached since the agent started.
+func (c *Client) PeerIPs() []string {
+	c.peersMu.Lock()
+	defer c.peersMu.Unlock()
+	out := make([]string, 0, len(c.peers))
+	for ip := range c.peers {
+		out = append(out, ip)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // do sends req, first dropping idle connections older than connMaxAge, and
@@ -165,6 +215,12 @@ func (c *Client) SetEventObserver(fn func(EventRequest)) {
 	c.eventObserver = fn
 }
 
+// SetEventEnricher registers a callback that may complete every event
+// before it is sent. Call once at startup, before any producer starts.
+func (c *Client) SetEventEnricher(fn func(*EventRequest)) {
+	c.eventEnricher = fn
+}
+
 // RegisterRequest holds the data sent during agent registration.
 type RegisterRequest struct {
 	InstallToken string `json:"install_token"`
@@ -240,6 +296,10 @@ type HeartbeatRequest struct {
 	ControlPanel        string             `json:"control_panel,omitempty"`
 	ControlPanelVersion string             `json:"control_panel_version,omitempty"`
 	PanelDomains        []string           `json:"panel_domains,omitempty"`
+	// Ports sshd and the web servers listen on (the dashboard never asks to
+	// close them).
+	SSHPorts []int `json:"ssh_ports,omitempty"`
+	WebPorts []int `json:"web_ports,omitempty"`
 }
 
 // RuntimeStats reports the agent's own resource usage so we can detect leaks
@@ -370,11 +430,32 @@ type SyncResponse struct {
 	HardeningFixes []HardeningFix `json:"hardening_fixes"`
 	// Security updates an admin asked for (source package names).
 	PackageUpdates []PackageUpdate `json:"package_updates"`
+	// Ports to close and addresses to block for egress: the requests (each
+	// answered with a result event) and the full desired state.
+	FirewallActions []FirewallAction `json:"firewall_actions"`
+	FirewallState   *FirewallState   `json:"firewall_state,omitempty"`
 	// Org-wide bans to enforce in ModSecurity (servers behind a proxy/CDN,
 	// where the firewall only sees the proxy's address).
 	ModsecBanIPs      []string        `json:"modsec_ban_ips"`
 	QuarantinePending []string        `json:"quarantine_pending"`
 	CSFPortActions    []CSFPortAction `json:"csf_port_actions"`
+	// Virtual patches to apply or remove and quarantined files to put back;
+	// each request is handled once and reported back.
+	VirtualPatches     []VirtualPatchRequest `json:"virtual_patches"`
+	QuarantineRestores []QuarantineRestore   `json:"quarantine_restores"`
+}
+
+// VirtualPatchRequest asks to apply or remove one catalog virtual patch.
+type VirtualPatchRequest struct {
+	ID     int64  `json:"id"`
+	RuleID string `json:"rule_id"`
+	Action string `json:"action"` // "apply" or "remove"
+}
+
+// QuarantineRestore asks to put a quarantined file back at its original path.
+type QuarantineRestore struct {
+	ID   int64  `json:"id"`
+	File string `json:"file"`
 }
 
 // HardeningFix is one requested fix: apply or revert the automatic fix for
@@ -390,6 +471,28 @@ type HardeningFix struct {
 type PackageUpdate struct {
 	ID       int64    `json:"id"`
 	Packages []string `json:"packages"`
+}
+
+// FirewallAction is one requested firewall change: close_port / open_port
+// (Port, Proto) or block_egress / unblock_egress (IP).
+type FirewallAction struct {
+	ID    int64  `json:"id"`
+	Kind  string `json:"kind"`
+	Port  int    `json:"port,omitempty"`
+	Proto string `json:"proto,omitempty"`
+	IP    string `json:"ip,omitempty"`
+}
+
+// FirewallState is every port the dashboard wants closed to the public and
+// every address the host may not reach.
+type FirewallState struct {
+	ClosedPorts   []PortProto `json:"closed_ports"`
+	EgressBlocked []string    `json:"egress_blocked"`
+}
+
+type PortProto struct {
+	Port  int    `json:"port"`
+	Proto string `json:"proto"`
 }
 
 // CSFPortAction is a pending CSF port management command from the panel.
@@ -613,6 +716,11 @@ type EventRequest struct {
 
 // ReportEvents sends security events to the server.
 func (c *Client) ReportEvents(events []EventRequest) error {
+	if c.eventEnricher != nil {
+		for i := range events {
+			c.eventEnricher(&events[i])
+		}
+	}
 	if c.eventObserver != nil {
 		for _, e := range events {
 			c.eventObserver(e)

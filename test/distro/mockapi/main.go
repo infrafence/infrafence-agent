@@ -11,19 +11,28 @@ import (
 	"flag"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type state struct {
 	mu         sync.Mutex
-	Registered bool              `json:"registered"`
-	Heartbeats int               `json:"heartbeats"`
-	Syncs      int               `json:"syncs"`
-	Bans       []json.RawMessage `json:"bans"`
-	Events     []json.RawMessage `json:"events"`
+	Registered bool `json:"registered"`
+	Heartbeats int  `json:"heartbeats"`
+	// LastHeartbeat is the body of the latest heartbeat.
+	LastHeartbeat json.RawMessage   `json:"last_heartbeat,omitempty"`
+	Syncs         int               `json:"syncs"`
+	Bans          []json.RawMessage `json:"bans"`
+	Events        []json.RawMessage `json:"events"`
+	// extra holds fields set through /set-sync, merged into every sync
+	// reply; version bumps on each change so the agent syncs again.
+	extra   map[string]json.RawMessage
+	version int
 }
 
 func main() {
@@ -36,7 +45,9 @@ func main() {
 		log.Fatalf("read binary: %v", err)
 	}
 	sum := sha256.Sum256(bin)
-	st := &state{}
+	st := &state{extra: map[string]json.RawMessage{}}
+	// offline: the agent API answers 503, as a dashboard that is down.
+	var offline atomic.Bool
 
 	reply := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -58,20 +69,74 @@ func main() {
 		reply(w, map[string]any{"token": "distro-test-token", "agent": map[string]any{"id": 1}})
 	})
 	mux.HandleFunc("/api/v1/agent/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		st.mu.Lock()
 		st.Heartbeats++
+		if json.Valid(body) {
+			st.LastHeartbeat = body
+		}
+		version := st.version
 		st.mu.Unlock()
-		reply(w, map[string]any{"status": "ok"})
+		reply(w, map[string]any{"status": "ok", "config_version": strconv.Itoa(version)})
 	})
 	mux.HandleFunc("/api/v1/agent/sync", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.Syncs++
-		st.mu.Unlock()
-		reply(w, map[string]any{
+		out := map[string]any{
 			"status": "ok",
 			"config": map[string]any{"bf_threshold": 5, "bf_window": 60, "monitor_mode": false},
 			"rules":  []any{}, "bans": []any{}, "whitelists": []any{},
-		})
+		}
+		for k, v := range st.extra {
+			out[k] = v
+		}
+		st.mu.Unlock()
+		reply(w, out)
+	})
+	// Test control: top-level keys of the posted object replace those of the
+	// sync reply (null removes one; send the whole "config" to change it).
+	mux.HandleFunc("/set-sync", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		st.mu.Lock()
+		for k, v := range body {
+			if string(v) == "null" {
+				delete(st.extra, k)
+			} else {
+				st.extra[k] = v
+			}
+		}
+		st.version++
+		st.mu.Unlock()
+		reply(w, map[string]any{"status": "ok"})
+	})
+	// Test control: /offline?on=1 makes every agent API call fail with 503
+	// until /offline?on=0.
+	mux.HandleFunc("/offline", func(w http.ResponseWriter, r *http.Request) {
+		offline.Store(r.URL.Query().Get("on") == "1")
+		reply(w, map[string]any{"status": "ok", "offline": offline.Load()})
+	})
+	// Test control: listen on a TCP port (accept and close), for the
+	// close_port / block_egress cases.
+	mux.HandleFunc("/listen", func(w http.ResponseWriter, r *http.Request) {
+		ln, err := net.Listen("tcp", r.URL.Query().Get("addr"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				c.Close()
+			}
+		}()
+		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/agent/bans", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -102,5 +167,11 @@ func main() {
 	})
 
 	log.Printf("mockapi listening on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, mux))
+	log.Fatal(http.ListenAndServe(*addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if offline.Load() && strings.HasPrefix(r.URL.Path, "/api/") {
+			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})))
 }

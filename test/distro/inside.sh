@@ -9,7 +9,7 @@ R_INSTALL=fail R_SERVICE=fail R_SCAN=fail R_DETECT=fail R_BAN=fail R_BLOCK=fail 
 SOURCE=none
 log() { echo "[inside] $*"; }
 result() {
-  echo "RESULT distro=${DISTRO} install=${R_INSTALL} service=${R_SERVICE} portscan=${R_SCAN} detect=${R_DETECT} source=${SOURCE} ban=${R_BAN} blocked=${R_BLOCK} uninstall=${R_UNINSTALL}"
+  echo "RESULT distro=${DISTRO} install=${R_INSTALL} service=${R_SERVICE} portscan=${R_SCAN} detect=${R_DETECT} source=${SOURCE} ban=${R_BAN} blocked=${R_BLOCK} uninstall=${R_UNINSTALL}${EXTRA_RESULT:-}"
 }
 trap result EXIT
 
@@ -106,10 +106,18 @@ fi
 # ── preflight (read only) for the record ──
 /usr/local/bin/infrafence-agent preflight 2>/dev/null | head -25 | sed 's/^/[preflight] /'
 
+# ── closed ports and egress blocks (test/distro/firewall.sh) ──
+. /distro/firewall.sh
+
+# ── virtual patch and quarantine restore (test/distro/waf.sh) ──
+. /distro/waf.sh
+
 # ── uninstall: nothing may be left behind ──
 bash /distro/install.sh --uninstall >/tmp/uninstall.log 2>&1
 left=""
 iptables -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables"
+ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
+[ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
 ipset list -n 2>/dev/null | grep -q infrafence && left="$left ipset"
 systemctl list-unit-files 2>/dev/null | grep -q infrafence-agent && left="$left service"
 [ -e /usr/local/bin/infrafence-agent ] && left="$left binary"
@@ -117,4 +125,4 @@ if [ -z "$left" ]; then R_UNINSTALL=ok; else log "left behind:$left"; fi
 # And sshd still answers the attacker's address now that the ban is gone.
 ip netns exec cl timeout 3 bash -c '</dev/tcp/203.0.113.1/22' 2>/dev/null || { R_UNINSTALL=fail; log "ssh still blocked after uninstall"; }
 
-[ "$R_INSTALL$R_SERVICE$R_SCAN$R_DETECT$R_BAN$R_BLOCK$R_UNINSTALL" = okokokokokokok ]
+[ "$R_INSTALL$R_SERVICE$R_SCAN$R_DETECT$R_BAN$R_BLOCK$R_UNINSTALL" = okokokokokokok ] && [ -z "${EXTRA_FAIL:-}" ]

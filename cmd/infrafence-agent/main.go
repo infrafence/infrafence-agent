@@ -30,6 +30,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/malware"
 	"github.com/infrafence/infrafence-agent/internal/modsecurity"
 	"github.com/infrafence/infrafence-agent/internal/monitor"
+	"github.com/infrafence/infrafence-agent/internal/netstate"
 	"github.com/infrafence/infrafence-agent/internal/preflight"
 	"github.com/infrafence/infrafence-agent/internal/session"
 	"github.com/infrafence/infrafence-agent/internal/updater"
@@ -69,6 +70,9 @@ var dnsInspector = dnswatch.NewInspector(
 
 // currentAPIClient lets package-level components report events.
 var currentAPIClient atomic.Pointer[api.Client]
+
+// geoLookup is the GeoLite2 database once loaded (events get a country).
+var geoLookup atomic.Pointer[geoip.Lookup]
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -167,6 +171,13 @@ func runAgent() {
 
 	apiClient := api.New(cfg.ServerURL, cfg.AgentToken)
 	currentAPIClient.Store(apiClient)
+	apiClient.SetEventEnricher(func(e *api.EventRequest) {
+		var country func(string) string
+		if g := geoLookup.Load(); g != nil {
+			country = g.Country
+		}
+		enrichEvent(e, country)
+	})
 	apiClient.SetVersion(version)
 
 	// Callback for the updater to report update outcomes to the server
@@ -216,6 +227,12 @@ func runAgent() {
 	// Read-only host scan first: decides what the agent may change here.
 	startupPreflight(apiClient)
 	go runDailyAudits(currentAPIClient.Load)
+
+	// Ports closed and egress blocked before the restart, re-checked, so the
+	// first setup below applies them (also when the dashboard is down).
+	go watchDashboardAddrs(cfg.ServerURL)
+	loadFirewallState()
+	go watchSSHLogins()
 
 	// Initialize firewall backend (detects ipset, falls back to iptables)
 	firewall.Init()
@@ -294,7 +311,11 @@ func runAgent() {
 	// Initialize GeoIP lookup
 	geoDBPath := os.Getenv("GEOIP_DB_PATH")
 	geo := geoip.New(geoDBPath)
-	defer geo.Close()
+	geoLookup.Store(geo)
+	defer func() {
+		geoLookup.Store(nil)
+		geo.Close()
+	}()
 
 	// Initialize proactive country geoblocker (ipset hash:net)
 	// Panel URL is protected so geoblocking never cuts off agent ↔ panel communication.
@@ -385,13 +406,20 @@ func runAgent() {
 		}
 		// Also collect domains from nginx/apache server_name directives
 		// (catches Plesk aliases that share a parent vhost's log file)
-		for _, d := range watcher.CollectAllWebServerDomains() {
+		configured := watcher.CollectAllWebServerDomains()
+		var logged []string
+		for d := range domainSet {
+			logged = append(logged, d)
+		}
+		for _, d := range configured {
 			domainSet[d] = true
 		}
 		for d := range domainSet {
 			monitoredDomains = append(monitoredDomains, d)
 		}
 		sort.Strings(monitoredDomains)
+		domains := chooseVerifyDomains(configured, logged)
+		verifyDomains.Store(&domains)
 		log.Printf("[webwatcher] detected %d access log(s)", len(webLogPaths))
 		webW = watcher.NewWebWatcher(
 			webLogPaths,
@@ -635,6 +663,8 @@ func runAgent() {
 	// session tracker, which credits open SSH sessions with a correlated hit.
 	apiClient.SetEventObserver(func(e api.EventRequest) {
 		sessionTracker.NotifySigmaEvent(e.Type, e.Severity)
+		// Addresses flagged as threats and SSH login addresses (fwstate.go).
+		noteEgressEvent(e)
 	})
 
 	// Every sync goes through one runner: never two at once, and bursts of
@@ -846,6 +876,8 @@ func runAgent() {
 				ControlPanelVersion: cpVersion,
 				PanelDomains:        panelDomains,
 				ListeningServices:   listening,
+				SSHPorts:            netstate.SSHPorts(),
+				WebPorts:            netstate.WebPortsFrom(listeningRaw),
 				Runtime: &api.RuntimeStats{
 					GoroutineCount: runtime.NumGoroutine(),
 					HeapAllocBytes: memStats.HeapAlloc,
@@ -1170,7 +1202,19 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 				uaFps = append(uaFps, webserver.UAFingerprint{Pattern: fp.Pattern, IsRegex: fp.IsRegex})
 			}
 		}
-		go applyWebserverChanges(client, wsType, uaFps)
+		// Virtual patches right after: they need the ModSecurity setup.
+		go func(vps []api.VirtualPatchRequest, monitorMode bool) {
+			applyWebserverChanges(client, wsType, uaFps)
+			if len(vps) > 0 {
+				applyVirtualPatches(client, wsType, monitorMode, vps)
+			}
+		}(sync.VirtualPatches, sync.Config.MonitorMode)
+	} else if len(sync.VirtualPatches) > 0 {
+		go applyVirtualPatches(client, wsType, sync.Config.MonitorMode, sync.VirtualPatches)
+	}
+	// Quarantined files to put back — see vpatch.go.
+	if len(sync.QuarantineRestores) > 0 {
+		go restoreQuarantinedFiles(client, append([]string(nil), malwareCustomPaths...), sync.QuarantineRestores)
 	}
 
 	// Apply dynamic malware signatures from backend
@@ -1329,6 +1373,11 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 	if len(sync.PackageUpdates) > 0 {
 		go applyPackageUpdates(client, sync.PackageUpdates)
+	}
+	// Ports closed and egress blocked from the dashboard (fwactions.go).
+	applyFirewallState(sync.FirewallState, sync.FirewallActions, sync.Config.MonitorMode)
+	if len(sync.FirewallActions) > 0 {
+		go applyFirewallActions(client, sync.FirewallActions)
 	}
 
 	// Apply CSF port actions if requested from dashboard

@@ -187,6 +187,13 @@ func Revert(h Host, checkID string) (string, error) {
 	return "permissions left as they are", nil
 }
 
+// Reversible reports whether Revert really undoes the fix (permission fixes
+// are left as they are).
+func Reversible(checkID string) bool {
+	f, ok := fixes[checkID]
+	return ok && f.kind != kindPerm
+}
+
 // RemoveAll deletes every file InfraFence added and reloads the services
 // that used them. Used by uninstall. The error lists the services that could
 // not be reloaded: their files are gone, but the running process still has

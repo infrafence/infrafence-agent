@@ -56,6 +56,23 @@ func ClearThreatSet() {
 	_ = flushIpset(threatSetName)
 }
 
+// InThreatSet reports whether ip is in the inbound threat-feed blocklist
+// the agent enforces (empty while it does not block threat feeds).
+func InThreatSet(ip string) bool {
+	p := net.ParseIP(strings.TrimSpace(ip))
+	if p == nil {
+		return false
+	}
+	fw.Lock()
+	defer fw.Unlock()
+	for _, c := range fw.threat {
+		if n := parseNet(c); n != nil && n.Contains(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // filterThreatNets keeps the IPv4 entries that are safe to block.
 func filterThreatNets(entries []string, keep []string) (cidrs []string, skipped int) {
 	var keepNets []*net.IPNet

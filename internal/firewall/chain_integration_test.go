@@ -218,11 +218,94 @@ func TestFirewallIntegration(t *testing.T) {
 		})
 	}
 
+	t.Run("closed port and egress block", func(t *testing.T) {
+		_ = UnbanIP(clientIP)
+		if !canConnect() {
+			t.Fatal("setup: unbanned client should connect")
+		}
+		if _, err := SetPortsEgress([]int{8080}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if canConnect() {
+			t.Fatal("client reached a closed port")
+		}
+		if exec.Command("bash", "-c", "timeout 2 bash -c 'exec 3<>/dev/tcp/"+hostIP+"/8080'").Run() != nil {
+			t.Fatal("the host itself (loopback) lost the closed port")
+		}
+		SetAllowList([]string{clientIP})
+		if !canConnect() {
+			t.Fatal("an allow-listed client must not be affected by a closed port")
+		}
+		SetAllowList(nil)
+
+		// The same port closed over IPv6, repaired like the IPv4 chain.
+		if hasIp6tables() {
+			if !strings.Contains(sh(t, "ip6tables -S "+portsChainName), "--ctorigdstport 8080 -j DROP") ||
+				!strings.Contains(sh(t, "ip6tables -S INPUT"), "-j "+portsChainName) {
+				t.Fatalf("no IPv6 mirror:\n%s\n%s", sh(t, "ip6tables -S "+portsChainName), sh(t, "ip6tables -S INPUT"))
+			}
+			if closed, ok := Ports6InForce(); !ok || len(closed) != 1 {
+				t.Fatalf("Ports6InForce = %v %v", closed, ok)
+			}
+			sh(t, "ip6tables -F "+portsChainName)
+			mustEnsure(t)
+			if !strings.Contains(sh(t, "ip6tables -S "+portsChainName), "--ctorigdstport 8080 -j DROP") {
+				t.Fatal("flushed IPv6 ports chain not restored")
+			}
+		} else {
+			t.Log("no ip6tables: IPv6 mirror not tested")
+		}
+
+		sh(t, "iptables -F "+portsChainName)
+		if res := mustEnsure(t); strings.Join(res.Repairs, ",") != "chain-contents" || canConnect() {
+			t.Fatalf("flushed ports chain not restored: %v", res.Repairs)
+		}
+
+		skipped, err := SetPortsEgress(nil, []string{clientIP, "10.1.2.3", "2001:db8::1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(skipped) != 2 {
+			t.Errorf("skipped = %v, want the private and the IPv6 address", skipped)
+		}
+		// The handshake's answer goes out through OUTPUT: blocked.
+		if canConnect() {
+			t.Fatal("egress to the client is not blocked")
+		}
+		sh(t, "iptables -D OUTPUT -m comment --comment "+egressComment+" -j "+egressChainName)
+		if res := mustEnsure(t); !strings.Contains(strings.Join(res.Repairs, ","), "jump:OUTPUT") || canConnect() {
+			t.Fatalf("OUTPUT jump not restored: %v", res.Repairs)
+		}
+		if _, err := SetPortsEgress(nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if !canConnect() {
+			t.Fatal("client should connect once nothing is closed or blocked")
+		}
+		if _, err := SetPortsEgress([]int{8080}, []string{clientIP}); err != nil {
+			t.Fatal(err)
+		}
+		// Allow-listing an address lifts its egress block.
+		SetAllowList([]string{clientIP})
+		if _, egress := PortsEgress(); len(egress) != 0 || !canConnect() {
+			t.Fatalf("allow-listed address still blocked: %v", egress)
+		}
+		SetAllowList(nil)
+		if _, err := SetPortsEgress([]int{8080}, []string{clientIP}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("uninstall removes everything InfraFence created, only that", func(t *testing.T) {
 		RemoveAll()
 		all := sh(t, "iptables -S")
 		if strings.Contains(all, chainName) || strings.Contains(all, "infrafence") {
 			t.Errorf("leftovers after RemoveAll:\n%s", all)
+		}
+		if hasIp6tables() {
+			if all6 := sh(t, "ip6tables -S"); strings.Contains(all6, "INFRAFENCE") || strings.Contains(all6, "infrafence") {
+				t.Errorf("IPv6 leftovers after RemoveAll:\n%s", all6)
+			}
 		}
 		if !strings.Contains(all, "-s "+custIP+"/32 -j DROP") || !strings.Contains(all, "ufw-user-input") {
 			t.Errorf("RemoveAll touched rules it doesn't own (need %s DROP and ufw-user-input):\n%s", custIP, all)

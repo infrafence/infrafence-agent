@@ -288,6 +288,10 @@ func cmdUninstall(args []string) {
 	for _, s := range firewall.RemoveAll() {
 		fmt.Println("removed", s)
 	}
+	// Saved closed ports and egress blocks: a reinstall starts with none.
+	if err := os.Remove(fwStatePath); err == nil {
+		fmt.Println("removed", fwStatePath)
+	}
 	for name, fn := range map[string]func() error{
 		"nginx UA blocking":  webserver.RemoveNginxUABlock,
 		"apache UA blocking": webserver.RemoveApacheUABlock,
