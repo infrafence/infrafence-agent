@@ -911,9 +911,21 @@ check_service() {
 uninstall() {
     info "Uninstalling InfraFence Agent..."
 
+    # Stop the agent first: while it runs, its firewall guard would put the
+    # chains back right after the cleanup below removes them.
+    if command -v systemctl &>/dev/null; then
+        systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    fi
+    if command -v initctl &>/dev/null; then
+        initctl stop "${SERVICE_NAME}" 2>/dev/null || true
+    fi
+    if [[ -f "/etc/init.d/${SERVICE_NAME}" ]]; then
+        "/etc/init.d/${SERVICE_NAME}" stop 2>/dev/null || true
+    fi
+
     # Remove every change the agent made to the host (firewall chains and
-    # sets, web-server UA blocking, ModSecurity includes) while the binary
-    # that knows how is still here.
+    # sets, closed ports, egress blocks, web-server UA blocking, ModSecurity
+    # includes) while the binary that knows how is still here.
     if [[ -x "${INSTALL_DIR}/${BINARY_NAME}" ]]; then
         "${INSTALL_DIR}/${BINARY_NAME}" uninstall --clean \
             || warn "Some InfraFence changes could not be removed — see the messages above."
@@ -940,6 +952,7 @@ uninstall() {
     rm -f "${INSTALL_DIR}/${BINARY_NAME}.bak"
     rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
     rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
+    rm -f /var/lib/infrafence/firewall-state.json  # saved closed ports / egress blocks
     rm -f /tmp/infrafence-agent-crash-count /tmp/infrafence-agent-recovered  # before v1.0.29
     rm -rf "$CONFIG_DIR"
 

@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,6 +24,8 @@ import (
 //	                  does not bypass the host's own rules.
 //	INFRAFENCE-RULES  explicit rules created from the dashboard (may ACCEPT),
 //	                  jumped to from INPUT only.
+//	INFRAFENCE-PORTS, INFRAFENCE-EGRESS
+//	                  closed ports and blocked egress, see portsegress.go.
 //
 // Ensure() re-creates chains, jumps and sets when another tool (ufw reload,
 // firewall-cmd --reload, csf -r, netfilter-persistent, iptables-restore)
@@ -44,14 +47,32 @@ type fwState struct {
 	threat      []string        // threat-feed CIDRs; nil when not blocking
 	geo         map[string][]string
 	userRules   [][]string // iptables args of dashboard rules, in order
+	closedPorts []int      // TCP ports closed to public sources
+	egress      []string   // IPv4 addresses the host may not reach
 	legacyDone  bool
 
 	// What the chains looked like right after our last rebuild, as iptables
 	// prints them (it normalizes, e.g. adds /32 and -m tcp), and the desired
 	// state that produced it. Drift = chains differ from that snapshot.
 	lastDesired string
-	appliedMain []string
-	appliedUser []string
+	applied     map[string][]string
+	// Desired state whose port/egress rules iptables refused (e.g. no
+	// conntrack match): not retried until the state changes, and the other
+	// chains are kept working without them.
+	peFailedKey string
+	// peInForce: the port and egress rules of the current state are in the
+	// kernel (false while they are left out after a failure).
+	peInForce bool
+	// egressSetErr is the last failure to fill the infrafence-egress set.
+	egressSetErr error
+
+	// IPv6 mirror of INFRAFENCE-PORTS (ports6.go): the desired contents
+	// last applied, the chain as ip6tables printed it then, a desired state
+	// ip6tables refused, and whether the closed ports are in force.
+	v6Desired   string
+	v6Applied   []string
+	v6FailedKey string
+	v6InForce   bool
 }
 
 var fw = &fwState{bans: map[string]bool{}, geo: map[string][]string{}}
@@ -104,6 +125,7 @@ func (s *fwState) desiredRules(ipset bool) (main []string, user []string) {
 		if len(allow) > 0 {
 			main = append(main, fmt.Sprintf("-A %s -m set --match-set %s src -j RETURN", chainName, allowSetName))
 		}
+		main = append(main, subJumps()...)
 		main = append(main, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP", chainName, banSetName))
 		if s.threat != nil {
 			main = append(main, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP", chainName, threatSetName))
@@ -120,6 +142,7 @@ func (s *fwState) desiredRules(ipset bool) (main []string, user []string) {
 		for _, a := range allow {
 			main = append(main, fmt.Sprintf("-A %s -s %s -j RETURN", chainName, a))
 		}
+		main = append(main, subJumps()...)
 		var bans []string
 		for ip := range s.bans {
 			if n := parseNet(ip); n != nil && n.IP.To4() != nil {
@@ -135,6 +158,13 @@ func (s *fwState) desiredRules(ipset bool) (main []string, user []string) {
 		user = append(user, "-A "+rulesChainName+" "+strings.Join(r, " "))
 	}
 	return main, user
+}
+
+func subJumps() []string {
+	return []string{
+		fmt.Sprintf("-A %s -j %s", chainName, portsChainName),
+		fmt.Sprintf("-A %s -j %s", chainName, egressChainName),
+	}
 }
 
 // ensureSets (re)creates and repopulates the ipsets the chain references.
@@ -175,6 +205,12 @@ func (s *fwState) ensureSets() (repaired []string) {
 			}
 		}
 	}
+	s.egressSetErr = s.ensureEgressSet()
+	if err := s.egressSetErr; err != nil {
+		log.Printf("[firewall] egress set: %v", err)
+	} else if !existing[egressSetName] && len(s.egress) > 0 {
+		repaired = append(repaired, "set:"+egressSetName)
+	}
 	return repaired
 }
 
@@ -202,7 +238,12 @@ func replaceNetSet(name string, cidrs []string) error {
 
 // currentRules returns the -A lines of a chain, or ok=false if it's missing.
 func currentRules(chain string) (lines []string, ok bool) {
-	out, err := run("iptables", "-S", chain)
+	return currentRulesOf("iptables", chain)
+}
+
+// currentRulesOf is currentRules for iptables or ip6tables.
+func currentRulesOf(bin, chain string) (lines []string, ok bool) {
+	out, err := run(bin, "-S", chain)
 	if err != nil {
 		return nil, false
 	}
@@ -214,37 +255,104 @@ func currentRules(chain string) (lines []string, ok bool) {
 	return lines, true
 }
 
-// syncChains makes both chains contain exactly the desired rules, atomically.
+// errPortsEgress: iptables refused the closed-port or egress rules; every
+// other chain was applied without them.
+var errPortsEgress = errors.New("closed ports and egress blocks not applied")
+
+// ourChains are rebuilt together, in this order, by syncChains.
+var ourChains = []string{chainName, rulesChainName, portsChainName, egressChainName}
+
+// syncChains makes every chain contain exactly the desired rules, atomically.
 func (s *fwState) syncChains(ipset bool) (repaired []string, err error) {
-	want, wantUser := s.desiredRules(ipset)
-	key := strings.Join(want, "\n") + "\n--\n" + strings.Join(wantUser, "\n")
-	have, okMain := currentRules(chainName)
-	haveUser, okUser := currentRules(rulesChainName)
-	if okMain && okUser && key == s.lastDesired && equal(have, s.appliedMain) && equal(haveUser, s.appliedUser) {
+	want := map[string][]string{}
+	want[chainName], want[rulesChainName] = s.desiredRules(ipset)
+	want[portsChainName], want[egressChainName] = s.portsEgressRules(ipset)
+	key := chainsKey(want)
+	withPE := true
+	if key == s.peFailedKey {
+		want[portsChainName], want[egressChainName] = nil, nil
+		key = chainsKey(want)
+		withPE = false
+	}
+	have := map[string][]string{}
+	allPresent, same := true, key == s.lastDesired
+	for _, c := range ourChains {
+		lines, ok := currentRules(c)
+		if !ok {
+			allPresent = false
+		}
+		have[c] = lines
+		if !equal(lines, s.applied[c]) {
+			same = false
+		}
+	}
+	if allPresent && same {
+		s.peInForce = withPE
 		return nil, nil
 	}
 	drift := s.lastDesired != "" && key == s.lastDesired
-	var b strings.Builder
-	b.WriteString("*filter\n")
-	fmt.Fprintf(&b, ":%s - [0:0]\n:%s - [0:0]\n", chainName, rulesChainName)
-	for _, l := range append(want, wantUser...) {
-		b.WriteString(l + "\n")
+	var peErr error
+	if err := restoreChains(want); err != nil {
+		if len(want[portsChainName])+len(want[egressChainName]) == 0 {
+			return nil, err
+		}
+		// Keep bans and rules working without the port/egress rules.
+		peErr = err
+		failedKey := key
+		want[portsChainName], want[egressChainName] = nil, nil
+		if err := restoreChains(want); err != nil {
+			s.peInForce = false
+			return nil, err
+		}
+		s.peFailedKey = failedKey
+		key = chainsKey(want)
+		withPE = false
 	}
-	b.WriteString("COMMIT\n")
-	if out, err := runStdin(b.String(), "iptables-restore", "--noflush"); err != nil {
-		return nil, fmt.Errorf("iptables-restore: %s (%w)", out, err)
-	}
+	s.peInForce = withPE
 	s.lastDesired = key
-	s.appliedMain, _ = currentRules(chainName)
-	s.appliedUser, _ = currentRules(rulesChainName)
+	s.applied = map[string][]string{}
+	for _, c := range ourChains {
+		s.applied[c], _ = currentRules(c)
+	}
 	// Only report a repair when something outside the agent changed the
 	// chains; rebuilding because the agent's own state changed is normal.
-	if !okMain || !okUser {
+	if !allPresent {
 		repaired = append(repaired, "chain")
 	} else if drift {
 		repaired = append(repaired, "chain-contents")
 	}
+	if peErr != nil {
+		return repaired, fmt.Errorf("%w: %v", errPortsEgress, peErr)
+	}
 	return repaired, nil
+}
+
+func chainsKey(want map[string][]string) string {
+	var b strings.Builder
+	for _, c := range ourChains {
+		b.WriteString(strings.Join(want[c], "\n"))
+		b.WriteString("\n--\n")
+	}
+	return b.String()
+}
+
+// restoreChains replaces the contents of our chains in one iptables-restore.
+func restoreChains(want map[string][]string) error {
+	var b strings.Builder
+	b.WriteString("*filter\n")
+	for _, c := range ourChains {
+		fmt.Fprintf(&b, ":%s - [0:0]\n", c)
+	}
+	for _, c := range ourChains {
+		for _, l := range want[c] {
+			b.WriteString(l + "\n")
+		}
+	}
+	b.WriteString("COMMIT\n")
+	if out, err := runStdin(b.String(), "iptables-restore", "--noflush"); err != nil {
+		return fmt.Errorf("iptables-restore: %s (%w)", out, err)
+	}
+	return nil
 }
 
 func equal(a, b []string) bool {
@@ -274,7 +382,7 @@ func mayAccept(line string) bool {
 			return true
 		case t == "DROP" || t == "REJECT" || t == "RETURN" || t == "LOG":
 			return false
-		case t == chainName || t == rulesChainName:
+		case t == chainName || t == rulesChainName || t == portsChainName || t == egressChainName:
 			return false
 		case strings.HasPrefix(t, "f2b-") || strings.HasPrefix(t, "fail2ban") || strings.HasPrefix(strings.ToLower(t), "crowdsec"):
 			return false
@@ -296,37 +404,11 @@ func jumpLine(chain, comment, target string) string {
 // ensureInputJumps keeps the INFRAFENCE jump ahead of the first rule that can
 // ACCEPT, and the INFRAFENCE-RULES jump right after it.
 func ensureInputJumps() (repaired []string, err error) {
-	lines, ok := currentRules("INPUT")
-	if !ok {
-		return nil, fmt.Errorf("cannot list INPUT")
+	repaired, err = ensureJumpAhead("INPUT", jumpComment, chainName)
+	if err != nil {
+		return nil, err
 	}
 	main := jumpLine("INPUT", jumpComment, chainName)
-	ours, firstAccept := -1, -1
-	for i, l := range lines {
-		if l == main && ours < 0 {
-			ours = i
-		}
-		if firstAccept < 0 && mayAccept(l) {
-			firstAccept = i
-		}
-	}
-	switch {
-	case ours < 0:
-		if out, err := run("iptables", append([]string{"-I", "INPUT", "1"}, jumpArgs(jumpComment, chainName)...)...); err != nil {
-			return nil, fmt.Errorf("insert INPUT jump: %s (%w)", out, err)
-		}
-		repaired = append(repaired, "jump:INPUT")
-	case firstAccept >= 0 && ours > firstAccept:
-		// Insert the new jump first, then delete the old one by number, so
-		// there is never a moment without it.
-		if out, err := run("iptables", append([]string{"-I", "INPUT", "1"}, jumpArgs(jumpComment, chainName)...)...); err != nil {
-			return nil, fmt.Errorf("move INPUT jump: %s (%w)", out, err)
-		}
-		if out, err := run("iptables", "-D", "INPUT", strconv.Itoa(ours+2)); err != nil {
-			return nil, fmt.Errorf("remove old INPUT jump: %s (%w)", out, err)
-		}
-		repaired = append(repaired, "jump-order:INPUT")
-	}
 
 	if _, err := run("iptables", append([]string{"-C", "INPUT"}, jumpArgs(rulesComment, rulesChainName)...)...); err != nil {
 		lines, _ := currentRules("INPUT")
@@ -345,27 +427,83 @@ func ensureInputJumps() (repaired []string, err error) {
 	return repaired, nil
 }
 
+// ensureJumpAhead keeps a jump from chain to target ahead of the first rule
+// of chain that can ACCEPT.
+func ensureJumpAhead(chain, comment, target string) (repaired []string, err error) {
+	return ensureJumpAheadOf("iptables", chain, comment, target)
+}
+
+// ensureJumpAheadOf is ensureJumpAhead for iptables or ip6tables.
+func ensureJumpAheadOf(bin, chain, comment, target string) (repaired []string, err error) {
+	prefix := ""
+	if bin != "iptables" {
+		prefix = bin + ":"
+	}
+	lines, ok := currentRulesOf(bin, chain)
+	if !ok {
+		return nil, fmt.Errorf("cannot list %s", chain)
+	}
+	jump := jumpLine(chain, comment, target)
+	ours, firstAccept := -1, -1
+	for i, l := range lines {
+		if l == jump && ours < 0 {
+			ours = i
+		}
+		if firstAccept < 0 && mayAccept(l) {
+			firstAccept = i
+		}
+	}
+	switch {
+	case ours < 0:
+		if out, err := run(bin, append([]string{"-I", chain, "1"}, jumpArgs(comment, target)...)...); err != nil {
+			return nil, fmt.Errorf("insert %s jump: %s (%w)", chain, out, err)
+		}
+		repaired = append(repaired, "jump:"+prefix+chain)
+	case firstAccept >= 0 && ours > firstAccept:
+		// Insert the new jump first, then delete the old one by number, so
+		// there is never a moment without it.
+		if out, err := run(bin, append([]string{"-I", chain, "1"}, jumpArgs(comment, target)...)...); err != nil {
+			return nil, fmt.Errorf("move %s jump: %s (%w)", chain, out, err)
+		}
+		if out, err := run(bin, "-D", chain, strconv.Itoa(ours+2)); err != nil {
+			return nil, fmt.Errorf("remove old %s jump: %s (%w)", chain, out, err)
+		}
+		repaired = append(repaired, "jump-order:"+prefix+chain)
+	}
+	return repaired, nil
+}
+
 // ensureDockerJump protects containers with published ports: that traffic
 // is forwarded, so it goes through DOCKER-USER, never INPUT.
 func ensureDockerJump() (repaired []string) {
-	lines, ok := currentRules(dockerChain)
+	return ensureFirstJump("iptables", dockerChain, jumpComment, chainName)
+}
+
+// ensureFirstJump keeps a jump to target as the first rule of chain, when
+// chain exists.
+func ensureFirstJump(bin, chain, comment, target string) (repaired []string) {
+	lines, ok := currentRulesOf(bin, chain)
 	if !ok {
 		return nil // no Docker (yet)
 	}
-	if len(lines) > 0 && lines[0] == jumpLine(dockerChain, jumpComment, chainName) {
+	jump := jumpLine(chain, comment, target)
+	if len(lines) > 0 && lines[0] == jump {
 		return nil
 	}
 	// Present but not first: remove it before re-inserting at the top.
 	for i := len(lines) - 1; i >= 0; i-- {
-		if lines[i] == jumpLine(dockerChain, jumpComment, chainName) {
-			_, _ = run("iptables", "-D", dockerChain, strconv.Itoa(i+1))
+		if lines[i] == jump {
+			_, _ = run(bin, "-D", chain, strconv.Itoa(i+1))
 		}
 	}
-	if out, err := run("iptables", append([]string{"-I", dockerChain, "1"}, jumpArgs(jumpComment, chainName)...)...); err != nil {
-		log.Printf("[firewall] insert %s jump: %s (%v)", dockerChain, out, err)
+	if out, err := run(bin, append([]string{"-I", chain, "1"}, jumpArgs(comment, target)...)...); err != nil {
+		log.Printf("[firewall] insert %s %s jump: %s (%v)", bin, chain, out, err)
 		return nil
 	}
-	return []string{"jump:" + dockerChain}
+	if bin != "iptables" {
+		return []string{"jump:" + bin + ":" + chain}
+	}
+	return []string{"jump:" + chain}
 }
 
 // migrateLegacy removes rules that earlier versions put straight into INPUT
@@ -418,10 +556,14 @@ func Ensure() (EnsureResult, error) {
 		res.Repairs = append(res.Repairs, fw.ensureSets()...)
 	}
 	r, err := fw.syncChains(ipset)
+	res.Repairs = append(res.Repairs, r...)
+	var peErr error
+	if errors.Is(err, errPortsEgress) {
+		peErr, err = err, nil
+	}
 	if err != nil {
 		return res, err
 	}
-	res.Repairs = append(res.Repairs, r...)
 	if !fw.legacyDone {
 		migrateLegacy()
 		fw.legacyDone = true
@@ -431,17 +573,35 @@ func Ensure() (EnsureResult, error) {
 	if err != nil {
 		return res, err
 	}
+	r, err = ensureJumpAhead("OUTPUT", egressComment, egressChainName)
+	res.Repairs = append(res.Repairs, r...)
+	if err != nil {
+		return res, err
+	}
 	res.Repairs = append(res.Repairs, ensureDockerJump()...)
+	res.Repairs = append(res.Repairs, fw.ensurePorts6()...)
 	fw.initialized = true
-	return res, nil
+	return res, peErr
 }
 
 // SetAllowList sets the dashboard whitelist (IPs or CIDRs). InfraFence never
 // blocks them; it does not open anything in the host firewall for them.
+// Egress blocks to an address the list now covers are lifted.
 func SetAllowList(entries []string) {
 	fw.Lock()
 	changed := !equal(fw.allow, entries)
 	fw.allow = append([]string{}, entries...)
+	if changed {
+		kept := fw.egress[:0:0]
+		for _, ip := range fw.egress {
+			if reason := fw.egressRefusal(ip); reason != "" {
+				log.Printf("[firewall] egress block to %s lifted: %s", ip, reason)
+				continue
+			}
+			kept = append(kept, ip)
+		}
+		fw.egress = kept
+	}
 	fw.Unlock()
 	if changed {
 		if _, err := Ensure(); err != nil {
@@ -458,6 +618,7 @@ func RemoveAll() []string {
 		{"INPUT", jumpComment, chainName},
 		{"INPUT", rulesComment, rulesChainName},
 		{dockerChain, jumpComment, chainName},
+		{"OUTPUT", egressComment, egressChainName},
 	} {
 		for {
 			if _, err := run("iptables", append([]string{"-D", c.chain}, jumpArgs(c.comment, c.target)...)...); err != nil {
@@ -467,11 +628,17 @@ func RemoveAll() []string {
 		}
 	}
 	migrateLegacy()
-	for _, ch := range []string{chainName, rulesChainName} {
+	done = append(done, removePorts6()...)
+	// Flush all first: INFRAFENCE jumps to the ports and egress chains.
+	var flushed []string
+	for _, ch := range ourChains {
 		if _, err := run("iptables", "-F", ch); err == nil {
-			_, _ = run("iptables", "-X", ch)
-			done = append(done, "chain:"+ch)
+			flushed = append(flushed, ch)
 		}
+	}
+	for _, ch := range flushed {
+		_, _ = run("iptables", "-X", ch)
+		done = append(done, "chain:"+ch)
 	}
 	if HasIpset() {
 		if out, err := run("ipset", "list", "-n"); err == nil {

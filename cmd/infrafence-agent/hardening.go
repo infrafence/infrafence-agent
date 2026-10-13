@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/preflight"
 	"github.com/infrafence/infrafence-agent/internal/remediation"
 	"github.com/infrafence/infrafence-agent/internal/scanner"
+	"github.com/infrafence/infrafence-agent/internal/verify"
 )
 
 // Hardening checks, software audits (the package list the dashboard checks
@@ -144,13 +147,14 @@ func applyHardeningFixes(client *api.Client, fixes []api.HardeningFix) {
 		if action == "" {
 			action = "apply"
 		}
-		var msg string
-		var err error
+		// The opposite operation undoes it if the host stops answering.
+		do := func() (string, error) { return remediation.Apply(remediation.System, f.CheckID, policy) }
+		undo := func() (string, error) { return remediation.Revert(remediation.System, f.CheckID) }
 		if action == "revert" {
-			msg, err = remediation.Revert(remediation.System, f.CheckID)
-		} else {
-			msg, err = remediation.Apply(remediation.System, f.CheckID, policy)
+			do, undo = undo, do
 		}
+		before := hardeningSnapshot()
+		msg, err := do()
 		details := map[string]string{
 			"fix_id":   fmt.Sprint(f.ID),
 			"check_id": f.CheckID,
@@ -163,12 +167,55 @@ func applyHardeningFixes(client *api.Client, fixes []api.HardeningFix) {
 			reportEvent(client, "hardening_fix_failed", "warning", details)
 			continue
 		}
+		v := hardeningCheck(before)
+		details["verify"] = verifyJSON(v)
+		if !v.OK() {
+			// Permission fixes have no undo (Revert leaves a stricter mode
+			// as it is): reported as applied, with the failed verification.
+			if !remediation.Reversible(f.CheckID) {
+				log.Printf("[remediation] %s %s: verification failed (%s), not reversible", action, f.CheckID, v.Details)
+				details["status"] = "applied"
+				details["message"] = msg + "; verification failed afterwards (" + v.Details + "), this change has no rollback"
+				reportEvent(client, "hardening_fix_applied", "warning", details)
+				continue
+			}
+			umsg, uerr := undo()
+			if uerr != nil {
+				log.Printf("[remediation] %s %s: verification failed (%s), rollback failed: %v", action, f.CheckID, v.Details, uerr)
+				details["status"] = "failed"
+				details["reason"] = "rollback_failed"
+				details["message"] = "verification failed (" + v.Details + ") and the rollback failed: " + uerr.Error()
+				reportEvent(client, "hardening_fix_failed", "warning", details)
+				continue
+			}
+			log.Printf("[remediation] %s %s rolled back: %s (%s)", action, f.CheckID, v.Details, umsg)
+			details["status"] = "rolled_back"
+			details["reason"] = "verify_failed"
+			details["message"] = "rolled back: " + v.Details
+			reportEvent(client, "hardening_fix_rolled_back", "warning", details)
+			continue
+		}
 		log.Printf("[remediation] %s %s: %s", action, f.CheckID, msg)
 		details["status"] = "applied"
 		details["message"] = msg
 		reportEvent(client, "hardening_fix_applied", "info", details)
 	}
 	runScan(client, 0)
+}
+
+// Replaced in tests.
+var (
+	hardeningSnapshot = func() verify.State {
+		ssh, domains := verifyTargets()
+		return verify.Snapshot(context.Background(), ssh, domains)
+	}
+	hardeningCheck = func(before verify.State) verify.Result { return verify.CheckAfterReload(context.Background(), before) }
+)
+
+// verifyJSON is the "verify" detail of result events.
+func verifyJSON(v verify.Result) string {
+	b, _ := json.Marshal(map[string]any{"ssh_ok": v.SSHOK, "sites_ok": v.SitesOK, "details": v.Details})
+	return string(b)
 }
 
 // runDailyAudits runs the hardening check and the software audit shortly

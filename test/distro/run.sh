@@ -38,7 +38,7 @@ work=$(mktemp -d)
 version=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -ldflags "-s -w -X main.version=${version}-test" -o "$work/agent" ./cmd/infrafence-agent || exit 1
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$work/mockapi" ./test/distro/mockapi || exit 1
-cp install.sh test/distro/inside.sh "$work/"
+cp install.sh test/distro/*.sh "$work/"
 
 want=("$@")
 results=()
@@ -57,8 +57,17 @@ while IFS='|' read -r name image pm rsyslog; do
     [ "$rsyslog" = yes ] && pkgs="$pkgs rsyslog"
     prep="(dnf install -y -q --allowerasing $pkgs curl || yum install -y -q $pkgs curl) && (command -v curl || dnf install -y -q curl-minimal)"
   fi
+  # CentOS Stream mirrors lag behind the metalink after each compose and fail its
+  # checksum, so the test image installs from the official mirror only.
+  copy=""
+  case "$name" in centos-stream-*)
+    v=${name#centos-stream-}
+    printf '[baseos]\nname=BaseOS\nbaseurl=https://mirror.stream.centos.org/%s-stream/BaseOS/$basearch/os/\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial\n[appstream]\nname=AppStream\nbaseurl=https://mirror.stream.centos.org/%s-stream/AppStream/$basearch/os/\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial\n' "$v" "$v" >"$work/official.repo"
+    copy='COPY official.repo /etc/yum.repos.d/official.repo\nRUN rm -f /etc/yum.repos.d/centos.repo /etc/yum.repos.d/centos-addons.repo\n'
+    ;;
+  esac
   tag="infrafence-distro:$name-$goarch"
-  printf 'FROM %s\nRUN %s >/dev/null 2>&1 && (systemctl enable rsyslog 2>/dev/null || true) && (systemctl mask systemd-logind getty@tty1 console-getty 2>/dev/null || true)\nCMD ["/sbin/init"]\n' \
+  printf "FROM %s\n${copy}RUN %s >/dev/null 2>&1 && (systemctl enable rsyslog 2>/dev/null || true) && (systemctl mask systemd-logind getty@tty1 console-getty 2>/dev/null || true)\nCMD [\"/sbin/init\"]\n" \
     "$image" "$prep" >"$work/Dockerfile"
   if ! docker build "${plat[@]}" -q -t "$tag" "$work" >/dev/null 2>"$work/build.err"; then
     echo "image build failed:"; tail -5 "$work/build.err"
@@ -72,10 +81,13 @@ while IFS='|' read -r name image pm rsyslog; do
     docker exec "$cid" systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break
     sleep 1
   done
-  out=$(docker exec -e DISTRO="$name" "$cid" bash /distro/inside.sh 2>&1)
+  # A distro that hangs (a package prompt, a stuck service) fails on its own instead of
+  # stopping the whole matrix.
+  out=$(docker exec -e DISTRO="$name" "$cid" timeout 1800 bash /distro/inside.sh 2>&1)
   rc=$?
   echo "$out" | grep -v '^RESULT' | tail -150
   line=$(echo "$out" | grep '^RESULT' | tail -1)
+  [ $rc -ne 124 ] || line="RESULT distro=$name error=timeout"
   [ -n "$line" ] || line="RESULT distro=$name error=no-result"
   results+=("$line arch=$goarch")
   [ $rc -eq 0 ] || status=1

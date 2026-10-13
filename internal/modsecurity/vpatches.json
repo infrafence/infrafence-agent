@@ -1,0 +1,74 @@
+[
+  {
+    "rule_id": "vp-cve-2021-41773",
+    "cve": "CVE-2021-41773",
+    "title": "Apache HTTP Server 2.4.49 path traversal and file disclosure",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_URI_RAW \"@rx (?i)^[^?]*(?:\\.%2e|%2e\\.|%2e%2e)(?:/|%2f)\" \"id:9920001,phase:1,deny,status:403,log,t:none,msg:'InfraFence virtual patch: CVE-2021-41773 Apache path traversal',tag:'infrafence/vpatch',tag:'CVE-2021-41773',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2021-42013",
+    "cve": "CVE-2021-42013",
+    "title": "Apache HTTP Server 2.4.50 path traversal with double encoding",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_URI_RAW \"@rx (?i)^[^?]*(?:%%32%65|%%32e|\\.%%32|%2%65)\" \"id:9920002,phase:1,deny,status:403,log,t:none,msg:'InfraFence virtual patch: CVE-2021-42013 Apache double-encoded path traversal',tag:'infrafence/vpatch',tag:'CVE-2021-42013',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2024-4577",
+    "cve": "CVE-2024-4577",
+    "title": "PHP-CGI argument injection through a soft hyphen in the query string",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule QUERY_STRING \"@rx (?i)(?:^|\\+|%20)(?:%ad|\\xad)[a-z]\" \"id:9920003,phase:1,deny,status:403,log,t:none,msg:'InfraFence virtual patch: CVE-2024-4577 PHP-CGI argument injection',tag:'infrafence/vpatch',tag:'CVE-2024-4577',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2021-44228",
+    "cve": "CVE-2021-44228",
+    "title": "Apache Log4j JNDI lookup (Log4Shell), including obfuscated forms",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_URI|REQUEST_HEADERS|REQUEST_COOKIES|REQUEST_COOKIES_NAMES|ARGS|ARGS_NAMES \"@rx (?i)\\$\\{[^}]{0,15}(?:jndi|\\$\\{(?:lower|upper|env|sys|date):|\\$\\{::-)\" \"id:9920004,phase:2,deny,status:403,log,t:none,t:urlDecodeUni,msg:'InfraFence virtual patch: CVE-2021-44228 Log4Shell JNDI lookup',tag:'infrafence/vpatch',tag:'CVE-2021-44228',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2022-26134",
+    "cve": "CVE-2022-26134",
+    "title": "Atlassian Confluence OGNL injection in the request path",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_FILENAME \"@rx \\$\\{\" \"id:9920005,phase:1,deny,status:403,log,t:none,t:urlDecodeUni,msg:'InfraFence virtual patch: CVE-2022-26134 Confluence OGNL injection',tag:'infrafence/vpatch',tag:'CVE-2022-26134',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2023-22527",
+    "cve": "CVE-2023-22527",
+    "title": "Atlassian Confluence template injection through text-inline.vm",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_FILENAME \"@rx (?i)/template/aui/text-inline\\.vm$\" \"id:9920006,phase:1,deny,status:403,log,t:none,t:urlDecodeUni,t:normalizePath,msg:'InfraFence virtual patch: CVE-2023-22527 Confluence template injection',tag:'infrafence/vpatch',tag:'CVE-2023-22527',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2017-5638",
+    "cve": "CVE-2017-5638",
+    "title": "Apache Struts 2 OGNL injection in the Content-Type header",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_HEADERS:Content-Type \"@rx [%$]\\{\" \"id:9920007,phase:1,deny,status:403,log,t:none,msg:'InfraFence virtual patch: CVE-2017-5638 Struts Content-Type OGNL injection',tag:'infrafence/vpatch',tag:'CVE-2017-5638',severity:'CRITICAL'\""
+  },
+  {
+    "rule_id": "vp-cve-2023-23752",
+    "cve": "CVE-2023-23752",
+    "title": "Joomla 4 web services API information disclosure (public=true)",
+    "webservers": [
+      "apache"
+    ],
+    "rule": "SecRule REQUEST_FILENAME \"@rx (?i)/api/index\\.php/v1/\" \"id:9920008,phase:1,deny,status:403,log,t:none,t:urlDecodeUni,t:normalizePath,chain,msg:'InfraFence virtual patch: CVE-2023-23752 Joomla API information disclosure',tag:'infrafence/vpatch',tag:'CVE-2023-23752',severity:'CRITICAL'\"\n    SecRule &ARGS_GET:public \"@gt 0\" \"t:none\""
+  }
+]

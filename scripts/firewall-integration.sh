@@ -20,6 +20,7 @@ for backend in nft legacy; do
       set -e
       apt-get update -qq >/dev/null && apt-get install -y -qq $pkgs >/dev/null 2>&1
       update-alternatives --set iptables /usr/sbin/iptables-$backend >/dev/null
+      update-alternatives --set ip6tables /usr/sbin/ip6tables-$backend >/dev/null
       ip netns add cl
       ip link add veth0 type veth peer name veth1
       ip link set veth1 netns cl
