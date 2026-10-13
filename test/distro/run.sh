@@ -72,10 +72,13 @@ while IFS='|' read -r name image pm rsyslog; do
     docker exec "$cid" systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break
     sleep 1
   done
-  out=$(docker exec -e DISTRO="$name" "$cid" bash /distro/inside.sh 2>&1)
+  # A distro that hangs (a package prompt, a stuck service) fails on its own instead of
+  # stopping the whole matrix.
+  out=$(docker exec -e DISTRO="$name" "$cid" timeout 1800 bash /distro/inside.sh 2>&1)
   rc=$?
   echo "$out" | grep -v '^RESULT' | tail -150
   line=$(echo "$out" | grep '^RESULT' | tail -1)
+  [ $rc -ne 124 ] || line="RESULT distro=$name error=timeout"
   [ -n "$line" ] || line="RESULT distro=$name error=no-result"
   results+=("$line arch=$goarch")
   [ $rc -eq 0 ] || status=1
