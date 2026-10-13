@@ -21,7 +21,8 @@ show_events() { curl -s "$api/state" | grep -oE '\{"type":"(virtual_patch|quaran
 
 # ── Apache + ModSecurity, rule engine on (as a customer would configure it) ──
 if command -v apt-get >/dev/null; then
-  { apt-get update -qq; apt-get install -y -qq --no-install-recommends apache2 libapache2-mod-security2; } >/tmp/waf-pkg.log 2>&1 &&
+  # Non-interactive: tzdata (pulled in on Ubuntu 20.04) otherwise waits for a time zone answer.
+  { export DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC; apt-get update -qq; apt-get install -y -qq --no-install-recommends apache2 libapache2-mod-security2 </dev/null; } >/tmp/waf-pkg.log 2>&1 &&
     { [ -f /etc/modsecurity/modsecurity.conf ] || cp /etc/modsecurity/modsecurity.conf-recommended /etc/modsecurity/modsecurity.conf; } &&
     sed -i 's/^SecRuleEngine .*/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf &&
     systemctl enable --now apache2 >/dev/null 2>&1
