@@ -253,8 +253,17 @@ func runAgent() {
 	loadFirewallState()
 	go watchSSHLogins()
 
+	// Bans and allow list as last known (protstate.go), so the first setup
+	// keeps them while the dashboard is unreachable or refuses the agent.
+	firewall.OnBansChanged = scheduleProtectionSave
+	evictions := &evictionReporter{report: apiClient.ReportEvents, now: time.Now}
+	firewall.OnBansEvicted = evictions.evicted
+	restoreBeforeFirewall(loadProtectionState())
+
 	// Initialize firewall backend (detects ipset, falls back to iptables)
 	firewall.Init()
+	// Bans expire on time on this server, with or without the dashboard.
+	go runBanExpiry(30*time.Second, modsecDropBans)
 
 	// ModSecurity is only detected here; its rules are installed from the
 	// sync, and only if web server changes are allowed (see hostpolicy.go).
@@ -690,6 +699,10 @@ func runAgent() {
 		}
 	})
 
+	// The allow list, monitor mode and country blocks of the last successful
+	// sync, before any watcher runs: the first sync may fail.
+	restoreSettings(banWatchers{auth: w, web: webW, mail: mailW, db: dbW, ftp: ftpW}, geo.SetBlocked, geoBlocker.ApplyCountryBlocks)
+
 	// Every sync goes through one runner: never two at once, and bursts of
 	// requests (pushes, heartbeat config version, periodic) are merged.
 	syncs := newSyncRunner(func() error {
@@ -740,7 +753,11 @@ func runAgent() {
 	reverbHandlers := ws.Handlers{
 		OnBanCreated: func(p ws.BanCreatedPayload) {
 			log.Printf("[reverb] ban.created: %s", p.IPAddress)
-			if err := firewall.BanIP(p.IPAddress); err != nil {
+			var expires time.Time
+			if p.ExpiresAt != nil {
+				expires, _ = parseBanExpiry(*p.ExpiresAt)
+			}
+			if err := firewall.BanIPUntil(p.IPAddress, expires); err != nil {
 				log.Printf("[firewall] error: %v", err)
 			}
 		},
@@ -995,6 +1012,7 @@ func runAgent() {
 
 	log.Println("Shutting down...")
 	closePanel()
+	saveProtectionState()
 	ctx, cancel := context.WithTimeout(context.Background(), eventFlushTimeout)
 	defer cancel()
 	if err := apiClient.CloseEvents(ctx); err != nil {
@@ -1016,6 +1034,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	if err != nil {
 		return err
 	}
+	// The dashboard answers again: the bans made meanwhile first, so this
+	// sync's cleanup spares them (localBansToKeep) and the next one lists
+	// them.
+	flushLocalBans(client)
 
 	// Handle suspension: when suspended, stop all active protection but keep heartbeat alive.
 	// The agent stays installed — upgrading the plan automatically lifts the suspension.
@@ -1035,6 +1057,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		if webW != nil {
 			webW.SetMonitorMode(true)
 		}
+		noteSuspendedSync()
 		// Still check for agent updates so the agent can be updated while
 		// suspended (host settings aren't applied in this state, so read the
 		// customer's update choice here).
@@ -1109,6 +1132,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			wlCIDRs = append(wlCIDRs, *wl.IPRange)
 		}
 	}
+	dashboardIPs := append([]string{}, wlIPs...)
 	// Addresses allowed from a hosting panel (panel.go).
 	wlIPs = append(wlIPs, panelAllowedIPs()...)
 	w.UpdateWhitelist(wlIPs, wlCIDRs)
@@ -1145,20 +1169,20 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	} else if len(blockedCountries) > 0 {
 		log.Printf("[geoblock] monitor mode — country blocks not applied at kernel level")
 	}
+	// Kept for a restart while the dashboard can't be reached (protstate.go).
+	noteSyncedSettings(dashboardIPs, wlCIDRs, blockedCountries, sync.Config.MonitorMode, sync.Config.BFThreshold, sync.Config.BFWindow)
 
 	// Apply bans (skipped in monitor mode). Bans lifted from a hosting panel
 	// are left out on this server only, for at most 30 days (panelstate.go).
 	sync.Bans = panelFilterBans(sync.Bans)
 	activeBanIPs := make(map[string]bool, len(sync.Bans))
 	banIPs := make([]string, 0, len(sync.Bans))
-	fwBans := make([]firewall.Ban, 0, len(sync.Bans))
 	for _, b := range sync.Bans {
 		activeBanIPs[b.IPAddress] = true
 		banIPs = append(banIPs, b.IPAddress)
-		fwBans = append(fwBans, firewall.Ban{IP: b.IPAddress})
 	}
 	if !sync.Config.MonitorMode {
-		firewall.ApplyBans(fwBans)
+		firewall.ApplyBans(banExpiries(sync.Bans))
 	}
 	// Refused by ModSecurity too (visitors behind a proxy/CDN).
 	if modsecEngine != nil {
@@ -1166,9 +1190,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		if sync.Config.MonitorMode {
 			modsecIPs = nil
 		}
-		if err := modsecEngine.UpdateBannedIPs(modsecIPs); err != nil {
-			log.Printf("[modsec] ban rules: %v", err)
-		}
+		modsecSetBans(modsecIPs)
 	}
 	// Lift the next expiring ban on time rather than at the next periodic sync.
 	if onBanSchedule != nil {
@@ -1195,6 +1217,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		if r.IPAddress != nil && *r.IPAddress != "" && r.Type == "block" {
 			activeRuleIPs[*r.IPAddress] = true
 		}
+	}
+	// Local bans the dashboard has not listed yet stay (protstate.go).
+	for ip := range localBansToKeep(activeBanIPs) {
+		activeRuleIPs[ip] = true
 	}
 
 	// Remove iptables DROP rules for bans that expired or were removed server-side
@@ -2526,7 +2552,7 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 		log.Printf("[%s] %s is allowed from the hosting panel — not banned (%s)", source, ip, reason)
 		return
 	}
-	added, err := firewall.BanIPOnce(ip)
+	added, err := firewall.BanIPOnceUntil(ip, time.Now().Add(localBanFor))
 	if !added {
 		if err != nil {
 			log.Printf("[%s] not banning %s: %v", source, ip, err)
@@ -2540,11 +2566,18 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 	if err != nil {
 		log.Printf("[firewall] error: %v", err)
 	}
-	if err := client.ReportBan(api.BanRequest{
+	// Kept until the dashboard lists it: reported now or, when it can't be
+	// reached or refuses the agent, at the next successful sync.
+	noteLocalBan(ip, reason, count)
+	if err := reportBan(client, api.BanRequest{
 		IPAddress: ip,
 		Reason:    reason,
 		BanCount:  count,
 	}); err != nil {
-		log.Printf("[api] failed to report ban: %v", err)
+		if !api.IsHeld(err) {
+			log.Printf("[api] failed to report ban (reported at the next sync): %v", err)
+		}
+		return
 	}
+	noteBanReported(ip)
 }
