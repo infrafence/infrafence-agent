@@ -42,9 +42,12 @@ const (
 type fwState struct {
 	sync.Mutex
 	initialized bool
-	allow       []string        // whitelist IPs/CIDRs from the dashboard
-	bans        map[string]bool // every IP currently banned by the agent
-	threat      []string        // threat-feed CIDRs; nil when not blocking
+	allow       []string            // whitelist IPs/CIDRs from the dashboard
+	bans        map[string]banEntry // every IP currently banned by the agent
+	// restored: bans were loaded from the state file (RestoreBans) and are
+	// not in the ipset yet.
+	restored    bool
+	threat      []string // threat-feed CIDRs; nil when not blocking
 	geo         map[string][]string
 	userRules   [][]string // iptables args of dashboard rules, in order
 	closedPorts []int      // TCP ports closed to public sources
@@ -75,7 +78,7 @@ type fwState struct {
 	v6InForce   bool
 }
 
-var fw = &fwState{bans: map[string]bool{}, geo: map[string][]string{}}
+var fw = &fwState{bans: map[string]banEntry{}, geo: map[string][]string{}}
 
 // run executes iptables with args and returns combined output.
 var run = func(name string, args ...string) (string, error) {
@@ -608,6 +611,15 @@ func SetAllowList(entries []string) {
 			log.Printf("[firewall] apply allow list: %v", err)
 		}
 	}
+}
+
+// RestoreAllowList sets the allow list saved before a restart, before Init,
+// so the first setup already exempts it (SetAllowList would set the firewall
+// up at once).
+func RestoreAllowList(entries []string) {
+	fw.Lock()
+	fw.allow = append([]string{}, entries...)
+	fw.Unlock()
 }
 
 // RemoveAll removes every chain, jump and set InfraFence created. Used by

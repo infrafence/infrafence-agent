@@ -87,7 +87,7 @@ func TestFirewallIntegration(t *testing.T) {
 	sh(t, "iptables -A INPUT -s "+clientIP+" -j DROP") // legacy per-IP ban of an agent ban
 
 	Init()
-	ApplyBans([]string{clientIP})
+	ApplyBans([]Ban{{IP: clientIP}})
 
 	t.Run("legacy INPUT rules migrated, customer rule kept", func(t *testing.T) {
 		all := strings.Join(inputRules(t), "\n")

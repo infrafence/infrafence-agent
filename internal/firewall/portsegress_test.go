@@ -41,7 +41,7 @@ func TestPortsEgressRules(t *testing.T) {
 // The jumps to both chains come right after the allow-list RETURN, so
 // allow-listed sources are never affected by a closed port.
 func TestSubJumpsAfterAllowList(t *testing.T) {
-	s := &fwState{allow: []string{"198.51.100.0/24"}, bans: map[string]bool{"203.0.113.5": true}}
+	s := &fwState{allow: []string{"198.51.100.0/24"}, bans: map[string]banEntry{"203.0.113.5": {}}}
 	for _, ipset := range []bool{true, false} {
 		main, _ := s.desiredRules(ipset)
 		lastReturn, ports, egress, firstDrop := -1, -1, -1, -1

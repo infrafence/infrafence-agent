@@ -1151,12 +1151,14 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	sync.Bans = panelFilterBans(sync.Bans)
 	activeBanIPs := make(map[string]bool, len(sync.Bans))
 	banIPs := make([]string, 0, len(sync.Bans))
+	fwBans := make([]firewall.Ban, 0, len(sync.Bans))
 	for _, b := range sync.Bans {
 		activeBanIPs[b.IPAddress] = true
 		banIPs = append(banIPs, b.IPAddress)
+		fwBans = append(fwBans, firewall.Ban{IP: b.IPAddress})
 	}
 	if !sync.Config.MonitorMode {
-		firewall.ApplyBans(banIPs)
+		firewall.ApplyBans(fwBans)
 	}
 	// Refused by ModSecurity too (visitors behind a proxy/CDN).
 	if modsecEngine != nil {

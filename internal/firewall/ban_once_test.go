@@ -4,13 +4,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func resetBans(t *testing.T) {
 	t.Helper()
 	fw.Lock()
 	saved := fw.bans
-	fw.bans = map[string]bool{}
+	fw.bans = map[string]banEntry{}
 	fw.Unlock()
 	t.Cleanup(func() {
 		fw.Lock()
@@ -28,7 +29,7 @@ func TestClaimBanIsAtomic(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if claimBan("203.0.113.9") {
+			if ok, _ := claimBan("203.0.113.9", time.Time{}); ok {
 				claimed.Add(1)
 			}
 		}()
@@ -45,15 +46,15 @@ func TestClaimBanIsAtomic(t *testing.T) {
 func TestClaimAfterSyncAndExpiry(t *testing.T) {
 	resetBans(t)
 	fw.Lock()
-	fw.bans["198.51.100.4"] = true // from ApplyBans
+	fw.bans["198.51.100.4"] = banEntry{} // from ApplyBans
 	fw.Unlock()
-	if claimBan("198.51.100.4") {
+	if ok, _ := claimBan("198.51.100.4", time.Time{}); ok {
 		t.Fatal("an IP banned by the dashboard was claimed as a new ban")
 	}
 	fw.Lock()
 	delete(fw.bans, "198.51.100.4") // CleanupStaleBans after expiry
 	fw.Unlock()
-	if !claimBan("198.51.100.4") {
+	if ok, _ := claimBan("198.51.100.4", time.Time{}); !ok {
 		t.Fatal("a new detection after expiry must be a new ban")
 	}
 }
