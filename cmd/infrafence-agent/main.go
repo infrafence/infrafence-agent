@@ -185,6 +185,16 @@ func runAgent() {
 		enrichEvent(e, country)
 	})
 	apiClient.SetVersion(version)
+	// Urgent events not delivered at the last shutdown are sent again.
+	apiClient.SetEventSpool("/var/lib/infrafence/unsent-events.json")
+	// Events still queued are sent before a restart and on shutdown.
+	updater.BeforeRestart = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), eventFlushTimeout)
+		defer cancel()
+		if err := apiClient.FlushEvents(ctx); err != nil {
+			log.Printf("[updater] events not delivered before the restart: %v", err)
+		}
+	}
 
 	// Callback for the updater to report update outcomes to the server
 	reportUpdateEvent := func(eventType, severity string, details map[string]string) {
@@ -234,7 +244,7 @@ func runAgent() {
 	startupPreflight(apiClient)
 	// The WHM and Plesk plugins (panel.go): only on cPanel/WHM or Plesk, or
 	// with "panel": true in the config. On any other host none of it runs.
-	panelEnabled := panelEnable(preflight.DetectPanel().ID, cfg.Panel, apiClient.ReportEvents)
+	panelEnabled := panelEnable(preflight.DetectPanel().ID, cfg.Panel, apiClient.DeliverEvents)
 	go runDailyAudits(currentAPIClient.Load)
 
 	// Ports closed and egress blocked before the restart, re-checked, so the
@@ -980,7 +990,18 @@ func runAgent() {
 
 	log.Println("Shutting down...")
 	closePanel()
+	ctx, cancel := context.WithTimeout(context.Background(), eventFlushTimeout)
+	defer cancel()
+	if err := apiClient.CloseEvents(ctx); err != nil {
+		depth, _ := apiClient.EventQueueStats()
+		log.Printf("[api] shutdown: %d events not delivered: %v", depth, err)
+	}
 }
+
+// eventFlushTimeout bounds the delivery of the queued events before a restart
+// or on shutdown, within the 10 s a container runtime waits by default
+// before killing the agent.
+const eventFlushTimeout = 5 * time.Second
 
 // onBanSchedule receives the next ban expiry after each sync (zero: none).
 var onBanSchedule func(time.Time)

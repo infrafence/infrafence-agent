@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -27,14 +26,11 @@ type Client struct {
 	// dropped; see recycleConns.
 	lastRecycle atomic.Int64
 
-	// Async event queue: producers (watchers) push via QueueEvent(); a single
-	// consumer goroutine batches and flushes to /events. Decouples detection
-	// throughput from API latency and bounds goroutine count under flood.
-	eventCh      chan EventRequest
-	eventDropped uint64
+	// events queues events and sends them in batches (events.go).
+	events *eventSender
 
-	// eventObserver, if set, is called for every event passed to ReportEvents
-	// (both the QueueEvent batch flush and direct callers funnel through it).
+	// eventObserver, if set, is called for every event passed to ReportEvents,
+	// when it is reported (not when it is delivered).
 	// Used for local cross-detector correlation (e.g. Sigma session scoring)
 	// without coupling every call site to that logic. Set once at startup,
 	// before any producer goroutines are launched — not synchronized.
@@ -62,12 +58,6 @@ var (
 	connIdleTimeout = 30 * time.Second
 )
 
-const (
-	eventQueueSize  = 2000
-	eventBatchSize  = 50
-	eventFlushEvery = 5 * time.Second
-)
-
 func New(baseURL, token string) *Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.IdleConnTimeout = connIdleTimeout
@@ -92,8 +82,9 @@ func New(baseURL, token string) *Client {
 		},
 		longClient: &http.Client{Transport: t},
 		transport:  t,
-		eventCh:    make(chan EventRequest, eventQueueSize),
 	}
+	c.events = newEventSender(c.sendEvents, realClock{})
+	go c.events.run()
 	c.lastRecycle.Store(time.Now().UnixNano())
 	return c
 }
@@ -150,56 +141,42 @@ func (c *Client) recycleConns(now int64) {
 	c.transport.CloseIdleConnections()
 }
 
-// QueueEvent enqueues an event for async batched delivery. Non-blocking: if the
-// queue is full, the event is dropped and a counter is incremented. Use this
-// from hot paths (watchers, scorer) instead of calling ReportEvents directly.
-func (c *Client) QueueEvent(e EventRequest) {
-	select {
-	case c.eventCh <- e:
-	default:
-		atomic.AddUint64(&c.eventDropped, 1)
-	}
-}
-
-// EventQueueStats returns current queue depth and total dropped count.
+// EventQueueStats returns how many events wait for delivery and how many
+// were dropped (queue full) since the start.
 func (c *Client) EventQueueStats() (depth int, dropped uint64) {
-	return len(c.eventCh), atomic.LoadUint64(&c.eventDropped)
+	depth = c.events.depth()
+	c.events.mu.Lock()
+	defer c.events.mu.Unlock()
+	return depth, c.events.droppedTotal
 }
 
-// StartEventConsumer launches the background goroutine that drains the event
-// queue and ships events in batches. Call once at agent startup.
-func (c *Client) StartEventConsumer() {
-	go c.eventConsumerLoop()
+// FlushEvents sends the queued events now and waits until they are
+// delivered, a send fails or ctx ends (before a restart).
+func (c *Client) FlushEvents(ctx context.Context) error {
+	return c.events.Flush(ctx)
 }
 
-func (c *Client) eventConsumerLoop() {
-	batch := make([]EventRequest, 0, eventBatchSize)
-	ticker := time.NewTicker(eventFlushEvery)
-	defer ticker.Stop()
+// CloseEvents flushes the queued events within ctx and stops delivery
+// (shutdown).
+func (c *Client) CloseEvents(ctx context.Context) error {
+	return c.events.Close(ctx)
+}
 
-	flush := func(reason string) {
-		if len(batch) == 0 {
-			return
-		}
-		if err := c.ReportEvents(batch); err != nil {
-			log.Printf("[api] event flush failed (%s, %d events): %v", reason, len(batch), err)
-		}
-		batch = batch[:0]
+// SetEventSpool sets the file that keeps the urgent events not delivered at
+// shutdown, and queues the events a previous run kept there. Call once at
+// startup.
+func (c *Client) SetEventSpool(path string) {
+	c.events.mu.Lock()
+	c.events.spoolPath = path
+	c.events.mu.Unlock()
+	events, err := readSpool(path)
+	if err != nil {
+		log.Printf("[api] %s ignored: %v", path, err)
+		return
 	}
-
-	for {
-		select {
-		case e := <-c.eventCh:
-			batch = append(batch, e)
-			if len(batch) >= eventBatchSize {
-				flush("full")
-			}
-		case <-ticker.C:
-			flush("tick")
-			if dropped := atomic.SwapUint64(&c.eventDropped, 0); dropped > 0 {
-				log.Printf("[api] event queue: %d events dropped in last %s (queue cap=%d)", dropped, eventFlushEvery, eventQueueSize)
-			}
-		}
+	if len(events) > 0 {
+		log.Printf("[api] %d events not delivered at the last shutdown: sending them now", len(events))
+		_ = c.events.add(events)
 	}
 }
 
@@ -724,19 +701,47 @@ type EventRequest struct {
 	OccurredAt string            `json:"occurred_at"`
 }
 
-// ReportEvents sends security events to the server.
+// ReportEvents queues security events for the server (see events.go): it
+// does not wait for delivery, which is retried until it succeeds. The events
+// are copied, callers may reuse them.
 func (c *Client) ReportEvents(events []EventRequest) error {
-	if c.eventEnricher != nil {
-		for i := range events {
+	return c.events.add(c.prepareEvents(events))
+}
+
+// prepareEvents copies events, completes them, bounds their size
+// (limitEvent) and passes them to the observer.
+func (c *Client) prepareEvents(events []EventRequest) []EventRequest {
+	events = append([]EventRequest(nil), events...)
+	for i := range events {
+		if d := events[i].Details; d != nil {
+			events[i].Details = make(map[string]string, len(d))
+			for k, v := range d {
+				events[i].Details[k] = v
+			}
+		}
+		if c.eventEnricher != nil {
 			c.eventEnricher(&events[i])
 		}
+		limitEvent(&events[i])
 	}
 	if c.eventObserver != nil {
 		for _, e := range events {
 			c.eventObserver(e)
 		}
 	}
-	return c.post("/api/v1/agent/events", c.token, map[string]any{"events": events}, nil)
+	return events
+}
+
+// DeliverEvents sends events at once, outside the queue, and returns the
+// delivery error: for results the caller sends again itself when they were
+// not delivered (firewall actions).
+func (c *Client) DeliverEvents(events []EventRequest) error {
+	return c.sendEvents(context.Background(), c.prepareEvents(events))
+}
+
+// sendEvents posts one batch of events.
+func (c *Client) sendEvents(ctx context.Context, events []EventRequest) error {
+	return c.postContext(ctx, "/api/v1/agent/events", c.token, map[string]any{"events": events}, nil)
 }
 
 // SoftwareAuditRequest sends software audit results to the server.
@@ -919,12 +924,17 @@ func (c *Client) ReportMonitorRun(req MonitorRunRequest) error {
 }
 
 func (c *Client) post(path, token string, body, out any) error {
+	return c.postContext(context.Background(), path, token, body, out)
+}
+
+// postContext is post, abandoned when ctx ends.
+func (c *Client) postContext(ctx context.Context, path, token string, body, out any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -944,8 +954,7 @@ func (c *Client) post(path, token string, body, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
+		return newStatusError(resp)
 	}
 
 	if out != nil {
@@ -988,8 +997,7 @@ func (c *Client) postLong(path, token string, body, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
+		return newStatusError(resp)
 	}
 
 	if out != nil {
@@ -1016,8 +1024,7 @@ func (c *Client) get(path string, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(b))
+		return newStatusError(resp)
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
