@@ -146,20 +146,23 @@ func TestGateOneStepPerRound(t *testing.T) {
 }
 
 // The refusal clock counts only while the dashboard answers with refusals:
-// it starts at the first one, survives a restart (RestoreClock), is reset by
-// any success, and an unreachable dashboard never counts.
+// it starts at the first one, survives a restart (RestoreClock), and is
+// started again by any success, an unreachable dashboard, a gap of more
+// than ClockGap, or a restart after one; a non-JSON (proxy) 403 never
+// counts.
 func TestRefusalClock(t *testing.T) {
+	susp := []byte(`{"error":"suspended"}`)
 	g, clk, _ := newGate(0)
 	changes := 0
 	g.OnClockChange(func() { changes++ })
 	start := clk.now()
-	g.Refused(403, []byte(`{"error":"suspended"}`))
+	g.Refused(403, susp)
 	if !g.RefusedSince().Equal(start) || changes != 1 {
 		t.Fatalf("since %s changes %d", g.RefusedSince(), changes)
 	}
 	for i := 0; i < 48; i++ { // a day of refusals every 30 minutes
 		clk.add(30 * time.Minute)
-		g.Refused(403, []byte(`{"error":"suspended"}`))
+		g.Refused(403, susp)
 	}
 	if d := g.RefusedFor(time.Hour); d != 24*time.Hour || changes != 1 {
 		t.Fatalf("refused for %s (changes %d), want 24h", d, changes)
@@ -169,25 +172,37 @@ func TestRefusalClock(t *testing.T) {
 	if d := g.RefusedFor(time.Hour); d != 0 {
 		t.Fatalf("stale refusal counted: %s", d)
 	}
-	// Unreachable after the latest refusal: not counted.
-	g.Refused(403, nil)
-	g.Unreachable()
-	if d := g.RefusedFor(time.Hour); d != 0 {
-		t.Fatalf("an unreachable dashboard counted as refusing: %s", d)
+	// A refusal after a gap starts a new streak.
+	g.Refused(403, susp)
+	if !g.RefusedSince().Equal(clk.now()) {
+		t.Fatalf("gap did not restart the clock: %s", g.RefusedSince())
 	}
-	clk.add(time.Minute)
-	g.Refused(403, nil)
-	if d := g.RefusedFor(time.Hour); d == 0 {
-		t.Fatal("refusal after the outage not counted")
+	// Unreachable: the streak is broken.
+	clk.add(10 * time.Minute)
+	g.Unreachable()
+	if !g.RefusedSince().IsZero() || g.RefusedFor(time.Hour) != 0 {
+		t.Fatal("an unreachable dashboard did not break the streak")
+	}
+	// A proxy's HTML 403 backs off but does not start the clock.
+	g.Refused(403, []byte("<html>Forbidden</html>"))
+	if !g.RefusedSince().IsZero() {
+		t.Fatal("a non-JSON 403 started the refusal clock")
 	}
 
-	// A restart keeps the start.
+	// A restart keeps a running streak, not one whose latest refusal is
+	// older than ClockGap.
 	g2, clk2, _ := newGate(0)
 	clk2.t = clk.t
-	g2.RestoreClock(start)
-	g2.Refused(401, nil)
+	g2.RestoreClock(start, clk.t.Add(-30*time.Minute))
+	g2.Refused(401, []byte(`{"message":"Unauthenticated."}`))
 	if !g2.RefusedSince().Equal(start) {
 		t.Fatalf("restored clock lost: %s", g2.RefusedSince())
+	}
+	g3, clk3, _ := newGate(0)
+	clk3.t = clk.t
+	g3.RestoreClock(start, clk.t.Add(-2*time.Hour))
+	if !g3.RefusedSince().IsZero() {
+		t.Fatal("a streak broken by downtime was restored")
 	}
 	// Any success resets it.
 	accepted := make(chan struct{}, 1)

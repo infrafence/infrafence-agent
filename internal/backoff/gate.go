@@ -24,6 +24,10 @@ const (
 	// Suspended is the wait while the organization is suspended
 	// (403 {"error":"suspended"}): nothing changes before someone acts.
 	Suspended = 30 * time.Minute
+	// ClockGap: refusals further apart than this are not one streak (the
+	// agent asks at least every Max while refused), so the refusal clock
+	// starts again.
+	ClockGap = time.Hour
 )
 
 // Gate records the dashboard's refusals and says how long to wait before the
@@ -71,12 +75,24 @@ func (g *Gate) OnAccepted(fn func()) {
 // reset (to save it). Set before use.
 func (g *Gate) OnClockChange(fn func()) { g.onChange = fn }
 
-// RestoreClock sets the start of the refusal clock saved before a restart
-// (zero: none). The backoff itself starts afresh.
-func (g *Gate) RestoreClock(since time.Time) {
+// RestoreClock sets the refusal clock saved before a restart: its start and
+// the latest refusal. A latest refusal older than ClockGap (the agent or
+// the host was down) does not continue the streak. The backoff itself
+// starts afresh.
+func (g *Gate) RestoreClock(since, last time.Time) {
 	g.mu.Lock()
-	g.since = since
-	g.mu.Unlock()
+	defer g.mu.Unlock()
+	if since.IsZero() || last.IsZero() || g.now().Sub(last) > ClockGap {
+		return
+	}
+	g.since, g.last = since, last
+}
+
+// LastRefusal is the latest refusal of the current streak (zero: none).
+func (g *Gate) LastRefusal() time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.last
 }
 
 // SetIdle makes every refusal wait Suspended (about 30 minutes): the agent
@@ -99,9 +115,18 @@ func (g *Gate) RefusedSince() time.Time {
 // error, timeout, 5xx): not a refusal, and the refusal clock does not
 // count it as one (see RefusedFor).
 func (g *Gate) Unreachable() {
+	notify := false
+	defer func() {
+		if notify && g.onChange != nil {
+			g.onChange()
+		}
+	}()
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.unreachable = g.now()
-	g.mu.Unlock()
+	// Not an answer: the streak of refusals is broken and starts again
+	// at the next one.
+	notify = g.clearClock()
 }
 
 // RefusedFor returns how long the dashboard has refused the agent, counted
@@ -176,10 +201,18 @@ func (g *Gate) Refused(status int, body []byte) time.Duration {
 	}()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	now0 := g.now()
-	g.last = now0
-	if g.since.IsZero() {
-		g.since, notify = now0, true
+	// Only the dashboard's own JSON answer counts toward the refusal
+	// clock (a proxy's or WAF's HTML 403 still backs off, but never leads
+	// to switching protection off); a gap longer than ClockGap since the
+	// latest refusal starts a new streak.
+	if now0 := g.now(); dashboardBody(body) {
+		if !g.since.IsZero() && now0.Sub(g.last) > ClockGap {
+			g.since = time.Time{}
+		}
+		if g.since.IsZero() {
+			g.since, notify = now0, true
+		}
+		g.last = now0
 	}
 	// Requests sent together when the wait ended (heartbeat, sync, events)
 	// are one try: only the first refusal of a round extends the backoff.
@@ -257,6 +290,13 @@ func (g *Gate) State() (code int, suspended bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.code, g.suspended
+}
+
+// dashboardBody: a JSON object, as the dashboard answers ({"error": ...},
+// {"message": "Unauthenticated."}).
+func dashboardBody(b []byte) bool {
+	var v map[string]any
+	return json.Unmarshal(b, &v) == nil && len(v) > 0
 }
 
 func snippet(b []byte) string {
