@@ -25,10 +25,12 @@ type state struct {
 	Registered bool `json:"registered"`
 	Heartbeats int  `json:"heartbeats"`
 	// LastHeartbeat is the body of the latest heartbeat.
-	LastHeartbeat json.RawMessage   `json:"last_heartbeat,omitempty"`
-	Syncs         int               `json:"syncs"`
-	Bans          []json.RawMessage `json:"bans"`
-	Events        []json.RawMessage `json:"events"`
+	LastHeartbeat json.RawMessage `json:"last_heartbeat,omitempty"`
+	Syncs         int             `json:"syncs"`
+	// Denied counts the agent API calls refused while /deny is on.
+	Denied int               `json:"denied"`
+	Bans   []json.RawMessage `json:"bans"`
+	Events []json.RawMessage `json:"events"`
 	// extra holds fields set through /set-sync, merged into every sync
 	// reply; version bumps on each change so the agent syncs again.
 	extra   map[string]json.RawMessage
@@ -48,6 +50,10 @@ func main() {
 	st := &state{extra: map[string]json.RawMessage{}}
 	// offline: the agent API answers 503, as a dashboard that is down.
 	var offline atomic.Bool
+	// deny: the agent API refuses the agent, "suspended" (403
+	// {"error":"suspended"}) or "unauthorized" (401); empty: off.
+	var deny atomic.Value
+	deny.Store("")
 
 	reply := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -119,6 +125,17 @@ func main() {
 		offline.Store(r.URL.Query().Get("on") == "1")
 		reply(w, map[string]any{"status": "ok", "offline": offline.Load()})
 	})
+	// Test control: /deny?mode=suspended (403 {"error":"suspended"}) or
+	// /deny?mode=unauthorized (401) refuses every agent API call until
+	// /deny?mode=off.
+	mux.HandleFunc("/deny", func(w http.ResponseWriter, r *http.Request) {
+		mode := r.URL.Query().Get("mode")
+		if mode == "off" {
+			mode = ""
+		}
+		deny.Store(mode)
+		reply(w, map[string]any{"status": "ok", "deny": mode})
+	})
 	// Test control: listen on a TCP port (accept and close), for the
 	// close_port / block_egress cases.
 	mux.HandleFunc("/listen", func(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +187,21 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if offline.Load() && strings.HasPrefix(r.URL.Path, "/api/") {
 			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		if mode := deny.Load().(string); mode != "" && strings.HasPrefix(r.URL.Path, "/api/") {
+			_, _ = io.Copy(io.Discard, r.Body)
+			st.mu.Lock()
+			st.Denied++
+			st.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if mode == "unauthorized" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"message":"Unauthenticated."}`)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"suspended"}`)
 			return
 		}
 		mux.ServeHTTP(w, r)
