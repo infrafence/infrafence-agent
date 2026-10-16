@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	refusal "github.com/infrafence/infrafence-agent/internal/backoff"
 )
 
 // Event delivery. Events are queued and sent in batches, one request per
@@ -395,12 +397,20 @@ func (s *eventSender) run() {
 					backoff = min(max(2*backoff, eventRetryMin), eventRetryMax)
 					wait := backoff
 					if isStatus && se.retryAfter > wait {
-						wait = min(se.retryAfter, eventRetryAfterMax)
+						// A refusal (401, 403) waits for the shared backoff,
+						// up to 30 minutes; a 429 or 503 at most 5.
+						limit := eventRetryAfterMax
+						if refusal.Refusal(se.code) {
+							limit = refusal.Max
+						}
+						wait = min(se.retryAfter, limit)
 					}
 					if len(waiters) > 0 {
 						wait = eventFlushRetry
 					}
-					log.Printf("[api] event delivery failed (%d events), retrying in %s: %v", n, wait, err)
+					if !se.isHeld() {
+						log.Printf("[api] event delivery failed (%d events), retrying in %s: %v", n, wait, err)
+					}
 					retry = s.clock.At(s.clock.Now().Add(wait))
 				}
 				if delivered {
@@ -660,8 +670,20 @@ func urgentEvent(e EventRequest) bool {
 type statusError struct {
 	code int
 	body string
-	// retryAfter is the wait a 429 or 503 reply asked for (zero: none).
+	// retryAfter is the wait a 429 or 503 reply asked for, or the backoff
+	// after a refusal (401, 403); zero: none.
 	retryAfter time.Duration
+	// held: not sent at all, the dashboard refused the agent earlier and
+	// the backoff is still running (code is that refusal's).
+	held bool
+}
+
+// IsHeld reports whether err is a request held back because the dashboard
+// refused the agent and the backoff is still running: nothing was sent, and
+// the refusal was already logged once.
+func IsHeld(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.held
 }
 
 func newStatusError(resp *http.Response) *statusError {
@@ -677,7 +699,12 @@ func newStatusError(resp *http.Response) *statusError {
 	return e
 }
 
+func (e *statusError) isHeld() bool { return e != nil && e.held }
+
 func (e *statusError) Error() string {
+	if e.held {
+		return "not sent: the dashboard refused the agent (" + strconv.Itoa(e.code) + "), next try in " + e.retryAfter.Round(time.Second).String()
+	}
 	return "server returned " + strconv.Itoa(e.code) + ": " + e.body
 }
 

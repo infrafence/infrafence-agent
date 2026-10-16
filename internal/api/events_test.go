@@ -872,3 +872,25 @@ func TestReportEventsBatchesRequests(t *testing.T) {
 		}
 	}
 }
+
+// While the dashboard refuses the agent, events wait for the refusal
+// backoff (up to 30 minutes), not the 5-minute cap of a 429.
+func TestRefusalBackoffIsHonored(t *testing.T) {
+	s, rec, clock := startSender(t)
+	rec.setFail(func([]EventRequest) error {
+		if rec.tries == 1 {
+			return &statusError{code: http.StatusForbidden, body: `{"error":"suspended"}`, retryAfter: 30 * time.Minute}
+		}
+		return nil
+	})
+	_ = s.add([]EventRequest{{Type: "update_completed", Severity: "info"}})
+	eventually(t, "the first try", func() bool { return rec.attempts() == 1 })
+	clock.armed(t)
+	clock.Advance(30*time.Minute - time.Millisecond)
+	quiet(t, rec, 0)
+	if n := rec.attempts(); n != 1 {
+		t.Fatalf("%d tries during the refusal backoff", n)
+	}
+	clock.Advance(time.Millisecond)
+	eventually(t, "delivery", func() bool { return len(rec.got()) == 1 })
+}

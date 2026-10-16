@@ -835,6 +835,7 @@ func runAgent() {
 
 	startReverb := func() {
 		wsClient := ws.New(cfg.ReverbURL, cfg.ReverbAppKey, cfg.AuthEndpoint, cfg.AgentToken, cfg.AgentID, reverbHandlers)
+		wsClient.SetGate(apiClient.Gate())
 		go wsClient.Run()
 	}
 
@@ -934,7 +935,11 @@ func runAgent() {
 
 			resp, err := apiClient.Heartbeat(hbReq)
 			if err != nil {
-				log.Printf("[heartbeat] error: %v", err)
+				// Held back while the dashboard refuses the agent: the
+				// refusal was logged once, the backoff decides the next try.
+				if !api.IsHeld(err) {
+					log.Printf("[heartbeat] error: %v", err)
+				}
 				continue
 			}
 			panelLastHeartbeat.Store(time.Now().Unix())
