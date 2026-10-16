@@ -20,11 +20,15 @@ import (
 // something), so they hold across restarts and while the dashboard cannot be
 // reached:
 //
-//   - a lifted ban is left out of every sync until the dashboard drops it
-//     (it removes the ban when it receives the panel_unban event), the ban
-//     expires, or 30 days pass. Only the dashboard bans present when it was
-//     lifted are left out (their ids, completed by the first sync after the
-//     lift); a new detection of the address bans it again;
+//   - a ban lifted from the panel is lifted on this server only. It is left
+//     out of this server's syncs until the dashboard stops sending it (the
+//     ban expired, or someone removed it in the dashboard), or for at most
+//     30 days (liftMaxAge): after that a ban the dashboard still sends is
+//     enforced again. The dashboard keeps the ban, for the organization's
+//     other servers too; the panel_unban event only records the local lift
+//     (scope "server"). Only the bans present when it was lifted are left
+//     out (their ids, completed by the syncs of the first hour); a new
+//     detection of the address bans it again;
 //   - an address allowed from the panel is added to the dashboard's allow
 //     list until it is disallowed from the panel;
 //   - the events reporting these changes wait in an outbox until the

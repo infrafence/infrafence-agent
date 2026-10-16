@@ -205,8 +205,16 @@ func TestPanelUnbanIsKeptUntilTheDashboardDropsIt(t *testing.T) {
 	}
 	ev := f.reported[0]
 	if ev.Type != "panel_unban" || ev.SourceIP != "" || ev.Details["source"] != "panel" || ev.Details["actor"] != "root" ||
-		ev.Details["ip"] != "203.0.113.7" || ev.Details["ban_ids"] != "1" || ev.Details["panel"] != "cpanel" {
+		ev.Details["ip"] != "203.0.113.7" || ev.Details["panel"] != "cpanel" ||
+		ev.Details["scope"] != "server" || ev.Details["ban_source"] != "manual" || ev.Details["lifted_until"] != "2026-10-17T12:00:00Z" {
 		t.Errorf("event: %+v", ev)
+	}
+	// A record of a local lift, never a list of bans to delete.
+	if _, ok := ev.Details["ban_ids"]; ok {
+		t.Errorf("event carries ban ids: %+v", ev)
+	}
+	if r["scope"] != "server" || r["source"] != "manual" || r["lifted_until"] != "2026-10-17T12:00:00Z" {
+		t.Errorf("reply: %v", r)
 	}
 	st, err := os.Stat(panelStatePath)
 	if err != nil || st.Mode().Perm() != 0o600 {
@@ -223,8 +231,8 @@ func TestPanelUnbanIsKeptUntilTheDashboardDropsIt(t *testing.T) {
 	if r := handlePanel(panel.Request{Command: "unban", IP: "203.0.113.7", Actor: "root"}); r["error"] != panel.ErrNotBanned {
 		t.Errorf("second unban: %v", r)
 	}
-	// The dashboard dropped it: the lift is forgotten, and a new ban (new
-	// id) is applied.
+	// The dashboard no longer sends it (expired or removed there): the lift
+	// is forgotten, and a new ban (new id) is applied.
 	syncWith(bans[1:])
 	if n := len(panelState.p.Lifted); n != 0 {
 		t.Errorf("%d lifts left", n)
@@ -261,8 +269,11 @@ func TestPanelUnbanNetworkBanUntilItExpires(t *testing.T) {
 	f := withFakePanel(t)
 	bans := []api.Ban{{ID: 0, IPAddress: "192.0.2.50", ExpiresAt: f.in(48 * time.Hour)}}
 	syncWith(bans)
-	if r := handlePanel(panel.Request{Command: "unban", IP: "192.0.2.50", Actor: "admin"}); !r.Succeeded() {
+	if r := handlePanel(panel.Request{Command: "unban", IP: "192.0.2.50", Actor: "admin"}); !r.Succeeded() || r["source"] != "network" || r["scope"] != "server" {
 		t.Fatalf("unban: %v", r)
+	}
+	if ev := f.reported[len(f.reported)-1]; ev.Details["ban_source"] != "network" || ev.Details["scope"] != "server" {
+		t.Errorf("event: %+v", ev)
 	}
 	syncWith(nil) // a network ban can leave the list and come back
 	if got := syncWith(bans); len(got) != 0 {
@@ -706,5 +717,24 @@ func TestCleanText(t *testing.T) {
 	}
 	if got := cleanText("àààà", 5); got != "àà" {
 		t.Errorf("cut inside a rune: %q", got)
+	}
+}
+
+func TestPanelUnbanPermanentBanCappedAt30Days(t *testing.T) {
+	f := withFakePanel(t)
+	bans := []api.Ban{{ID: 7, IPAddress: "198.51.100.30", Source: "automode"}}
+	syncWith(bans)
+	r := handlePanel(panel.Request{Command: "unban", IP: "198.51.100.30", Actor: "root"})
+	if !r.Succeeded() || r["source"] != "automode" || r["lifted_until"] != "2026-11-15T12:00:00Z" {
+		t.Fatalf("unban: %v", r)
+	}
+	f.now = f.now.Add(29 * 24 * time.Hour)
+	if got := syncWith(bans); len(got) != 0 {
+		t.Errorf("day 29: %v", got)
+	}
+	// The dashboard still sends it after 30 days: enforced again.
+	f.now = f.now.Add(2 * 24 * time.Hour)
+	if got := syncWith(bans); len(got) != 1 {
+		t.Errorf("day 31: %v", got)
 	}
 }

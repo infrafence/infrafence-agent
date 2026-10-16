@@ -29,8 +29,9 @@ import (
 // Unban, allow and disallow go through the same firewall and allow-list
 // code as the dashboard's bans and allow list, are kept across restarts
 // (panelstate.go) and are reported to the dashboard as events with source
-// "panel" and the panel user, so the dashboard drops a lifted ban instead of
-// sending it again.
+// "panel" and the panel user. They act on this server only: an unban is a
+// local lift (scope "server") and never removes the ban in the dashboard or
+// on the organization's other servers.
 
 var panelSocketPath = panel.SocketPath
 
@@ -339,16 +340,7 @@ func panelBans(limit int) panel.Response {
 			pb.Expires = *b.ExpiresAt
 		}
 		lb, local := info[b.IPAddress]
-		if !banSources[pb.Source] {
-			switch {
-			case b.ID == 0:
-				pb.Source = "network"
-			case local:
-				pb.Source = "local"
-			default:
-				pb.Source = "manual"
-			}
-		}
+		pb.Source = banSource(b, local)
 		if local {
 			if pb.Reason == nil {
 				pb.Reason = orNull(cleanText(lb.reason, 200))
@@ -377,6 +369,20 @@ func panelBans(limit int) panel.Response {
 		out = []panelBan{}
 	}
 	return panel.OK(map[string]any{"bans": out, "total": total, "monitor_mode": v.monitorMode})
+}
+
+// banSource is where a ban comes from: what the dashboard says, else a
+// network ban (id 0), the agent's own detection, or a dashboard ban.
+func banSource(b api.Ban, local bool) string {
+	switch {
+	case banSources[b.Source]:
+		return b.Source
+	case b.ID == 0:
+		return "network"
+	case local:
+		return "local"
+	}
+	return "manual"
 }
 
 // panelFilterView leaves out lifted bans without touching the saved state.
@@ -409,8 +415,13 @@ func panelEventFor(typ, actor string, details map[string]string) api.EventReques
 	return api.EventRequest{Type: typ, Severity: "info", Details: d, OccurredAt: panelNow().UTC().Format(time.RFC3339)}
 }
 
-// panelUnban lifts a ban: removed from the firewall now, left out of the
-// syncs until the dashboard drops it, and reported (panel_unban).
+// panelUnban lifts a ban on this server only: removed from the firewall now
+// and left out of this server's syncs until the dashboard stops sending it
+// (it expired or someone removed it there), or for at most 30 days
+// (liftMaxAge), after which a ban the dashboard still sends is enforced
+// again. The dashboard is told it was lifted here (panel_unban, scope
+// "server"); the ban itself stays in the dashboard and on the
+// organization's other servers.
 func panelUnban(ip, actor string) panel.Response {
 	now := panelNow()
 	panelState.Lock()
@@ -418,9 +429,14 @@ func panelUnban(ip, actor string) panel.Response {
 	until := now.Add(liftMaxAge)
 	permanent := false
 	var latest time.Time
+	_, local := panelState.banInfo[ip]
+	source := "local" // banned by this agent, not in a sync yet
 	for _, b := range panelState.view.bans {
 		if b.IPAddress != ip {
 			continue
+		}
+		if len(ids) == 0 {
+			source = banSource(b, local)
 		}
 		ids = append(ids, b.ID)
 		if b.ExpiresAt == nil {
@@ -460,17 +476,18 @@ func panelUnban(ip, actor string) panel.Response {
 	if fwErr != nil {
 		log.Printf("[panel] unban %s: %v (removed at the next sync)", ip, fwErr)
 	}
-	ids64 := make([]string, len(ids))
-	for i, id := range ids {
-		ids64[i] = strconv.FormatInt(id, 10)
-	}
+	// A record of a local lift, not a request to delete anything: no ban
+	// ids, and the scope says so.
 	reported := panelReport([]api.EventRequest{panelEventFor("panel_unban", actor, map[string]string{
-		"ip": ip, "ban_ids": strings.Join(ids64, ","),
+		"ip": ip, "scope": "server", "ban_source": source, "lifted_until": time.Unix(until.Unix(), 0).UTC().Format(time.RFC3339),
 	})})
 	// The sync re-applies everything without the lifted ban (ModSecurity
 	// ban rules included).
 	panelRequestSync("panel unban")
-	r := panel.OK(map[string]any{"ip": ip, "reported": reported, "threat_feed": panelInThreatSet(ip)})
+	r := panel.OK(map[string]any{
+		"ip": ip, "reported": reported, "threat_feed": panelInThreatSet(ip),
+		"source": source, "scope": "server", "lifted_until": rfc3339(until),
+	})
 	if fwErr != nil {
 		r["firewall_pending"] = true
 	}

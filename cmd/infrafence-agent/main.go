@@ -1116,7 +1116,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 
 	// Apply bans (skipped in monitor mode). Bans lifted from a hosting panel
-	// are left out until the dashboard drops them (panelstate.go).
+	// are left out on this server only, for at most 30 days (panelstate.go).
 	sync.Bans = panelFilterBans(sync.Bans)
 	activeBanIPs := make(map[string]bool, len(sync.Bans))
 	banIPs := make([]string, 0, len(sync.Bans))

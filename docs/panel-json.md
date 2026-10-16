@@ -161,13 +161,23 @@ is known. Bans lifted from the panel are not listed.
 
 `infrafence-agent panel unban <ip> --actor <panel user> --json`
 
+The ban is lifted **on this server only** (`scope: "server"`). It is never removed in the dashboard or on the
+organization's other servers, whatever its source: a network or AutoMode ban stays in force everywhere else.
+The dashboard receives a `panel_unban` event that records the local lift. The lift lasts until the dashboard
+stops sending the ban (it expired, or someone removed it there) or **at most 30 days** (`lifted_until`). After
+that, a ban the dashboard still sends is enforced on this server again. A new detection of the address
+by this agent bans it again at once.
+
 <!-- example:unban -->
 ```json
 {
   "agent_running": true,
   "ip": "198.51.100.9",
+  "lifted_until": "2026-11-15T12:00:00Z",
   "ok": true,
   "reported": true,
+  "scope": "server",
+  "source": "manual",
   "threat_feed": false
 }
 ```
@@ -178,6 +188,9 @@ is known. Bans lifted from the panel are not listed.
 | `ok` | boolean | `true` | yes | |
 | `agent_running` | boolean | `true` | yes | |
 | `ip` | string | | yes | The address, in canonical form (e.g. `::ffff:198.51.100.9` becomes `198.51.100.9`). |
+| `source` | string | `local`, `network`, `automode`, `manual` | yes | Source of the lifted ban, as in `bans[].source`. |
+| `scope` | string | `server` | yes | Where the ban is lifted: this server only. |
+| `lifted_until` | string | timestamp | yes | When the lift ends at the latest: the ban's expiry, or 30 days from now for a permanent ban. |
 | `reported` | boolean | | yes | `true`: the dashboard received the `panel_unban` event. `false`: it was not reachable; the event is sent after the next sync. The ban is lifted on the server either way. |
 | `threat_feed` | boolean | | yes | `true`: the address is also on a threat list the server blocks, so it may still be refused. |
 | `firewall_pending` | boolean | `true` | no | Present only when removing the firewall entry failed; it is removed at the next sync. |
