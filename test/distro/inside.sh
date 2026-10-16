@@ -115,6 +115,12 @@ fi
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 
+# ── dashboard refusing the agent, restart, local expiry (test/distro/offline.sh) ──
+. /distro/offline.sh
+
+# ── refused past the limit: protection switched off, then back (test/distro/disable.sh) ──
+. /distro/disable.sh
+
 # ── uninstall: nothing may be left behind ──
 bash /distro/install.sh --uninstall >/tmp/uninstall.log 2>&1
 left=""
@@ -122,6 +128,7 @@ iptables -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables"
 ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
 [ -e /var/lib/infrafence/panel-state.json ] && left="$left panel-state"
+[ -e /var/lib/infrafence/protection-state.json ] && left="$left protection-state"
 [ -e /run/infrafence/panel.sock ] && left="$left panel-socket"
 ipset list -n 2>/dev/null | grep -q infrafence && left="$left ipset"
 systemctl list-unit-files 2>/dev/null | grep -q infrafence-agent && left="$left service"

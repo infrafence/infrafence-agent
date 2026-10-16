@@ -62,11 +62,14 @@ Column "Always": `yes` = the key is in every reply (or every array element); `no
   "connected": true,
   "control_panel": "cpanel",
   "dashboard_url": "https://app.infrafence.com/servers/42",
+  "disabled_at": null,
   "last_heartbeat": "2026-10-16T11:59:20Z",
   "last_sync": "2026-10-16T12:00:00Z",
   "monitor_mode": false,
   "ok": true,
   "plan": "pro",
+  "protection": "active",
+  "refused_since": null,
   "suspended": false,
   "version": "1.0.23"
 }
@@ -85,11 +88,14 @@ printed) and `null` for what only the running agent knows:
   "connected": false,
   "control_panel": null,
   "dashboard_url": "https://app.infrafence.com/servers/42",
+  "disabled_at": null,
   "last_heartbeat": null,
   "last_sync": null,
   "monitor_mode": null,
   "ok": true,
   "plan": null,
+  "protection": null,
+  "refused_since": null,
   "suspended": null,
   "version": "1.0.23"
 }
@@ -110,6 +116,9 @@ printed) and `null` for what only the running agent knows:
 | `automode` | object \| null | | yes | AutoMode state, read only: the object the dashboard sends, passed through unchanged. `null` when the dashboard doesn't send it (today's dashboards). |
 | `monitor_mode` | boolean \| null | | yes | `true`: detections are reported but nothing is banned. |
 | `suspended` | boolean \| null | | yes | `true`: the organization exceeded its plan's server limit; protection is off. |
+| `protection` | string \| null | `active`, `refused`, `disabled` | yes | `active`: InfraFence protects the server. `refused`: the dashboard refuses the agent (401, or 403 such as an organization suspended) but protection is still in force; it is switched off after 24 hours of refusal. `disabled`: protection is switched off after 24 hours of refusal (InfraFence's firewall chains, ipsets, ModSecurity rules and user-agent blocking removed, nothing banned) until the dashboard accepts the agent again — show a red banner. A dashboard that is only unreachable never leads to `refused` or `disabled`. Without a running agent: `disabled` when it was switched off, `null` otherwise. |
+| `refused_since` | string \| null | timestamp | yes | When the dashboard started refusing the agent (no accepted request since); `null` when it is not refusing. |
+| `disabled_at` | string \| null | timestamp | yes | When protection was switched off; `null` while it is on. |
 | `control_panel` | string \| null | `cpanel`, `plesk`, `directadmin`, `cyberpanel`, `hestiacp`, `vestacp`, `ispconfig`, `cloudpanel`, `cwp`, `aapanel`, `keyhelp`, `froxlor`, `enhance`, `virtualmin`, `webmin`, `coolify`, `dokploy`, `easypanel`, `caprover`, `runcloud`, `gridpane`, `forge`, `ploi`, `bitnami` | yes | Hosting panel detected on the server. |
 
 ### `bans`

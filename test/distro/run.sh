@@ -38,6 +38,7 @@ work=$(mktemp -d)
 version=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -ldflags "-s -w -X main.version=${version}-test" -o "$work/agent" ./cmd/infrafence-agent || exit 1
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$work/mockapi" ./test/distro/mockapi || exit 1
+CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$work/mkmmdb" ./test/distro/mkmmdb || exit 1
 cp install.sh test/distro/*.sh "$work/"
 
 want=("$@")

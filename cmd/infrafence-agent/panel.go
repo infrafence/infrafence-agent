@@ -127,8 +127,20 @@ func offlineStatus() panel.Response {
 	r := panel.OK(map[string]any{
 		"version": version, "agent_id": nil, "dashboard_url": nil, "last_heartbeat": nil, "last_sync": nil,
 		"connected": false, "plan": nil, "automode": nil, "monitor_mode": nil, "suspended": nil,
+		"protection": nil, "refused_since": nil, "disabled_at": nil,
 		"control_panel": orNull(panelDetectPanelID()),
 	})
+	// The switch-off outlives the agent (the firewall stays without
+	// InfraFence's chains): said even when it is not running.
+	if st := loadProtectionStateQuiet(); st != nil {
+		if st.RefusedSince > 0 {
+			r["refused_since"] = rfc3339(time.Unix(st.RefusedSince, 0))
+		}
+		if st.DisabledAt > 0 {
+			r["protection"] = "disabled"
+			r["disabled_at"] = rfc3339(time.Unix(st.DisabledAt, 0))
+		}
+	}
 	if cfg, err := config.Load(); err == nil {
 		r["agent_id"] = cfg.AgentID
 		if u := dashboardURL(cfg.ServerURL, cfg.AgentID); u != "" {
@@ -290,6 +302,8 @@ func panelStatus() panel.Response {
 		"dashboard_url":  nil,
 		"control_panel":  orNull(panelInfo.panelID),
 	})
+	prot, refusedSince, disabledAt := protectionStatus()
+	r["protection"], r["refused_since"], r["disabled_at"] = prot, rfc3339(refusedSince), rfc3339(disabledAt)
 	if v.plan != "" {
 		r["plan"] = v.plan
 	}

@@ -104,12 +104,22 @@ func (e *Engine) Setup() error {
 
 // Remove undoes Setup: removes the Include InfraFence added and its rules,
 // then reloads Apache. If the config test fails the files are restored.
-func (e *Engine) Remove() error {
+func (e *Engine) Remove() error { return e.remove(false) }
+
+// Detach takes InfraFence's rules out of Apache (the includes, with the
+// same config test and graceful reload as Remove) but keeps the rules
+// directory, virtual patches included: Setup puts the includes back and
+// every rule applies again as it was.
+func (e *Engine) Detach() error { return e.remove(true) }
+
+func (e *Engine) remove(keepRules bool) error {
 	if e.apachectl == "" {
 		e.detectModSecurity()
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	wasSetUp := e.setUp
+	e.setUp = false // no longer included by Apache
 
 	snap := snapshotIncludeTargets()
 	changed := false
@@ -143,17 +153,22 @@ func (e *Engine) Remove() error {
 		}
 	}
 	if !changed {
-		os.RemoveAll(rulesDir)
+		if !keepRules {
+			os.RemoveAll(rulesDir)
+		}
 		return nil
 	}
 	if e.apachectl != "" {
 		if out, err := exec.Command(e.apachectl, "configtest").CombinedOutput(); err != nil {
 			snap.restore()
+			e.setUp = wasSetUp
 			return fmt.Errorf("config test failed, nothing removed: %s", strings.TrimSpace(string(out)))
 		}
 		_ = exec.Command(e.apachectl, "graceful").Run()
 	}
-	os.RemoveAll(rulesDir)
+	if !keepRules {
+		os.RemoveAll(rulesDir)
+	}
 	return nil
 }
 

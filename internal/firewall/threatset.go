@@ -26,6 +26,9 @@ func ApplyThreatSet(entries []string, keep []string) (applied, skipped int, err 
 	if !HasIpset() {
 		return 0, 0, ErrNoIpset
 	}
+	if Disabled() {
+		return 0, 0, ErrDisabled
+	}
 
 	cidrs, skipped := filterThreatNets(entries, keep)
 	if err := replaceNetSet(threatSetName, cidrs); err != nil {

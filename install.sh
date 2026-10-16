@@ -954,6 +954,8 @@ uninstall() {
     rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
     rm -f /var/lib/infrafence/firewall-state.json  # saved closed ports / egress blocks
     rm -f /var/lib/infrafence/panel-state.json     # bans lifted / addresses allowed from WHM or Plesk
+    rm -f /var/lib/infrafence/protection-state.json /var/lib/infrafence/protection-state.json.corrupt  # last known bans, allow list, country blocks
+    rm -f /etc/motd.d/infrafence  # login notice while protection is switched off
     rm -f /run/infrafence/panel.sock && rmdir /run/infrafence 2>/dev/null || true
     rm -f /tmp/infrafence-agent-crash-count /tmp/infrafence-agent-recovered  # before v1.0.29
     rm -rf "$CONFIG_DIR"

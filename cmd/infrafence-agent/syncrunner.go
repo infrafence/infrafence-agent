@@ -60,7 +60,9 @@ func (s *syncRunner) Now(reason string) error {
 		s.applied = version
 	}
 	s.vmu.Unlock()
-	if err != nil {
+	// A sync held back by the refusal backoff sent nothing: the refusal
+	// was logged once when it came.
+	if err != nil && !api.IsHeld(err) {
 		log.Printf("[sync] %s sync failed: %v", reason, err)
 	}
 	return err

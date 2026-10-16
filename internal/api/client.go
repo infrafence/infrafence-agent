@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -12,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/backoff"
 )
 
 type Client struct {
@@ -44,6 +48,10 @@ type Client struct {
 	// agent must never block its egress to them).
 	peersMu sync.Mutex
 	peers   map[string]bool
+
+	// gate holds every request back after the dashboard refused the agent
+	// (401, 403), with backoff; see internal/backoff.
+	gate *backoff.Gate
 }
 
 // Kept-alive connections pin the dashboard's address: with a request every
@@ -82,6 +90,7 @@ func New(baseURL, token string) *Client {
 		},
 		longClient: &http.Client{Transport: t},
 		transport:  t,
+		gate:       backoff.New(),
 	}
 	c.events = newEventSender(c.sendEvents, realClock{})
 	go c.events.run()
@@ -116,22 +125,82 @@ func (c *Client) PeerIPs() []string {
 	return out
 }
 
+// Gate is the refusal backoff shared by every request to the dashboard; the
+// websocket client waits on it too.
+func (c *Client) Gate() *backoff.Gate { return c.gate }
+
 // do sends req, first dropping idle connections older than connMaxAge, and
-// drops them again after a failure that may mean the server moved.
+// drops them again after a failure that may mean the server moved. While
+// the dashboard refuses the agent (401, 403) nothing is sent until the
+// backoff ends: the request fails at once with a held error (IsHeld).
 func (c *Client) do(hc *http.Client, req *http.Request) (*http.Response, error) {
+	if wait := c.gate.Wait(); wait > 0 {
+		code, _ := c.gate.State()
+		return nil, &statusError{code: code, held: true, retryAfter: wait}
+	}
 	if now := time.Now().UnixNano(); now-c.lastRecycle.Load() >= int64(connMaxAge) {
 		c.recycleConns(now)
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
 		c.recycleConns(time.Now().UnixNano())
+		if req.Context().Err() == nil {
+			c.gate.Unreachable()
+		}
 		return nil, err
 	}
-	switch resp.StatusCode {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	if resp.StatusCode >= 500 {
+		c.gate.Unreachable() // the dashboard is down, not refusing
+	}
+	switch {
+	case resp.StatusCode < 400:
+		c.gate.OK()
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && gatedPath(req.URL.Path):
+		// The body says why (403 {"error":"suspended"}); it is put back for
+		// the caller's error.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		c.gate.Refused(resp.StatusCode, body)
+	case resp.StatusCode == http.StatusBadGateway, resp.StatusCode == http.StatusServiceUnavailable, resp.StatusCode == http.StatusGatewayTimeout:
 		c.recycleConns(time.Now().UnixNano())
 	}
 	return resp, nil
+}
+
+// gatedPath: a 403 on these refuses the agent itself; on another endpoint
+// it may only refuse that feature (plan limits) and starts no backoff. A
+// 401 always does: the token is the same for every endpoint.
+func gatedPath(p string) bool {
+	switch p {
+	case "/api/v1/agent/heartbeat", "/api/v1/agent/sync", "/api/v1/agent/events", "/api/v1/agent/bans":
+		return true
+	}
+	return false
+}
+
+// IsRejected reports whether the dashboard answered err's request with a
+// refusal of that request alone (4xx other than 401, 403, 408 and 429):
+// sending it again would not change it.
+func IsRejected(err error) bool {
+	var se *statusError
+	if !errors.As(err, &se) || se.held || se.code < 400 || se.code >= 500 {
+		return false
+	}
+	switch se.code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return true
+}
+
+// statusErr is newStatusError plus, for a refusal, the backoff it started.
+func (c *Client) statusErr(resp *http.Response) error {
+	e := newStatusError(resp)
+	if backoff.Refusal(e.code) && c.gate.Wait() > 0 {
+		e.retryAfter = max(e.retryAfter, c.gate.Wait())
+	}
+	return e
 }
 
 // recycleConns closes the idle connections: the next request dials again,
@@ -954,7 +1023,7 @@ func (c *Client) postContext(ctx context.Context, path, token string, body, out 
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return newStatusError(resp)
+		return c.statusErr(resp)
 	}
 
 	if out != nil {
@@ -997,7 +1066,7 @@ func (c *Client) postLong(path, token string, body, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return newStatusError(resp)
+		return c.statusErr(resp)
 	}
 
 	if out != nil {
@@ -1024,7 +1093,7 @@ func (c *Client) get(path string, out any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return newStatusError(resp)
+		return c.statusErr(resp)
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)

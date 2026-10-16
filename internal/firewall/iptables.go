@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const banSetName = "infrafence-bans"
@@ -16,6 +17,10 @@ const banSetName = "infrafence-bans"
 // migrates rules earlier versions put directly into INPUT.
 func Init() {
 	checkIpset()
+	if Disabled() {
+		log.Printf("[firewall] protection is switched off: no %s chain, nothing changed", chainName)
+		return
+	}
 	res, err := Ensure()
 	if err != nil {
 		log.Printf("[firewall] setup failed: %v", err)
@@ -52,7 +57,7 @@ func FirewallStatus() Status {
 		return Status{
 			Mode:       "ipset",
 			HasIpset:   true,
-			Capacity:   65536,
+			Capacity:   ipsetBanCap,
 			ActiveBans: ipsetEntryCount(banSetName),
 			CSF:        csf,
 		}
@@ -60,7 +65,7 @@ func FirewallStatus() Status {
 	fw.Lock()
 	bans := len(fw.bans)
 	fw.Unlock()
-	return Status{Mode: "iptables", HasIpset: false, Capacity: 500, ActiveBans: bans, CSF: csf}
+	return Status{Mode: "iptables", HasIpset: false, Capacity: iptablesBanCap, ActiveBans: bans, CSF: csf}
 }
 
 // RuleSpec describes a firewall rule to apply.
@@ -238,17 +243,32 @@ func isSafeIP(ip net.IP) bool {
 }
 
 // BanIP blocks an IP in the INFRAFENCE chain (via the infrafence-bans ipset
-// when available, otherwise a rule in the chain).
+// when available, otherwise a rule in the chain), with no expiry.
 func BanIP(ip string) error {
-	_, err := BanIPOnce(ip)
+	return BanIPUntil(ip, time.Time{})
+}
+
+// BanIPUntil applies a ban from the dashboard, which expires at expires
+// (zero: never). The dashboard's expiry replaces the one the agent had.
+func BanIPUntil(ip string, expires time.Time) error {
+	added, err := BanIPOnceUntil(ip, expires)
+	if err == nil && !added {
+		SetBanExpiry(ip, expires)
+	}
 	return err
 }
 
-// BanIPOnce bans ip and reports whether this call added the ban: false when
-// the agent already bans it (its own detection, or an active dashboard ban),
-// so callers report each ban to the dashboard once. The firewall entry is
-// (re)applied either way.
+// BanIPOnce is BanIPOnceUntil with no expiry.
 func BanIPOnce(ip string) (added bool, err error) {
+	return BanIPOnceUntil(ip, time.Time{})
+}
+
+// BanIPOnceUntil bans ip until expires (zero: no expiry) and reports whether
+// this call added the ban: false when the agent already bans it (its own
+// detection, or an active dashboard ban), so callers report each ban to the
+// dashboard once; an existing ban keeps its expiry. The firewall entry is
+// (re)applied either way.
+func BanIPOnceUntil(ip string, expires time.Time) (added bool, err error) {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return false, fmt.Errorf("invalid IP address: %s", ip)
@@ -256,22 +276,36 @@ func BanIPOnce(ip string) (added bool, err error) {
 	if isSafeIP(parsed) {
 		return false, fmt.Errorf("refusing to ban safe IP: %s", ip)
 	}
-	added = claimBan(parsed.String())
-	return added, applyBan(parsed, ip)
+	if !enforceable(parsed) {
+		return false, fmt.Errorf("IPv6 bans need ipset: %s", ip)
+	}
+	added, out := claimBan(parsed.String(), expires)
+	evicted(out)
+	err = applyBan(parsed, ip)
+	if added {
+		bansChanged()
+	}
+	return added, err
 }
 
-// claimBan records ip as banned; true if it wasn't already.
-func claimBan(ip string) bool {
+// claimBan records ip as banned until expires; true if it wasn't already.
+// When the bans are at capacity the oldest one makes room; it is returned
+// for the caller to remove from the kernel.
+func claimBan(ip string, expires time.Time) (bool, []string) {
 	fw.Lock()
 	defer fw.Unlock()
-	if fw.bans[ip] {
-		return false
+	if _, ok := fw.bans[ip]; ok {
+		return false, nil
 	}
-	fw.bans[ip] = true
-	return true
+	out := fw.makeRoomLocked(1, nil)
+	fw.bans[ip] = banEntry{added: banNow(), expires: expires}
+	return true, out
 }
 
 func applyBan(parsed net.IP, ip string) error {
+	if Disabled() {
+		return nil // recorded, applied when protection is back
+	}
 	if HasIpset() {
 		return ipsetAdd(banSetName, ip)
 	}
@@ -294,8 +328,15 @@ func UnbanIP(ip string) error {
 		return fmt.Errorf("invalid IP address: %s", ip)
 	}
 	fw.Lock()
+	_, had := fw.bans[parsed.String()]
 	delete(fw.bans, parsed.String())
 	fw.Unlock()
+	if had {
+		bansChanged()
+	}
+	if Disabled() {
+		return nil
+	}
 
 	if HasIpset() {
 		return ipsetDel(banSetName, ip)
@@ -313,24 +354,79 @@ func IsBanned(ip string) bool {
 	}
 	fw.Lock()
 	defer fw.Unlock()
-	return fw.bans[parsed.String()]
+	_, ok := fw.bans[parsed.String()]
+	return ok
 }
 
 var legacyBansMigrated sync.Once
 
-// ApplyBans applies the ban list from the server sync.
-func ApplyBans(ips []string) {
+// ApplyBans applies the ban list from the server sync, with the dashboard's
+// expiry for each ban (it replaces the agent's own). Past the capacity the
+// list is cut (the first ones are kept) and the oldest other bans make room
+// for the new ones.
+func ApplyBans(bans []Ban) {
 	var safe []string
-	for _, ip := range ips {
-		if parsed := net.ParseIP(ip); parsed != nil && !isSafeIP(parsed) {
-			safe = append(safe, parsed.String())
+	expires := map[string]time.Time{}
+	for _, b := range bans {
+		parsed := net.ParseIP(b.IP)
+		if parsed == nil || isSafeIP(parsed) {
+			continue
+		}
+		ip := parsed.String()
+		if _, dup := expires[ip]; dup {
+			// The latest expiry of duplicate rows wins; zero is never.
+			if e := expires[ip]; !e.IsZero() && (b.Expires.IsZero() || b.Expires.After(e)) {
+				expires[ip] = b.Expires
+			}
+			continue
+		}
+		if !enforceable(parsed) {
+			continue
+		}
+		expires[ip] = b.Expires
+		safe = append(safe, ip)
+	}
+	c := banCap()
+	if len(safe) > c {
+		log.Printf("[firewall] WARNING: the dashboard sent %d bans, more than this server holds (%d): %d not applied", len(safe), c, len(safe)-c)
+		for _, ip := range safe[c:] {
+			delete(expires, ip)
+		}
+		safe = safe[:c]
+	}
+	now := banNow()
+	fw.Lock()
+	fresh := 0
+	for _, ip := range safe {
+		if _, ok := fw.bans[ip]; !ok {
+			fresh++
 		}
 	}
-	fw.Lock()
+	keep := make(map[string]bool, len(safe))
 	for _, ip := range safe {
-		fw.bans[ip] = true
+		keep[ip] = true
+	}
+	out := fw.makeRoomLocked(fresh, keep)
+	changed := len(out) > 0
+	for _, ip := range safe {
+		b, ok := fw.bans[ip]
+		if !ok {
+			b.added = now
+		}
+		if !ok || !b.expires.Equal(expires[ip]) {
+			changed = true
+		}
+		b.expires = expires[ip]
+		fw.bans[ip] = b
 	}
 	fw.Unlock()
+	evicted(out)
+	if changed {
+		bansChanged()
+	}
+	if Disabled() {
+		return
+	}
 
 	if HasIpset() {
 		if err := ipsetBatchAdd(banSetName, safe); err != nil {
@@ -359,8 +455,14 @@ func CleanupStaleBans(activeBanIPs map[string]bool, activeRuleIPs map[string]boo
 		delete(fw.bans, ip)
 	}
 	fw.Unlock()
+	if len(stale) > 0 {
+		bansChanged()
+	}
 
 	removed := 0
+	if Disabled() {
+		return 0
+	}
 	if HasIpset() {
 		// Also drop set members the agent no longer knows about (e.g. from
 		// before a restart).

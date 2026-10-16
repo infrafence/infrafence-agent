@@ -135,6 +135,25 @@ func ipsetBatchAdd(setName string, ips []string) error {
 	return nil
 }
 
+// ipsetBatchDel removes multiple IPs from an ipset in one `ipset restore`.
+func ipsetBatchDel(setName string, ips []string) error {
+	if len(ips) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	for _, ip := range ips {
+		fmt.Fprintf(&b, "del %s %s -exist\n", setName, ip)
+	}
+	cmd := exec.Command("ipset", "restore")
+	cmd.Stdin = strings.NewReader(b.String())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ipset batch del from %s (%d IPs): %s (%w)",
+			setName, len(ips), strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
 // ipsetListMembers returns all IPs in an ipset set.
 func ipsetListMembers(setName string) []string {
 	out, err := exec.Command("ipset", "list", setName).CombinedOutput()

@@ -2,10 +2,12 @@ package ws
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -13,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/infrafence/infrafence-agent/internal/backoff"
 )
 
 // Pusher protocol message structure.
@@ -33,9 +37,9 @@ type BanCreatedPayload struct {
 
 // BanRemovedPayload matches the broadcastWith() from BanRemoved event.
 type BanRemovedPayload struct {
-	ID        int64   `json:"id"`
-	IPAddress string  `json:"ip_address"`
-	AgentID   *int64  `json:"agent_id"`
+	ID        int64  `json:"id"`
+	IPAddress string `json:"ip_address"`
+	AgentID   *int64 `json:"agent_id"`
 }
 
 // RuleCreatedPayload matches the broadcastWith() from RuleCreated event.
@@ -94,18 +98,18 @@ type YaraInstallRequestedPayload struct {
 
 // Handlers called when events are received from the server.
 type Handlers struct {
-	OnBanCreated              func(BanCreatedPayload)
-	OnBanRemoved              func(BanRemovedPayload)
-	OnRuleCreated             func(RuleCreatedPayload)
-	OnRuleRemoved             func(RuleRemovedPayload)
-	OnScanRequested           func(ScanRequestedPayload)
-	OnImportRequested         func(ImportRequestedPayload)
-	OnAuditRequested          func(AuditRequestedPayload)
-	OnSyncRequested           func(SyncRequestedPayload)
-	OnUpdateRequested         func(UpdateRequestedPayload)
-	OnMalwareScanRequested    func(MalwareScanRequestedPayload)
-	OnMalwareScanCancelled    func()
-	OnYaraInstallRequested    func(YaraInstallRequestedPayload)
+	OnBanCreated           func(BanCreatedPayload)
+	OnBanRemoved           func(BanRemovedPayload)
+	OnRuleCreated          func(RuleCreatedPayload)
+	OnRuleRemoved          func(RuleRemovedPayload)
+	OnScanRequested        func(ScanRequestedPayload)
+	OnImportRequested      func(ImportRequestedPayload)
+	OnAuditRequested       func(AuditRequestedPayload)
+	OnSyncRequested        func(SyncRequestedPayload)
+	OnUpdateRequested      func(UpdateRequestedPayload)
+	OnMalwareScanRequested func(MalwareScanRequestedPayload)
+	OnMalwareScanCancelled func()
+	OnYaraInstallRequested func(YaraInstallRequestedPayload)
 }
 
 // Client manages the WebSocket connection to Reverb.
@@ -119,6 +123,32 @@ type Client struct {
 
 	mu   sync.Mutex
 	conn *websocket.Conn
+
+	// gate, if set, is the API client's refusal backoff: no connection is
+	// made while it runs. It is only read: a 401/403 of the channel auth
+	// endpoint (a route of its own, which may refuse for its own reasons)
+	// backs off the websocket alone. Set before Run.
+	gate Gate
+	// authOK: the last channel auth succeeded (set by getAuth, read by Run).
+	authOK bool
+}
+
+// Gate is the refusal backoff (internal/backoff.Gate).
+type Gate interface {
+	Wait() time.Duration
+}
+
+// SetGate makes the client wait on the dashboard's refusal backoff.
+func (c *Client) SetGate(g Gate) { c.gate = g }
+
+// refusedError is a 401 or 403 from the channel auth endpoint.
+type refusedError struct {
+	code int
+	body string
+}
+
+func (e *refusedError) Error() string {
+	return fmt.Sprintf("auth returned %d: %s", e.code, e.body)
 }
 
 func New(reverbURL, appKey, authEndpoint, agentToken string, agentID int64, h Handlers) *Client {
@@ -135,9 +165,36 @@ func New(reverbURL, appKey, authEndpoint, agentToken string, agentID int64, h Ha
 // Run connects and reconnects with exponential backoff. Blocks indefinitely.
 func (c *Client) Run() {
 	attempt := 0
+	refusals := 0
 
 	for {
-		if err := c.connect(); err != nil {
+		// The dashboard refused the agent: wait for the shared backoff
+		// (logged once by the gate) instead of reconnecting every 30 s.
+		if c.gate != nil {
+			if wait := c.gate.Wait(); wait > 0 {
+				time.Sleep(wait)
+				continue
+			}
+		}
+		err := c.connect()
+		// The channel auth succeeded during that connection: the refusal
+		// backoff starts again from 1 minute (getAuth runs in this goroutine).
+		if c.authOK {
+			refusals, c.authOK = 0, false
+		}
+		if err != nil {
+			var refused *refusedError
+			if errors.As(err, &refused) {
+				// 1 minute doubling up to 30, like the API's refusals.
+				refusals++
+				wait := backoff.Delay(refusals, rand.Float64())
+				if refusals == 1 {
+					log.Printf("[ws] channel auth refused (%v) — retrying in %s, backing off up to %s", err, wait.Round(time.Second), backoff.Max)
+				}
+				attempt = 0
+				time.Sleep(wait)
+				continue
+			}
 			wait := time.Duration(math.Min(float64(30*time.Second), float64(time.Second)*math.Pow(2, float64(attempt))))
 			log.Printf("[ws] disconnected (%v) — reconnecting in %s", err, wait)
 			time.Sleep(wait)
@@ -275,10 +332,14 @@ func (c *Client) getAuth(socketID, channelName string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return "", &refusedError{code: resp.StatusCode, body: string(b)}
+		}
 		return "", fmt.Errorf("auth returned %d: %s", resp.StatusCode, string(b))
 	}
 
+	c.authOK = true
 	var result struct {
 		Auth string `json:"auth"`
 	}

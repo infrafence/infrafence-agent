@@ -41,6 +41,9 @@ func NewGeoBlocker(provider CIDRProvider, panelURL string) *GeoBlocker {
 
 // ApplyCountryBlocks synchronizes the ipset country blocks with the desired list.
 func (g *GeoBlocker) ApplyCountryBlocks(countries []string) {
+	if Disabled() {
+		return // protection is off; re-applied by the first sync after Enable
+	}
 	if !HasIpset() {
 		if len(countries) > 0 {
 			log.Printf("[geoblock] WARNING: %d countries configured for blocking but ipset is not installed — country blocks NOT applied at kernel level (falling back to reactive per-IP blocking)", len(countries))
