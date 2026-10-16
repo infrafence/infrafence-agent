@@ -13,6 +13,13 @@ the tables below, or if a field marked "always" is missing from an output. After
 The test runs in a temporary directory: its prefix is removed from the paths in the examples, which show
 them as on a server (`/home/alice/public_html`).
 
+## Where it runs
+
+The agent opens the panel socket (`/run/infrafence/panel.sock`) only on servers with **cPanel/WHM or Plesk**,
+or when `/etc/infrafence/config.json` has `"panel": true`. On every other server nothing of the panel side runs.
+There, commands answer as if the agent were not running: `agent_running: false`, and `agent_not_running` for
+the commands that need the agent.
+
 ## Rules for every reply
 
 - stdout carries exactly one JSON object followed by a newline. Nothing else is printed on stdout or

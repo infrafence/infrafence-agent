@@ -83,7 +83,9 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	resetPanelState()
 	webRootsCache.roots = nil
 	sitesCache.sites = nil
+	panelOn.Store(true)
 	t.Cleanup(func() {
+		panelOn.Store(false)
 		panelStatePath = saved[0].(string)
 		panelNow = saved[1].(func() time.Time)
 		panelIsBanned = saved[2].(func(string) bool)
@@ -736,5 +738,64 @@ func TestPanelUnbanPermanentBanCappedAt30Days(t *testing.T) {
 	f.now = f.now.Add(2 * 24 * time.Hour)
 	if got := syncWith(bans); len(got) != 1 {
 		t.Errorf("day 31: %v", got)
+	}
+}
+
+func TestPanelEnabledOnlyOnCPanelPleskOrByConfig(t *testing.T) {
+	for _, c := range []struct {
+		panel string
+		flag  bool
+		want  bool
+	}{
+		{"cpanel", false, true}, {"plesk", false, true}, {"", false, false},
+		{"directadmin", false, false}, {"hestiacp", false, false}, {"", true, true}, {"directadmin", true, true},
+	} {
+		if got := panelEnabledFor(c.panel, c.flag); got != c.want {
+			t.Errorf("panelEnabledFor(%q, %v) = %v", c.panel, c.flag, got)
+		}
+	}
+}
+
+// On a host without cPanel/WHM or Plesk (and no "panel": true) nothing of
+// the panel side runs: no state loaded, nothing copied, kept or filtered,
+// even with a state file left on disk.
+func TestPanelOffElsewhere(t *testing.T) {
+	withFakePanel(t)
+	bans := []api.Ban{{ID: 1, IPAddress: "203.0.113.7"}}
+	panelState.p = panelPersisted{
+		Lifted:  []liftedBan{{IP: "203.0.113.7", IDs: []int64{1}, Until: time.Now().Add(time.Hour).Unix()}},
+		Allowed: []panelAllowEntry{{IP: "198.51.100.4"}},
+	}
+	savePanelStateLocked()
+	resetPanelState()
+	panelOn.Store(false)
+	panelReportFn = nil
+
+	if panelEnable("", false, func([]api.EventRequest) error { return nil }) {
+		t.Fatal("enabled on a host without a panel")
+	}
+	if panelOn.Load() || panelReportFn != nil || len(panelState.p.Lifted) != 0 {
+		t.Fatalf("state loaded: on=%v lifted=%v", panelOn.Load(), panelState.p.Lifted)
+	}
+	// Even with state in memory, every hook is a no-op.
+	panelState.p.Lifted = []liftedBan{{IP: "203.0.113.7", IDs: []int64{1}, Until: time.Now().Add(time.Hour).Unix()}}
+	panelState.p.Allowed = []panelAllowEntry{{IP: "198.51.100.4"}}
+	if got := panelFilterBans(bans); len(got) != 1 {
+		t.Errorf("bans filtered: %v", got)
+	}
+	if panelAllowedIPs() != nil || panelAllowed("198.51.100.4") || panelOutboxLen() != 0 {
+		t.Error("allow list or outbox used")
+	}
+	panelNoteSync(&api.SyncResponse{Bans: bans})
+	panelNoteEvent(api.EventRequest{Type: "ssh_brute_force", Severity: "warning"})
+	panelNoteLocalBan("203.0.113.8", "x")
+	panelNoteScanFindings([]malware.Finding{{FilePath: "/home/a/x.php", Severity: "high"}})
+	if !panelState.view.at.IsZero() || len(panelState.events) != 0 || len(panelState.banInfo) != 0 || len(panelState.findings) != 0 {
+		t.Errorf("copied while off: view=%v events=%d banInfo=%d findings=%d",
+			panelState.view.at, len(panelState.events), len(panelState.banInfo), len(panelState.findings))
+	}
+	// cPanel/WHM or Plesk: on, with the saved state.
+	if !panelEnable("plesk", false, func([]api.EventRequest) error { return nil }) || !panelOn.Load() || len(panelState.p.Lifted) != 1 {
+		t.Errorf("not enabled on Plesk: on=%v lifted=%v", panelOn.Load(), panelState.p.Lifted)
 	}
 }

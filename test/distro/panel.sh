@@ -1,5 +1,7 @@
 # Sourced by inside.sh: the commands the WHM and Plesk plugins run
-# ("infrafence-agent panel <command> --json", internal/panel). Checks the
+# ("infrafence-agent panel <command> --json", internal/panel). Checks that
+# nothing of it runs on a host without cPanel/WHM or Plesk, then turns it on
+# with "panel": true in the config and checks the
 # socket (root only, 0600 in a 0700 directory), every read command, that an
 # unban from the panel is reported with the panel user and is not reapplied
 # by the next sync or after a restart, allow/disallow, input validation and
@@ -22,8 +24,17 @@ wait_sync() {
   return 1
 }
 
-# ── socket ──
+# ── off by default: no cPanel/WHM or Plesk in these containers ──
 sock=/run/infrafence/panel.sock
+[ -e "$sock" ] && pf default_off "socket present without a hosting panel"
+out=$(pcmd bans); grep -q '"error":"agent_not_running"' <<<"$out" || pf default_off_reply "$out"
+# "panel": true in the config turns it on.
+sed -i '$ s/^}$/  ,"panel": true\n}/' /etc/infrafence/config.json
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+sleep 3
+
+# ── socket ──
 [ -S "$sock" ] || pf socket "missing"
 [ "$(stat -c '%a %U' "$sock" 2>/dev/null)" = "600 root" ] || pf socket_mode "$(stat -c '%a %U' "$sock" 2>&1)"
 [ "$(stat -c '%a' /run/infrafence 2>/dev/null)" = 700 ] || pf socket_dir "$(stat -c '%a' /run/infrafence 2>&1)"

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -37,6 +38,29 @@ import (
 // The last sync, recent events and recent findings are kept in memory only.
 
 var panelStatePath = "/var/lib/infrafence/panel-state.json"
+
+// panelOn: the panel side runs on this host (panelEnable). Off, every hook
+// above returns at once: nothing is copied, kept or filtered.
+var panelOn atomic.Bool
+
+// panelEnabledFor: the WHM and Plesk plugins exist for cPanel/WHM and
+// Plesk; any other host needs "panel": true in the agent's config.
+func panelEnabledFor(panelID string, configFlag bool) bool {
+	return panelID == "cpanel" || panelID == "plesk" || configFlag
+}
+
+// panelEnable turns the panel side on when panelEnabledFor allows it, and
+// loads its saved state. Call before the first sync; startPanelSocket
+// follows only when this returned true.
+func panelEnable(panelID string, configFlag bool, report func([]api.EventRequest) error) bool {
+	if !panelEnabledFor(panelID, configFlag) {
+		return false
+	}
+	panelOn.Store(true)
+	loadPanelState()
+	panelReportFn = report
+	return true
+}
 
 const (
 	liftMaxAge    = 30 * 24 * time.Hour
@@ -155,6 +179,9 @@ func savePanelStateLocked() error {
 // panelFilterBans records the sync and returns its bans without the ones
 // lifted from the panel, dropping lifts the dashboard has caught up with.
 func panelFilterBans(bans []api.Ban) []api.Ban {
+	if !panelOn.Load() {
+		return bans
+	}
 	panelState.Lock()
 	defer panelState.Unlock()
 	if len(panelState.p.Lifted) == 0 {
@@ -220,6 +247,9 @@ func panelFilterBans(bans []api.Ban) []api.Ban {
 
 // panelNoteSync keeps what the read commands need from a sync.
 func panelNoteSync(s *api.SyncResponse) {
+	if !panelOn.Load() {
+		return
+	}
 	v := panelSyncView{
 		at:          panelNow(),
 		bans:        append([]api.Ban(nil), s.Bans...),
@@ -246,6 +276,9 @@ func panelNoteSync(s *api.SyncResponse) {
 
 // panelAllowedIPs returns the addresses allowed from the panel.
 func panelAllowedIPs() []string {
+	if !panelOn.Load() {
+		return nil
+	}
 	panelState.Lock()
 	defer panelState.Unlock()
 	out := make([]string, 0, len(panelState.p.Allowed))
@@ -256,6 +289,9 @@ func panelAllowedIPs() []string {
 }
 
 func panelAllowed(ip string) bool {
+	if !panelOn.Load() {
+		return false
+	}
 	panelState.Lock()
 	defer panelState.Unlock()
 	return slices.ContainsFunc(panelState.p.Allowed, func(a panelAllowEntry) bool { return a.IP == ip })
@@ -264,6 +300,9 @@ func panelAllowed(ip string) bool {
 // panelNoteLocalBan remembers why the agent banned ip itself, and forgets a
 // panel lift of it: the address was detected again after the lift.
 func panelNoteLocalBan(ip, reason string) {
+	if !panelOn.Load() {
+		return
+	}
 	panelState.Lock()
 	defer panelState.Unlock()
 	if len(panelState.banInfo) < maxBanInfo {
@@ -281,6 +320,9 @@ func panelNoteLocalBan(ip, reason string) {
 // panelNoteEvent keeps recent events, and the findings among them, for the
 // events and findings commands. Progress events are left out.
 func panelNoteEvent(e api.EventRequest) {
+	if !panelOn.Load() {
+		return
+	}
 	if strings.HasSuffix(e.Type, "_progress") {
 		return
 	}
@@ -313,6 +355,9 @@ func panelNoteEvent(e api.EventRequest) {
 
 // panelNoteScanFindings adds the findings of a malware scan.
 func panelNoteScanFindings(fs []malware.Finding) {
+	if !panelOn.Load() {
+		return
+	}
 	at := panelNow().UTC().Format(time.RFC3339)
 	panelState.Lock()
 	defer panelState.Unlock()
@@ -393,6 +438,9 @@ func panelReport(events []api.EventRequest) bool {
 // the dashboard is reachable again). Skipped while a panel command is
 // sending: it flushes the outbox itself.
 func panelFlushOutbox() {
+	if !panelOn.Load() {
+		return
+	}
 	if !outboxMu.TryLock() {
 		return
 	}
@@ -435,6 +483,9 @@ func flushOutboxLocked() {
 }
 
 func panelOutboxLen() int {
+	if !panelOn.Load() {
+		return 0
+	}
 	panelState.Lock()
 	defer panelState.Unlock()
 	return len(panelState.p.Outbox)

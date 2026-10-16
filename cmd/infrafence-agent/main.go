@@ -232,9 +232,9 @@ func runAgent() {
 
 	// Read-only host scan first: decides what the agent may change here.
 	startupPreflight(apiClient)
-	// Bans lifted and addresses allowed from a hosting panel (panel.go).
-	loadPanelState()
-	panelReportFn = apiClient.ReportEvents
+	// The WHM and Plesk plugins (panel.go): only on cPanel/WHM or Plesk, or
+	// with "panel": true in the config. On any other host none of it runs.
+	panelEnabled := panelEnable(preflight.DetectPanel().ID, cfg.Panel, apiClient.ReportEvents)
 	go runDailyAudits(currentAPIClient.Load)
 
 	// Ports closed and egress blocked before the restart, re-checked, so the
@@ -675,7 +675,9 @@ func runAgent() {
 		// Addresses flagged as threats and SSH login addresses (fwstate.go).
 		noteEgressEvent(e)
 		// Recent events and findings for the panel plugins (panel.go).
-		panelNoteEvent(e)
+		if panelEnabled {
+			panelNoteEvent(e)
+		}
 	})
 
 	// Every sync goes through one runner: never two at once, and bursts of
@@ -691,7 +693,10 @@ func runAgent() {
 	_ = syncs.Now("initial")
 
 	// Local socket for the WHM and Plesk plugins (panel.go).
-	closePanel := startPanelSocket(apiClient, cfg, cpID, syncs.Request)
+	closePanel := func() {}
+	if panelEnabled {
+		closePanel = startPanelSocket(apiClient, cfg, cpID, syncs.Request)
+	}
 
 	intel.SetVersion(version)
 	go runIntelUpdater(webW)
