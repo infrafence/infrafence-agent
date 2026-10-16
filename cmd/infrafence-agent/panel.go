@@ -227,15 +227,21 @@ var sitesCache struct {
 }
 
 // cachedSites: on Plesk listing the sites queries its database; panels may
-// ask often.
+// ask often. The detection runs outside the lock (it can take seconds), so
+// a slow one never holds up the other requests.
 func cachedSites(panelID string) []preflight.Site {
 	sitesCache.Lock()
-	defer sitesCache.Unlock()
-	if sitesCache.sites == nil || sitesCache.panel != panelID || panelNow().Sub(sitesCache.at) > time.Minute {
-		sitesCache.sites = panelDetectSites(panelID)
-		sitesCache.panel, sitesCache.at = panelID, panelNow()
+	if sitesCache.sites != nil && sitesCache.panel == panelID && panelNow().Sub(sitesCache.at) <= time.Minute {
+		sites := sitesCache.sites
+		sitesCache.Unlock()
+		return sites
 	}
-	return sitesCache.sites
+	sitesCache.Unlock()
+	sites := panelDetectSites(panelID)
+	sitesCache.Lock()
+	sitesCache.sites, sitesCache.panel, sitesCache.at = sites, panelID, panelNow()
+	sitesCache.Unlock()
+	return sites
 }
 
 // orNull: every documented key is always present (docs/panel-json.md); an
@@ -713,15 +719,20 @@ var webRootsCache struct {
 }
 
 // cachedWebRoots: web root detection walks the disk and logs; panels may
-// ask often.
+// ask often. Detected outside the lock, like cachedSites.
 func cachedWebRoots() []malware.WebRoot {
 	webRootsCache.Lock()
-	defer webRootsCache.Unlock()
-	if webRootsCache.roots == nil || panelNow().Sub(webRootsCache.at) > 5*time.Minute {
-		webRootsCache.roots = panelDetectRoots()
-		webRootsCache.at = panelNow()
+	if webRootsCache.roots != nil && panelNow().Sub(webRootsCache.at) <= 5*time.Minute {
+		roots := webRootsCache.roots
+		webRootsCache.Unlock()
+		return roots
 	}
-	return webRootsCache.roots
+	webRootsCache.Unlock()
+	roots := panelDetectRoots()
+	webRootsCache.Lock()
+	webRootsCache.roots, webRootsCache.at = roots, panelNow()
+	webRootsCache.Unlock()
+	return roots
 }
 
 // panelScan queues a malware scan of one document root: a site's document

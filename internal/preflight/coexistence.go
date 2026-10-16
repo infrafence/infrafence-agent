@@ -70,12 +70,13 @@ func DetectCoexistence() Coexistence { return DetectCoexistenceEnv(hostEnv{}) }
 
 // DetectCoexistenceEnv inspects the host through env.
 func DetectCoexistenceEnv(env Env) Coexistence {
+	systemctl := firstExisting(env, systemctlPaths)
 	active := func(units ...string) bool {
-		if !env.LookPath("systemctl") {
+		if systemctl == "" {
 			return false
 		}
 		for _, u := range units {
-			if out, _ := env.Run("systemctl", "is-active", u); strings.TrimSpace(out) == "active" {
+			if out, _ := env.Run(systemctl, "is-active", u); strings.TrimSpace(out) == "active" {
 				return true
 			}
 		}
@@ -136,8 +137,8 @@ func DetectCoexistenceEnv(env Env) Coexistence {
 	if active("firewalld") {
 		add(Tool{ID: "firewalld", Name: "firewalld", Kind: "firewall", Firewall: true, Active: true})
 	}
-	if active("ufw") {
-		if out, _ := env.Run("ufw", "status"); strings.Contains(out, "Status: active") {
+	if ufw := firstExisting(env, ufwPaths); ufw != "" && active("ufw") {
+		if out, _ := env.Run(ufw, "status"); strings.Contains(out, "Status: active") {
 			add(Tool{ID: "ufw", Name: "ufw", Kind: "firewall", Firewall: true, Active: true})
 		}
 	}
@@ -242,6 +243,24 @@ func csfValue(conf, key string) string {
 		k, v, ok := strings.Cut(l, "=")
 		if ok && strings.TrimSpace(k) == key {
 			return strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	return ""
+}
+
+// The panel command runs from WHM and Plesk: every binary it runs is named
+// by its absolute path, never looked up in the caller's PATH.
+var (
+	systemctlPaths = []string{"/usr/bin/systemctl", "/bin/systemctl"}
+	ufwPaths       = []string{"/usr/sbin/ufw", "/sbin/ufw"}
+	pleskPaths     = []string{"/usr/local/psa/bin/plesk", "/opt/psa/bin/plesk"}
+)
+
+// firstExisting returns the first of paths that exists, or "".
+func firstExisting(env Env, paths []string) string {
+	for _, p := range paths {
+		if env.Exists(p) {
+			return p
 		}
 	}
 	return ""

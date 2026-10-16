@@ -95,6 +95,7 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 	}
 	env := panelEnv{files: map[string]string{
 		"/usr/local/cpanel":                                "",
+		"/usr/bin/systemctl":                               "",
 		"/etc/csf/csf.conf":                                "TESTING = \"0\"\n",
 		"/etc/csf/version.txt":                             "14.20\n",
 		"/usr/sbin/lfd":                                    "",
@@ -112,9 +113,9 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 		"/var/cpanel/userdata/bob/main":                 "main_domain: bob.example\n",
 		"/var/cpanel/userdata/bob/bob.example":          "documentroot: " + bob + "\n",
 	}, runs: map[string]string{
-		"systemctl is-active csf":        "active",
-		"systemctl is-active lfd":        "active",
-		"systemctl is-active imunify360": "active",
+		"/usr/bin/systemctl is-active csf":        "active",
+		"/usr/bin/systemctl is-active lfd":        "active",
+		"/usr/bin/systemctl is-active imunify360": "active",
 	}}
 	panelCoexistence = func() preflight.Coexistence { return preflight.DetectCoexistenceEnv(env) }
 	panelDetectSites = func(id string) []preflight.Site { return preflight.DetectSitesEnv(env, id) }

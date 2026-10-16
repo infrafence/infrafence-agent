@@ -196,8 +196,12 @@ const pleskQuery = "SELECT d.name, h.www_root, IFNULL(s.login, '') FROM domains 
 // lists the sites with "plesk bin site --list" and the default document
 // root under /var/www/vhosts.
 func pleskSites(env Env) []Site {
+	plesk := firstExisting(env, pleskPaths)
+	if plesk == "" {
+		return nil
+	}
 	var sites []Site
-	if out, err := env.Run("plesk", "db", "-Ne", pleskQuery); err == nil {
+	if out, err := env.Run(plesk, "db", "-Ne", pleskQuery); err == nil {
 		for _, line := range strings.Split(out, "\n") {
 			f := strings.Split(line, "\t")
 			if len(f) != 3 || !validDomain(f[0]) {
@@ -216,7 +220,7 @@ func pleskSites(env Env) []Site {
 			return sites
 		}
 	}
-	out, err := env.Run("plesk", "bin", "site", "--list")
+	out, err := env.Run(plesk, "bin", "site", "--list")
 	if err != nil {
 		return nil
 	}

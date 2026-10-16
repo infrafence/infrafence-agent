@@ -53,7 +53,8 @@ sub_domains:
 
 func TestSitesPleskDatabase(t *testing.T) {
 	env := ubuntu()
-	env.runs["plesk db -Ne "+pleskQuery] = "example.com\t/var/www/vhosts/example.com/httpdocs\texuser\n" +
+	env.files["/usr/local/psa/bin/plesk"] = ""
+	env.runs["/usr/local/psa/bin/plesk db -Ne "+pleskQuery] = "example.com\t/var/www/vhosts/example.com/httpdocs\texuser\n" +
 		"shop.example.com\t/var/www/vhosts/example.com/shop\texuser\n" +
 		"other.org\t\t\n" +
 		"garbage line\n" +
@@ -72,7 +73,8 @@ func TestSitesPleskDatabase(t *testing.T) {
 
 func TestSitesPleskFallback(t *testing.T) {
 	env := ubuntu()
-	env.runs["plesk bin site --list"] = "example.com\nsecond.org\n"
+	env.files["/opt/psa/bin/plesk"] = ""
+	env.runs["/opt/psa/bin/plesk bin site --list"] = "example.com\nsecond.org\n"
 	env.files["/var/www/vhosts/example.com/httpdocs"] = ""
 	got := DetectSitesEnv(env, "plesk")
 	want := []Site{

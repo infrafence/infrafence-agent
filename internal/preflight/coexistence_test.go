@@ -14,6 +14,12 @@ func tool(c Coexistence, id string) *Tool {
 	return nil
 }
 
+// withSystemctl: the host has /usr/bin/systemctl.
+func withSystemctl(env fakeEnv) fakeEnv {
+	env.files["/usr/bin/systemctl"] = ""
+	return env
+}
+
 func TestCoexistencePlainHost(t *testing.T) {
 	c := DetectCoexistenceEnv(ubuntu())
 	if c.Mode != ModePrimary || len(c.Tools) != 0 || c.Tools == nil {
@@ -22,7 +28,7 @@ func TestCoexistencePlainHost(t *testing.T) {
 }
 
 func TestCoexistenceCPanelStack(t *testing.T) {
-	env := ubuntu()
+	env := withSystemctl(ubuntu())
 	env.files["/usr/local/cpanel"] = ""
 	env.files["/etc/csf/csf.conf"] = "TESTING = \"0\"\nTCP_IN = \"22,80,443\"\n"
 	env.files["/etc/csf/version.txt"] = "14.20\n"
@@ -33,8 +39,8 @@ func TestCoexistenceCPanelStack(t *testing.T) {
 	env.files["/etc/apache2/conf.d/modsec_vendor_configs/OWASP3"] = ""
 	env.files["/etc/apache2/conf.d/modsec_vendor_configs/imunify360-full-apache"] = ""
 	env.files["/var/cpanel/modsec_vendors/meta_comodo_apache.yaml"] = ""
-	env.runs["systemctl is-active lfd"] = "active"
-	env.runs["systemctl is-active imunify360"] = "active"
+	env.runs["/usr/bin/systemctl is-active lfd"] = "active"
+	env.runs["/usr/bin/systemctl is-active imunify360"] = "active"
 
 	c := DetectCoexistenceEnv(env)
 	if c.Mode != ModeCoexist {
@@ -65,16 +71,16 @@ func TestCoexistenceCPanelStack(t *testing.T) {
 }
 
 func TestCoexistencePleskStack(t *testing.T) {
-	env := ubuntu()
+	env := withSystemctl(ubuntu())
 	env.files["/usr/local/psa"] = ""
 	env.files["/usr/local/psa/var/modules/firewall"] = ""
 	env.files["/etc/apache2/modsecurity.d/rules/tortix"] = ""
 	env.files["/etc/fail2ban/jail.conf"] = ""
 	env.files["/opt/bitninja"] = ""
 	env.files["/etc/monarx-agent.conf"] = ""
-	env.runs["systemctl is-active fail2ban"] = "active"
-	env.runs["systemctl is-active psa-firewall"] = "active"
-	env.runs["systemctl is-active monarx-agent"] = "active"
+	env.runs["/usr/bin/systemctl is-active fail2ban"] = "active"
+	env.runs["/usr/bin/systemctl is-active psa-firewall"] = "active"
+	env.runs["/usr/bin/systemctl is-active monarx-agent"] = "active"
 
 	c := DetectCoexistenceEnv(env)
 	if c.Mode != ModeCoexist {
@@ -97,7 +103,7 @@ func TestCoexistencePleskStack(t *testing.T) {
 }
 
 func TestCoexistenceInactiveFirewallStaysPrimary(t *testing.T) {
-	env := ubuntu()
+	env := withSystemctl(ubuntu())
 	// Installed but not running, and CSF in testing mode: nothing manages
 	// the firewall besides InfraFence.
 	env.files["/etc/fail2ban/jail.conf"] = ""
@@ -112,7 +118,7 @@ func TestCoexistenceInactiveFirewallStaysPrimary(t *testing.T) {
 }
 
 func TestCoexistenceModSecurityWithoutVendors(t *testing.T) {
-	env := ubuntu()
+	env := withSystemctl(ubuntu())
 	env.files["/etc/modsecurity/modsecurity.conf"] = ""
 	c := DetectCoexistenceEnv(env)
 	ms := tool(c, "modsecurity")
