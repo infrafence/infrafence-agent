@@ -37,8 +37,16 @@ ssh_from() {
 }
 # reaches ADDR: sshd's banner arrives from that source address (not a
 # dropped connection).
+# (stdin stays open for curl's telnet mode, which stops at end of input
+# before the banner arrives); a refused login answer counts too.
+# Output is captured first: with pipefail a failing ssh or curl would fail
+# the pipe even when the answer is there.
 reaches() {
-  ip netns exec c3 curl -s --interface "$1" --connect-timeout 3 -m 4 telnet://198.51.100.1:22 </dev/null 2>/dev/null | grep -q '^SSH-'
+  local out
+  out=$({ sleep 3 | ip netns exec c3 curl -s --interface "$1" --connect-timeout 3 -m 3 telnet://198.51.100.1:22 2>/dev/null; } || true)
+  grep -q '^SSH-' <<<"$out" && return 0
+  out=$(ssh_from "$1" probe || true)
+  grep -qi 'permission denied' <<<"$out"
 }
 brute() { for i in $(seq 1 8); do ssh_from "$1" "nosuch$i" >/dev/null; done; }
 mock_bans() { curl -s "$API/state" | grep -o '"bans":\[[^]]*\]'; }
@@ -88,7 +96,10 @@ if [ $ready = yes ]; then
   done
   [ $ok = yes ] && R_PRESTORE=ok || { log "after the restart: bans $(banned $EXP_BAN && echo $EXP_BAN) $(banned $PERM_BAN && echo $PERM_BAN)"; journalctl -u infrafence-agent --no-pager | grep -iE 'protection|restor' | tail -6; }
   if ipset_mode; then
-    if ! reaches $GEO && reaches $WL; then R_GEO=ok; else log "geo: $GEO reaches=$(reaches $GEO && echo yes) $WL reaches=$(reaches $WL && echo yes)"; fi
+    if ! reaches $GEO && reaches $WL; then R_GEO=ok; else
+      log "geo: $GEO reaches=$(reaches $GEO && echo yes) $WL reaches=$(reaches $WL && echo yes) ($WL: $(ssh_from $WL probe | tail -1))"
+      iptables -S INFRAFENCE; ipset list infrafence-allow 2>/dev/null | tail -3
+    fi
   else
     R_GEO=skip # country blocks need ipset
   fi

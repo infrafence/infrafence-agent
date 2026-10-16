@@ -12,9 +12,18 @@ API=http://127.0.0.1:8080
 DROPIN=/etc/systemd/system/infrafence-agent.service.d/test-refusal.conf
 MOTD=/etc/motd.d/infrafence
 
+agent_log() { journalctl -u infrafence-agent --no-pager --since "@$t0" 2>/dev/null; }
+# wait_log PATTERN: up to 60 s for the agent to log it (the chains go first,
+# the SSH check and the notice follow).
+# (Outputs are captured before grep -q: with pipefail, grep stopping at the
+# first match makes the writer fail with SIGPIPE and the pipe with it.)
+wait_log() { for _ in $(seq 1 60); do grep -q "$1" <<<"$(agent_log)" && return 0; sleep 1; done; return 1; }
 ours_left() {
-  { iptables -S 2>/dev/null; ip6tables -S 2>/dev/null; } | grep -q INFRAFENCE && return 0
-  ipset list -n 2>/dev/null | grep -q '^infrafence-' && return 0
+  local rules sets
+  rules=$({ iptables -S; ip6tables -S; } 2>/dev/null || true)
+  sets=$(ipset list -n 2>/dev/null || true)
+  grep -q INFRAFENCE <<<"$rules" && return 0
+  grep -q '^infrafence-' <<<"$sets" && return 0
   return 1
 }
 others_intact() {
@@ -52,19 +61,21 @@ if timeout 3 bash -c '</dev/tcp/127.0.0.1/22' 2>/dev/null && ip netns exec cl ti
 else
   log "SSH not reachable after the switch-off"
 fi
-journalctl -u infrafence-agent --no-pager | grep -q 'SSH still answers' || { log "no SSH check logged"; R_SSHOFF=fail; }
+wait_log 'SSH still answers' || { log "no SSH check logged"; R_SSHOFF=fail; }
+wait_log 'WARNING: InfraFence no longer protects this server' || log "notice not logged"
 if [ $expect_motd = yes ]; then
   grep -q 'https://infrafence.com/billing' $MOTD 2>/dev/null && R_MOTD=ok || log "no login notice in $MOTD"
 else
   [ ! -e $MOTD ] && R_MOTD=ok || log "notice written on a host without motd.d"
 fi
-journalctl -u infrafence-agent --no-pager | grep -q 'WARNING: InfraFence no longer protects this server' || { log "notice not logged"; R_MOTD=fail; }
+grep -q 'WARNING: InfraFence no longer protects this server' <<<"$(agent_log)" || R_MOTD=fail
 st=$(/usr/local/bin/infrafence-agent panel status --json 2>/dev/null)
 grep -q '"protection":"disabled"' <<<"$st" && grep -q '"disabled_at":"20' <<<"$st" || { log "panel status: $st"; R_OFF=fail; }
 
 # ── accepted again (a restart skips the 30-minute idle wait) ──
 curl -s "$API/deny?mode=off" >/dev/null
 systemctl restart infrafence-agent
+wait_log 'protection is back on' || log "no 'back on' log"
 for _ in $(seq 1 60); do
   iptables -S INPUT 2>/dev/null | grep -q -- '-j INFRAFENCE' && [ ! -e $MOTD ] && break
   sleep 1
@@ -76,7 +87,7 @@ else
   log "after acceptance: chain=$(iptables -S INFRAFENCE >/dev/null 2>&1 && echo yes) motd=$( [ -e $MOTD ] && echo left)"
   journalctl -u infrafence-agent --no-pager | grep -iE 'protection' | tail -5
 fi
-journalctl -u infrafence-agent --no-pager | grep -q 'protection is back on' || { log "no 'back on' log"; R_BACK=fail; }
+grep -q 'protection is back on' <<<"$(agent_log)" || R_BACK=fail
 
 # ── back to the plain state ──
 rm -f $DROPIN && systemctl daemon-reload && systemctl restart infrafence-agent
