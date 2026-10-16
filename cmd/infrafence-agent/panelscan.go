@@ -154,9 +154,10 @@ func panelScan(path, actor string) panel.Response {
 		return panel.Fail(panel.ErrScanRunning, "a malware scan is already running")
 	}
 	log.Printf("[panel] malware scan of %s (%s) by %s", root.path, site.Account, actor)
+	start := panelStartScan
 	go func() {
 		defer root.Close()
-		panelStartScan(malware.StrictWebRootAt(root.path, root.domain), root.verify)
+		start(malware.StrictWebRootAt(root.path, root.domain), root.verify)
 	}()
 	reported := panelReport([]api.EventRequest{panelEventFor("panel_scan", actor, map[string]string{
 		"path": root.path, "domain": root.domain, "account": site.Account,

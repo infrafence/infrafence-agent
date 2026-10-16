@@ -49,8 +49,8 @@ type Server struct {
 	sem    chan struct{}
 	// peerOK checks the connecting process (root only); replaced in tests.
 	peerOK func(net.Conn) error
-	// Copied from readTimeout and writeTimeout by Listen.
-	readTimeout, writeTimeout time.Duration
+	// Copied from readTimeout, writeTimeout and closeWait by Listen.
+	readTimeout, writeTimeout, closeWait time.Duration
 }
 
 // Listen creates the socket at path: its directory is created 0700 (an
@@ -100,7 +100,7 @@ func Listen(path string) (*Server, error) {
 	// The socket file is removed by Close, not by the listener.
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	return &Server{path: path, ln: ln, sem: make(chan struct{}, maxConns), peerOK: peerIsRoot,
-		readTimeout: readTimeout, writeTimeout: writeTimeout}, nil
+		readTimeout: readTimeout, writeTimeout: writeTimeout, closeWait: closeWait}, nil
 }
 
 // waitUnused waits up to bindRetry for nobody to answer on path (the
@@ -163,12 +163,16 @@ func (s *Server) handle(c net.Conn, h Handler) {
 		_ = c.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 		writeResponse(c, r)
 	}
-	if err := s.peerOK(c); err != nil {
-		log.Printf("[panel] refused connection: %v", err)
+	peerErr := s.peerOK(c)
+	// The request line is read (bounded) before any answer, even to a
+	// refused peer: closing with unread data resets the connection, and the
+	// client would lose the answer. It is decoded only for root.
+	line, err := bufio.NewReader(io.LimitReader(c, maxRequest+1)).ReadBytes('\n')
+	if peerErr != nil {
+		log.Printf("[panel] refused connection: %v", peerErr)
 		reply(Fail(ErrBadRequest, "only root may use the panel socket"))
 		return
 	}
-	line, err := bufio.NewReader(io.LimitReader(c, maxRequest+1)).ReadBytes('\n')
 	if len(line) > maxRequest {
 		reply(Fail(ErrBadRequest, "request too large"))
 		return
@@ -224,7 +228,7 @@ func (s *Server) Close() error {
 	go func() { s.wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(closeWait):
+	case <-time.After(s.closeWait):
 		log.Printf("[panel] shutting down with requests still in progress")
 	}
 	if rmErr := os.Remove(s.path); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
