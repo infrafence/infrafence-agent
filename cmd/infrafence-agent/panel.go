@@ -47,7 +47,7 @@ var (
 	panelCoexistence   = preflight.DetectCoexistence
 	panelDetectRoots   = func() []malware.WebRoot { return malware.DetectWebRoots(malwareCustomPaths) }
 	panelClaimScan     = func() bool { return malwareScanRunning.CompareAndSwap(false, true) }
-	panelStartScan     = func(malware.WebRoot) {}
+	panelStartScan     = func(malware.WebRoot, func() error) {}
 	panelEuid          = os.Geteuid
 	panelDetectPanelID = func() string { return preflight.DetectPanel().ID }
 )
@@ -151,8 +151,12 @@ func startPanelSocket(client *api.Client, cfg *config.Config, panelID string, re
 	panelInfo.agentID, panelInfo.serverURL, panelInfo.panelID = cfg.AgentID, cfg.ServerURL, panelID
 	panelRequestSync = requestSync
 	// The scan slot is already claimed by panelScan.
-	panelStartScan = func(root malware.WebRoot) {
+	panelStartScan = func(root malware.WebRoot, verify func() error) {
 		defer malwareScanRunning.Store(false)
+		if err := verify(); err != nil {
+			log.Printf("[panel] malware scan of %s not started: %v", root.Path, err)
+			return
+		}
 		malwareScan(client, "medium", []malware.WebRoot{root})
 	}
 	srv, err := panel.Listen(panelSocketPath)
@@ -696,6 +700,8 @@ type panelSite struct {
 	Kind         string `json:"kind"`
 	DocumentRoot any    `json:"document_root"`
 	Covered      bool   `json:"scan_covered"`
+	// Scannable: "scan" accepts this document root (panelscan.go).
+	Scannable bool `json:"scannable"`
 }
 
 // panelSitesAnswer lists the sites and whether the malware scan covers each
@@ -710,7 +716,7 @@ func panelSitesAnswer(panelID string, roots []malware.WebRoot, scanEnabled *bool
 	sites := cachedSites(panelID)
 	out := make([]panelSite, 0, len(sites))
 	for _, s := range sites {
-		ps := panelSite{Account: orNull(s.Account), Domain: s.Domain, Kind: s.Kind, DocumentRoot: orNull(s.DocumentRoot)}
+		ps := panelSite{Account: orNull(s.Account), Domain: s.Domain, Kind: s.Kind, DocumentRoot: orNull(s.DocumentRoot), Scannable: scannable(s)}
 		if s.DocumentRoot != "" {
 			if p, err := filepath.EvalSymlinks(s.DocumentRoot); err == nil && systemTree(p) == "" {
 				ps.Covered = slices.ContainsFunc(resolved, func(root string) bool { return within(p, root) })
@@ -750,47 +756,4 @@ func cachedWebRoots() []malware.WebRoot {
 	webRootsCache.roots, webRootsCache.at = roots, panelNow()
 	webRootsCache.Unlock()
 	return roots
-}
-
-// panelScan queues a malware scan of one document root: a site's document
-// root or a web root the scan already knows, nothing else.
-func panelScan(path, actor string) panel.Response {
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return panel.Fail(panel.ErrUnknownPath, "%s does not exist", path)
-	}
-	if st, err := os.Stat(target); err != nil || !st.IsDir() {
-		return panel.Fail(panel.ErrUnknownPath, "%s is not a directory", path)
-	}
-	domain, known := "", false
-	if reason := systemTree(target); reason != "" {
-		return panel.Fail(panel.ErrUnknownPath, "%s resolves to %s, %s", path, target, reason)
-	}
-	for _, s := range cachedSites(panelInfo.panelID) {
-		if s.DocumentRoot == "" {
-			continue
-		}
-		if p, err := filepath.EvalSymlinks(s.DocumentRoot); err == nil && p == target {
-			domain, known = s.Domain, true
-			break
-		}
-	}
-	if !known {
-		for _, r := range cachedWebRoots() {
-			if p, err := filepath.EvalSymlinks(r.Path); err == nil && p == target {
-				domain, known = r.Domain, true
-				break
-			}
-		}
-	}
-	if !known {
-		return panel.Fail(panel.ErrUnknownPath, "%s is not the document root of a site on this server", path)
-	}
-	if !panelClaimScan() {
-		return panel.Fail(panel.ErrScanRunning, "a malware scan is already running")
-	}
-	log.Printf("[panel] malware scan of %s by %s", target, actor)
-	go panelStartScan(malware.WebRootAt(target, domain))
-	reported := panelReport([]api.EventRequest{panelEventFor("panel_scan", actor, map[string]string{"path": target, "domain": domain})})
-	return panel.OK(map[string]any{"path": target, "queued": true, "reported": reported})
 }

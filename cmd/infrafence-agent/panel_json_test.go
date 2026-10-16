@@ -120,6 +120,7 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 	panelCoexistence = func() preflight.Coexistence { return preflight.DetectCoexistenceEnv(env) }
 	panelDetectSites = func(id string) []preflight.Site { return preflight.DetectSitesEnv(env, id) }
 	f.roots = []malware.WebRoot{{Path: filepath.Join(base, "home/alice")}}
+	f.homes["alice"], f.homes["bob"] = filepath.Join(base, "home/alice"), filepath.Join(base, "home/bob")
 
 	f.banned["203.0.113.7"] = true
 	panelNoteLocalBan("203.0.113.7", "SSH brute force (8 failed logins in 60s)")

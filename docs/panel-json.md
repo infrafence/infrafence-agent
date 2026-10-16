@@ -534,28 +534,32 @@ lists); also answers without a running agent. With no hosting panel, `sites` is 
       "document_root": "/home/alice/public_html",
       "domain": "alice.example",
       "kind": "main",
-      "scan_covered": true
+      "scan_covered": true,
+      "scannable": true
     },
     {
       "account": "alice",
       "document_root": "/home/alice/public_html",
       "domain": "alice.example.net",
       "kind": "parked",
-      "scan_covered": true
+      "scan_covered": true,
+      "scannable": true
     },
     {
       "account": "alice",
       "document_root": "/home/alice/public_html/blog",
       "domain": "blog.alice.example",
       "kind": "sub",
-      "scan_covered": true
+      "scan_covered": true,
+      "scannable": true
     },
     {
       "account": "bob",
       "document_root": "/home/bob/public_html",
       "domain": "bob.example",
       "kind": "main",
-      "scan_covered": false
+      "scan_covered": false,
+      "scannable": true
     }
   ]
 }
@@ -573,13 +577,21 @@ lists); also answers without a running agent. With no hosting panel, `sites` is 
 | `sites[].domain` | string | | yes | |
 | `sites[].kind` | string | cPanel: `main`, `addon`, `sub`, `parked`; Plesk and DirectAdmin: `site` | yes | |
 | `sites[].document_root` | string \| null | absolute path | yes | `null` when the panel doesn't say. |
-| `sites[].scan_covered` | boolean | | yes | The document root is inside a directory the malware scan covers. |
+| `sites[].scan_covered` | boolean | | yes | The document root is inside a directory the scheduled malware scan covers. |
+| `sites[].scannable` | boolean | | yes | `scan` accepts this document root: it belongs to the account (see `scan`). Show the scan action only when `true`. |
 
 ### `scan`
 
 `infrafence-agent panel scan <document root> --actor <panel user> --json`. Queues a malware scan of one
-site's document root (`sites[].document_root`), or of a web root the scanner already knows. Nothing else is
-accepted, and a document root that resolves (through symlinks) into a system directory is refused.
+site's document root (`sites[].document_root`; nothing else is accepted). The document root must belong to
+the site's account. After resolving symlinks it must sit inside the account's home directory (on Plesk, also
+inside `/var/www/vhosts/<domain>`), never be that directory itself or a system directory, and be owned by the
+account's uid. Otherwise the reply is `not_scannable` (`sites[].scannable` says so in advance). The directory
+is opened once and checked again just before the scan starts.
+
+The scan reads only the files under it, never through a symlink (symlinked files and directories are
+skipped; YARA runs with `-N`). It does not run the server-wide checks, and it doesn't change the server's
+security score.
 
 <!-- example:scan -->
 ```json
@@ -601,8 +613,8 @@ accepted, and a document root that resolves (through symlinks) into a system dir
 | `queued` | boolean | `true` | yes | The scan started in the background. Results arrive as `findings` and in the dashboard. |
 | `reported` | boolean | | yes | As for `unban`. |
 
-Errors: `not_a_document_root`, `scan_running` (one scan at a time per server), `invalid_path`,
-`invalid_actor`.
+Errors: `not_a_document_root`, `not_scannable`, `scan_running` (one scan at a time per server),
+`invalid_path`, `invalid_actor`.
 
 ## Errors
 
@@ -668,6 +680,7 @@ Error codes:
 | `not_banned` | `unban`: the address is not banned on this server (or was already lifted). |
 | `not_in_allowlist` | `disallow`: the address is not on the allow list. |
 | `managed_by_dashboard` | `disallow`: the entry belongs to the organization's allow list in the dashboard. |
-| `not_a_document_root` | `scan`: not a site's document root, missing, not a directory, or it resolves into a system directory. |
+| `not_a_document_root` | `scan`: missing, or not the document root of any site. |
+| `not_scannable` | `scan`: the site's document root doesn't belong to its account: outside its home, not owned by its uid, a system directory, or the site has no account. |
 | `scan_running` | `scan`: a malware scan is already running. |
 | `internal_error` | The agent did not answer in time, or could not save the change (nothing was changed). |

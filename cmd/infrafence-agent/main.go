@@ -2230,21 +2230,32 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 
 		// YARA scan for this root
 		if yaraScanner != nil && yaraScanner.IsAvailable() {
-			for _, f := range yaraScanner.ScanDirectory(root.Path, root.Domain) {
+			scanDir := yaraScanner.ScanDirectory
+			if root.Strict {
+				scanDir = yaraScanner.ScanDirectoryNoFollow
+			}
+			for _, f := range scanDir(root.Path, root.Domain) {
 				rootResult.Findings = append(rootResult.Findings, f)
 			}
 		}
 
-		// WordPress DB check for this root
-		for _, f := range malware.CheckWordPressDatabase(root) {
-			rootResult.Findings = append(rootResult.Findings, f)
+		// A strict scan (from the hosting panel) reads nothing but the files
+		// under the root: no database check, framework checks or inventory,
+		// which read configuration files the account could point anywhere.
+		var rootFwFindings []malware.FrameworkFinding
+		if !root.Strict {
+			// WordPress DB check for this root
+			for _, f := range malware.CheckWordPressDatabase(root) {
+				rootResult.Findings = append(rootResult.Findings, f)
+			}
+
+			// Framework checks for this root
+			rootFwFindings = malware.CheckFramework(root)
+			allFwFindings = append(allFwFindings, rootFwFindings...)
 		}
 
-		// Framework checks for this root
-		rootFwFindings := malware.CheckFramework(root)
-		allFwFindings = append(allFwFindings, rootFwFindings...)
-
-		// CMS plugin/theme/extension inventory
+		// CMS plugin/theme/extension inventory (a strict root has no
+		// framework detected, so none)
 		var inv *malware.WpInventory
 		if root.Framework.Name == "wordpress" {
 			inv = malware.ReadWpInventory(root.Path, root.Domain, root.Framework.Version)
@@ -2319,16 +2330,26 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 		}
 	}
 
-	// System-wide checks (not per-root)
-	procFindings := malware.CheckMaliciousProcesses()
-	allFindings = append(allFindings, procFindings...)
-	sysResult := malware.CheckSystemIntegrity()
-	allFindings = append(allFindings, sysResult.ModifiedBinaries...)
-	allFindings = append(allFindings, sysResult.RootkitIndicators...)
+	// System-wide checks (not per-root) and the server's security score:
+	// not for a scan of one document root from the panel, whose partial
+	// results must not replace the server's score.
+	var score *api.MalwareSecurityScore
+	if roots == nil {
+		procFindings := malware.CheckMaliciousProcesses()
+		allFindings = append(allFindings, procFindings...)
+		sysResult := malware.CheckSystemIntegrity()
+		allFindings = append(allFindings, sysResult.ModifiedBinaries...)
+		allFindings = append(allFindings, sysResult.RootkitIndicators...)
 
-	// Calculate final score
-	secScore := malware.CalculateScore(allFindings, allFwFindings)
-	log.Printf("[malware] security score: %d/100 (grade %s)", secScore.Score, secScore.Grade)
+		// Calculate final score
+		secScore := malware.CalculateScore(allFindings, allFwFindings)
+		log.Printf("[malware] security score: %d/100 (grade %s)", secScore.Score, secScore.Grade)
+		score = &api.MalwareSecurityScore{
+			Score: secScore.Score, Grade: secScore.Grade,
+			MalwareDeductions: secScore.MalwareDeductions, FrameworkDeductions: secScore.FrameworkDeductions,
+			CredentialDeductions: secScore.CredentialDeductions, IntegrityDeductions: secScore.IntegrityDeductions,
+		}
+	}
 
 	// Complete the scan. Always sent: it carries the security score, and the
 	// dashboard's chunk endpoint didn't return a scan id before 2026-09-27,
@@ -2337,11 +2358,7 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 	if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
 		ScanID:          scanID,
 		DurationSeconds: duration.Seconds(),
-		SecurityScore: &api.MalwareSecurityScore{
-			Score: secScore.Score, Grade: secScore.Grade,
-			MalwareDeductions: secScore.MalwareDeductions, FrameworkDeductions: secScore.FrameworkDeductions,
-			CredentialDeductions: secScore.CredentialDeductions, IntegrityDeductions: secScore.IntegrityDeductions,
-		},
+		SecurityScore:   score,
 	}); err != nil {
 		log.Printf("[malware] failed to complete scan: %v", err)
 	}

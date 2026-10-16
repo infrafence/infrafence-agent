@@ -32,6 +32,9 @@ type fakePanelHost struct {
 	scanning  bool
 	mu        sync.Mutex // scans start in the background
 	scanned   []malware.WebRoot
+	verifyErr []error
+	homes     map[string]string // account -> home
+	uids      map[string]int    // account -> uid (default: the test's)
 }
 
 func (f *fakePanelHost) scans() []malware.WebRoot {
@@ -45,7 +48,7 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	f := &fakePanelHost{now: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC), banned: map[string]bool{}}
 	saved := []any{panelStatePath, panelNow, panelIsBanned, panelUnbanIP, panelSetAllowList, panelIsAllowListed,
 		panelInThreatSet, panelRequestSync, panelReportFn, panelDetectSites, panelCoexistence, panelDetectRoots,
-		panelClaimScan, panelStartScan, panelEuid, panelDetectPanelID, panelSocketPath, panelInfo, panelSystemDirs}
+		panelClaimScan, panelStartScan, panelEuid, panelDetectPanelID, panelSocketPath, panelInfo, panelSystemDirs, panelLookupUser}
 	panelStatePath = filepath.Join(t.TempDir(), "panel-state.json")
 	panelNow = func() time.Time { return f.now }
 	panelIsBanned = func(ip string) bool { return f.banned[ip] }
@@ -69,7 +72,24 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	panelClaimScan = func() bool { return !f.scanning }
 	// Test directories live under /tmp on Linux.
 	panelSystemDirs = []string{"/etc", "/proc"}
-	panelStartScan = func(r malware.WebRoot) { f.mu.Lock(); f.scanned = append(f.scanned, r); f.mu.Unlock() }
+	panelStartScan = func(r malware.WebRoot, verify func() error) {
+		err := verify()
+		f.mu.Lock()
+		f.scanned = append(f.scanned, r)
+		f.verifyErr = append(f.verifyErr, err)
+		f.mu.Unlock()
+	}
+	f.homes, f.uids = map[string]string{}, map[string]int{}
+	panelLookupUser = func(name string) (string, int, error) {
+		home, ok := f.homes[name]
+		if !ok {
+			return "", 0, errors.New("unknown user")
+		}
+		if uid, ok := f.uids[name]; ok {
+			return home, uid, nil
+		}
+		return home, os.Getuid(), nil
+	}
 	panelEuid = func() int { return 0 }
 	panelDetectPanelID = func() string { return "cpanel" }
 	// Short: socket paths are limited to about 100 bytes.
@@ -99,7 +119,8 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 		panelCoexistence = saved[10].(func() preflight.Coexistence)
 		panelDetectRoots = saved[11].(func() []malware.WebRoot)
 		panelClaimScan = saved[12].(func() bool)
-		panelStartScan = saved[13].(func(malware.WebRoot))
+		panelStartScan = saved[13].(func(malware.WebRoot, func() error))
+		panelLookupUser = saved[19].(func(string) (string, int, error))
 		panelEuid = saved[14].(func() int)
 		panelDetectPanelID = saved[15].(func() string)
 		panelSocketPath = saved[16].(string)
@@ -526,21 +547,33 @@ func TestPanelSitesAndScan(t *testing.T) {
 	f := withFakePanel(t)
 	base := t.TempDir()
 	alice := filepath.Join(base, "home/alice/public_html")
-	bob := filepath.Join(base, "home/bob/site")
+	bob := filepath.Join(base, "srv/bob-site") // outside bob's home
+	dave := filepath.Join(base, "home/dave/public_html")
 	other := filepath.Join(base, "srv/other")
-	for _, d := range []string{alice, bob, other} {
+	for _, d := range []string{alice, bob, dave, other, filepath.Join(base, "home/bob"), filepath.Join(base, "home/mallory")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// mallory's document root leads into alice's.
+	malloryRoot := filepath.Join(base, "home/mallory/public_html")
+	if err := os.Symlink(alice, malloryRoot); err != nil {
+		t.Fatal(err)
 	}
 	link := filepath.Join(base, "alice-link")
 	if err := os.Symlink(alice, link); err != nil {
 		t.Fatal(err)
 	}
+	for _, a := range []string{"alice", "bob", "dave", "mallory"} {
+		f.homes[a] = filepath.Join(base, "home", a)
+	}
+	f.uids["dave"] = os.Getuid() + 1 // dave's directory isn't his
 	f.sites = []preflight.Site{
 		{Account: "alice", Domain: "alice.com", Kind: "main", DocumentRoot: alice},
 		{Account: "bob", Domain: "bob.org", Kind: "main", DocumentRoot: bob},
 		{Account: "carol", Domain: "carol.io", Kind: "main"},
+		{Account: "dave", Domain: "dave.net", Kind: "main", DocumentRoot: dave},
+		{Account: "mallory", Domain: "m.example", Kind: "main", DocumentRoot: malloryRoot},
 	}
 	f.roots = []malware.WebRoot{{Path: filepath.Join(base, "home/alice")}, {Path: other}}
 	on := true
@@ -548,38 +581,96 @@ func TestPanelSitesAndScan(t *testing.T) {
 
 	r := handlePanel(panel.Request{Command: "sites"})
 	sites := r["sites"].([]panelSite)
-	if len(sites) != 3 || !sites[0].Covered || sites[1].Covered || sites[2].Covered || r["malware_scan_enabled"] != true || r["control_panel"] != "cpanel" {
+	covered := []bool{true, false, false, false, true}
+	scannable := []bool{true, false, false, false, false}
+	for i, s := range sites {
+		if s.Covered != covered[i] || s.Scannable != scannable[i] {
+			t.Errorf("%v: covered %v scannable %v", s.Domain, s.Covered, s.Scannable)
+		}
+	}
+	if len(sites) != 5 || r["malware_scan_enabled"] != true || r["control_panel"] != "cpanel" {
 		t.Errorf("sites: %v", r)
 	}
 
-	if r := handlePanel(panel.Request{Command: "scan", Path: filepath.Join(base, "home"), Actor: "root"}); r["error"] != panel.ErrUnknownPath {
-		t.Errorf("not a document root: %v", r)
+	for path, code := range map[string]string{
+		filepath.Join(base, "home"): panel.ErrUnknownPath,  // not a document root
+		filepath.Join(base, "nope"): panel.ErrUnknownPath,  // missing
+		other:                       panel.ErrUnknownPath,  // a web root, but no site's
+		bob:                         panel.ErrNotScannable, // outside bob's home
+		dave:                        panel.ErrNotScannable, // not owned by dave
+		malloryRoot:                 "",                    // resolves to alice's root: scanned as alice's
+	} {
+		r := handlePanel(panel.Request{Command: "scan", Path: path, Actor: "root"})
+		if code == "" {
+			continue
+		}
+		if r["error"] != code {
+			t.Errorf("scan %s: %v, want %s", path, r, code)
+		}
 	}
-	if r := handlePanel(panel.Request{Command: "scan", Path: filepath.Join(base, "nope"), Actor: "root"}); r["error"] != panel.ErrUnknownPath {
-		t.Errorf("missing path: %v", r)
+	// mallory's path resolves to alice's document root: the site found is
+	// alice's, checked against alice's home.
+	for i := 0; i < 100 && len(f.scans()) == 0; i++ {
+		time.Sleep(10 * time.Millisecond)
 	}
+	f.mu.Lock()
+	f.scanned, f.verifyErr = nil, nil
+	f.mu.Unlock()
+
 	r = handlePanel(panel.Request{Command: "scan", Path: link, Actor: "root"})
 	if !r.Succeeded() || r["queued"] != true {
 		t.Fatalf("scan: %v", r)
 	}
-	// The scan starts in the background.
 	for i := 0; i < 100 && len(f.scans()) == 0; i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
 	resolved, _ := filepath.EvalSymlinks(alice)
-	if sc := f.scans(); len(sc) != 1 || sc[0].Path != resolved || sc[0].Domain != "alice.com" {
-		t.Errorf("scanned: %+v", sc)
+	sc := f.scans()
+	if len(sc) != 1 || sc[0].Path != resolved || sc[0].Domain != "alice.com" || !sc[0].Strict || f.verifyErr[0] != nil {
+		t.Errorf("scanned: %+v, verify %v", sc, f.verifyErr)
 	}
-	if ev := f.reported[len(f.reported)-1]; ev.Type != "panel_scan" || ev.Details["path"] != resolved || ev.Details["actor"] != "root" {
+	if ev := f.reported[len(f.reported)-1]; ev.Type != "panel_scan" || ev.Details["path"] != resolved || ev.Details["account"] != "alice" {
 		t.Errorf("event: %+v", ev)
 	}
-	// A known web root that is no site's document root is accepted too.
-	if r := handlePanel(panel.Request{Command: "scan", Path: other, Actor: "root"}); !r.Succeeded() {
-		t.Errorf("web root: %v", r)
-	}
 	f.scanning = true
-	if r := handlePanel(panel.Request{Command: "scan", Path: bob, Actor: "root"}); r["error"] != panel.ErrScanRunning {
+	if r := handlePanel(panel.Request{Command: "scan", Path: alice, Actor: "root"}); r["error"] != panel.ErrScanRunning {
 		t.Errorf("scan running: %v", r)
+	}
+}
+
+// The root is checked, opened, and checked again right before the walk: a
+// directory swapped for a symlink (or another directory) in between is
+// not scanned.
+func TestPanelScanRootSwappedAfterTheCheck(t *testing.T) {
+	f := withFakePanel(t)
+	base := t.TempDir()
+	home := filepath.Join(base, "home/alice")
+	root := filepath.Join(home, "public_html")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.homes["alice"] = home
+	site := preflight.Site{Account: "alice", Domain: "alice.com", DocumentRoot: root}
+
+	r, err := openScanRoot(site)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.verify(); err != nil {
+		t.Fatalf("unchanged root: %v", err)
+	}
+	os.Rename(root, root+".old")
+	if err := os.Symlink("/", root); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.verify(); err == nil {
+		t.Error("swap for a symlink not detected")
+	}
+	os.Remove(root)
+	os.Mkdir(root, 0o755)
+	if err := r.verify(); err == nil {
+		t.Error("swap for another directory not detected")
 	}
 }
 
@@ -644,7 +735,7 @@ func TestPanelScanSymlinkedDocumentRootRefused(t *testing.T) {
 	}
 	f.sites = []preflight.Site{{Account: "mallory", Domain: "m.example", Kind: "main", DocumentRoot: link}}
 	f.roots = []malware.WebRoot{{Path: "/"}}
-	if r := handlePanel(panel.Request{Command: "scan", Path: link, Actor: "root"}); r["error"] != panel.ErrUnknownPath {
+	if r := handlePanel(panel.Request{Command: "scan", Path: link, Actor: "root"}); r["error"] != panel.ErrNotScannable {
 		t.Errorf("scan of / through a symlink: %v", r)
 	}
 	if sites := handlePanel(panel.Request{Command: "sites"})["sites"].([]panelSite); sites[0].Covered {
