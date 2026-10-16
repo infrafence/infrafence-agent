@@ -261,7 +261,11 @@ func runAgent() {
 
 	// Bans and allow list as last known (protstate.go), so the first setup
 	// keeps them while the dashboard is unreachable or refuses the agent.
-	restoreBeforeFirewall(loadProtectionState())
+	saved := loadProtectionState()
+	restoreBeforeFirewall(saved)
+	// Switched off after 24 hours of refusal (refusal.go): stays off across
+	// a restart until the dashboard accepts the agent.
+	restoreRefusal(saved, apiClient.Gate())
 
 	// Initialize firewall backend (detects ipset, falls back to iptables)
 	firewall.Init()
@@ -704,7 +708,12 @@ func runAgent() {
 
 	// The allow list, monitor mode and country blocks of the last successful
 	// sync, before any watcher runs: the first sync may fail.
-	restoreSettings(banWatchers{auth: w, web: webW, mail: mailW, db: dbW, ftp: ftpW}, geo.SetBlocked, geoBlocker.ApplyCountryBlocks)
+	watchers := banWatchers{auth: w, web: webW, mail: mailW, db: dbW, ftp: ftpW}
+	protCtl.Lock()
+	protCtl.watchers = watchers
+	protCtl.Unlock()
+	restoreSettings(watchers, geo.SetBlocked, geoBlocker.ApplyCountryBlocks)
+	go watchRefusal(apiClient.Gate(), refusalLimitFor(version), apiClient.ReportEvents)
 
 	// Every sync goes through one runner: never two at once, and bursts of
 	// requests (pushes, heartbeat config version, periodic) are merged.
@@ -712,6 +721,13 @@ func runAgent() {
 		return syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName)
 	})
 	go syncs.Loop(context.Background())
+	// While switched off the agent only asks every 30 minutes; the first
+	// accepted request asks for a sync, which switches protection back on.
+	apiClient.Gate().OnAccepted(func() {
+		if protectionDisabled() {
+			syncs.Request("dashboard accepts the agent again")
+		}
+	})
 	onBanSchedule = func(t time.Time) { syncs.ScheduleAt(t, "ban expiry") }
 	push := &pushListener{runner: syncs}
 
@@ -1041,6 +1057,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// sync's cleanup spares them (localBansToKeep) and the next one lists
 	// them.
 	flushLocalBans(client)
+	// Switched off after a long refusal: back on before this sync applies.
+	enableProtection(client.ReportEvents)
 
 	// Handle suspension: when suspended, stop all active protection but keep heartbeat alive.
 	// The agent stays installed — upgrading the plan automatically lifts the suspension.
@@ -2101,6 +2119,8 @@ func applyThreatIntel() {
 	}
 	applied, skipped, err := firewall.ApplyThreatSet(nets, intelState.whitelist)
 	switch {
+	case errors.Is(err, firewall.ErrDisabled):
+		log.Printf("[threat-feed] %d entries loaded for egress/DNS detection; protection is switched off", len(all))
 	case errors.Is(err, firewall.ErrNoIpset):
 		log.Printf("[threat-feed] %d entries loaded for egress/DNS detection; inbound blocking needs ipset (not installed)", len(all))
 	case err != nil:

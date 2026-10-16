@@ -66,6 +66,11 @@ type protPersisted struct {
 	BFWindow       int            `json:"bf_window,omitempty"`
 	Bans           []firewall.Ban `json:"bans"`
 	Outbox         []pendingBan   `json:"outbox,omitempty"`
+	// The refusal clock and the switch-off (refusal.go), unix seconds;
+	// zero: none.
+	RefusedSince   int64 `json:"refused_since,omitempty"`
+	DisabledAt     int64 `json:"disabled_at,omitempty"`
+	MotdDirCreated bool  `json:"motd_dir_created,omitempty"`
 }
 
 // pendingBan is a ban the agent made itself, kept until the dashboard lists
@@ -106,6 +111,20 @@ func loadProtectionState() *protPersisted {
 	if err := json.Unmarshal(data, &st); err != nil {
 		log.Printf("[protection] %s is not valid (%v) — starting without the saved state", protStatePath, err)
 		_ = os.Rename(protStatePath, protStatePath+".corrupt")
+		return nil
+	}
+	return &st
+}
+
+// loadProtectionStateQuiet reads the state file for the panel commands:
+// nothing logged, nothing renamed.
+func loadProtectionStateQuiet() *protPersisted {
+	data, err := os.ReadFile(protStatePath)
+	if err != nil {
+		return nil
+	}
+	var st protPersisted
+	if json.Unmarshal(data, &st) != nil {
 		return nil
 	}
 	return &st
@@ -196,7 +215,11 @@ func restoreSettings(ws banWatchers, setBlocked func([]string), applyCountries f
 	if setBlocked != nil {
 		setBlocked(s.Countries)
 	}
-	if applyCountries != nil && !s.MonitorMode && len(s.Countries) > 0 {
+	if protectionDisabled() {
+		// Switched off after a long refusal: nothing is banned or blocked
+		// until the dashboard accepts the agent again.
+		ws.setMonitorMode(true)
+	} else if applyCountries != nil && !s.MonitorMode && len(s.Countries) > 0 {
 		applyCountries(s.Countries)
 	}
 	intelState.Lock()
@@ -252,6 +275,18 @@ func saveProtectionState() {
 	}
 	prot.Unlock()
 	sort.Slice(st.Outbox, func(i, j int) bool { return st.Outbox[i].At < st.Outbox[j].At })
+	protCtl.Lock()
+	if !protCtl.disabledAt.IsZero() {
+		st.DisabledAt = protCtl.disabledAt.Unix()
+	}
+	st.MotdDirCreated = protCtl.motdCreated
+	g := protCtl.gate
+	protCtl.Unlock()
+	if g != nil {
+		if t := g.RefusedSince(); !t.IsZero() {
+			st.RefusedSince = t.Unix()
+		}
+	}
 	if err := writeFileAtomic(protStatePath, st); err != nil {
 		log.Printf("[protection] save %s: %v", protStatePath, err)
 	}
