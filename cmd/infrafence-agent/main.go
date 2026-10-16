@@ -240,6 +240,12 @@ func runAgent() {
 		firewall.AddProtectedIPs(selfIP)
 	}
 
+	// Ban changes are saved (protstate.go); evictions at capacity warn. Set
+	// before anything that can ban runs.
+	firewall.OnBansChanged = scheduleProtectionSave
+	evictions := &evictionReporter{report: apiClient.ReportEvents, now: time.Now}
+	firewall.OnBansEvicted = evictions.evicted
+
 	// Read-only host scan first: decides what the agent may change here.
 	startupPreflight(apiClient)
 	// The WHM and Plesk plugins (panel.go): only on cPanel/WHM or Plesk, or
@@ -255,9 +261,6 @@ func runAgent() {
 
 	// Bans and allow list as last known (protstate.go), so the first setup
 	// keeps them while the dashboard is unreachable or refuses the agent.
-	firewall.OnBansChanged = scheduleProtectionSave
-	evictions := &evictionReporter{report: apiClient.ReportEvents, now: time.Now}
-	firewall.OnBansEvicted = evictions.evicted
 	restoreBeforeFirewall(loadProtectionState())
 
 	// Initialize firewall backend (detects ipset, falls back to iptables)

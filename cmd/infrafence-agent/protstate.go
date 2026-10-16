@@ -45,8 +45,11 @@ const (
 	reportedGrace = 10 * time.Minute
 	// maxBanOutbox bounds the bans waiting to be reported.
 	maxBanOutbox = 5000
-	// protSaveDelay groups the writes of a burst of bans.
+	// protSaveDelay groups the writes of a burst of bans, and writes are at
+	// least protSaveGap apart: with tens of thousands of bans a write is
+	// megabytes (shutdown writes once more).
 	protSaveDelay = 2 * time.Second
+	protSaveGap   = 15 * time.Second
 	// evictionReportEvery limits the ban_capacity_reached warning.
 	evictionReportEvery = 10 * time.Minute
 )
@@ -82,6 +85,7 @@ var prot = struct {
 	settings protPersisted // Synced, whitelist, countries, mode, bf
 	outbox   map[string]*pendingBan
 	saveAt   *time.Timer
+	lastSave time.Time
 }{outbox: map[string]*pendingBan{}}
 
 // Replaced in tests.
@@ -226,7 +230,8 @@ func scheduleProtectionSave() {
 	if prot.saveAt != nil {
 		return
 	}
-	prot.saveAt = time.AfterFunc(protSaveDelay, func() {
+	delay := max(protSaveDelay, time.Until(prot.lastSave.Add(protSaveGap)))
+	prot.saveAt = time.AfterFunc(delay, func() {
 		prot.Lock()
 		prot.saveAt = nil
 		prot.Unlock()
@@ -238,6 +243,7 @@ func scheduleProtectionSave() {
 func saveProtectionState() {
 	bans := firewall.Bans()
 	prot.Lock()
+	prot.lastSave = time.Now()
 	st := prot.settings
 	st.SavedAt = protNow().Unix()
 	st.Bans = bans
@@ -253,6 +259,10 @@ func saveProtectionState() {
 
 // noteLocalBan records a ban the agent made itself, to report.
 func noteLocalBan(ip, reason string, count int) {
+	// The firewall's key for it (an IPv6 address may come written otherwise).
+	if p := net.ParseIP(ip); p != nil {
+		ip = p.String()
+	}
 	prot.Lock()
 	if len(prot.outbox) >= maxBanOutbox {
 		oldest := ""
@@ -272,6 +282,9 @@ func noteLocalBan(ip, reason string, count int) {
 // noteBanReported marks a local ban accepted by the dashboard.
 func noteBanReported(ip string) {
 	prot.Lock()
+	if p := net.ParseIP(ip); p != nil {
+		ip = p.String()
+	}
 	if p := prot.outbox[ip]; p != nil {
 		p.Reported = protNow().Unix()
 	}
@@ -312,6 +325,16 @@ func flushLocalBans(client *api.Client) {
 			continue
 		}
 		if err := reportBan(client, api.BanRequest{IPAddress: p.IP, Reason: p.Reason, BanCount: p.Count}); err != nil {
+			if api.IsRejected(err) {
+				// The dashboard refuses this ban (validation, its own
+				// allow list): its decision; the others still go.
+				log.Printf("[protection] ban of %s not accepted, not reported again: %v", p.IP, err)
+				prot.Lock()
+				delete(prot.outbox, p.IP)
+				prot.Unlock()
+				dropped++
+				continue
+			}
 			log.Printf("[protection] %d ban(s) still to report: %v", len(todo)-sent-dropped, err)
 			break
 		}
@@ -385,18 +408,12 @@ func unexpiredBans(bans []api.Ban, now time.Time) []api.Ban {
 	return kept
 }
 
-// parseBanExpiry reads the dashboard's expires_at (RFC 3339, or "2006-01-02
-// 15:04:05" in UTC). Unreadable: no expiry, and the dashboard lifts the ban
-// at a sync.
+// parseBanExpiry reads the dashboard's expires_at (RFC 3339, as
+// nextBanExpiry). Anything else: no expiry here, and the dashboard lifts
+// the ban at a sync (a time without a zone could lift it hours early).
 func parseBanExpiry(s string) (time.Time, bool) {
-	s = strings.TrimSpace(s)
-	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-		return t, true
-	}
-	if t, err := time.Parse(time.DateTime, s); err == nil {
-		return t, true
-	}
-	return time.Time{}, false
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(s))
+	return t, err == nil
 }
 
 // runBanExpiry lifts expired bans every interval, also while the dashboard

@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -242,7 +244,7 @@ func TestEvictionReporterIsRateLimited(t *testing.T) {
 }
 
 func TestBanExpiries(t *testing.T) {
-	s1, s2, bad := "2026-10-17T12:00:00Z", "2026-10-17 12:00:00", "tomorrow"
+	s1, s2, bad := "2026-10-17T12:00:00Z", "2026-10-17T14:00:00+02:00", "2026-10-17 12:00:00"
 	got := banExpiries([]api.Ban{{IPAddress: "203.0.113.1", ExpiresAt: &s1}, {IPAddress: "203.0.113.2", ExpiresAt: &s2}, {IPAddress: "203.0.113.3"}, {IPAddress: "203.0.113.4", ExpiresAt: &bad}})
 	want := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	if !got[0].Expires.Equal(want) || !got[1].Expires.Equal(want) || !got[2].Expires.IsZero() || !got[3].Expires.IsZero() {
@@ -252,5 +254,40 @@ func TestBanExpiries(t *testing.T) {
 	kept := unexpiredBans([]api.Ban{{IPAddress: "203.0.113.1", ExpiresAt: &s1}, {IPAddress: "203.0.113.2", ExpiresAt: &past}, {IPAddress: "203.0.113.3"}}, want.Add(-24*time.Hour))
 	if len(kept) != 2 || kept[0].IPAddress != "203.0.113.1" || kept[1].IPAddress != "203.0.113.3" {
 		t.Fatalf("unexpired: %+v", kept)
+	}
+}
+
+// A ban the dashboard rejects (4xx) is dropped; the ones after it are
+// still reported.
+func TestLocalBanOutboxSkipsRejected(t *testing.T) {
+	now, _ := withProtState(t)
+	for i, ip := range []string{"198.51.100.1", "198.51.100.2"} {
+		*now = now.Add(time.Duration(i) * time.Second)
+		noteLocalBan(ip, "x", 1)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+	client := api.New(srv.URL, "tok")
+	var reported []string
+	reportBan = func(c *api.Client, req api.BanRequest) error {
+		if req.IPAddress == "198.51.100.1" {
+			return c.ReportBan(req) // a real 422
+		}
+		reported = append(reported, req.IPAddress)
+		return nil
+	}
+	flushLocalBans(client)
+	if !reflect.DeepEqual(reported, []string{"198.51.100.2"}) || outboxLen() != 1 {
+		t.Fatalf("reported %v, outbox %d", reported, outboxLen())
+	}
+}
+
+func TestNoteLocalBanCanonicalKey(t *testing.T) {
+	withProtState(t)
+	noteLocalBan("2001:DB8:0:0::1", "x", 1)
+	if keep := localBansToKeep(nil); !keep["2001:db8::1"] {
+		t.Fatalf("kept %v, want the canonical address", keep)
 	}
 }
