@@ -32,6 +32,10 @@ const maxCrashesBeforeRollback = 3
 // coupling the updater to the full API client.
 type EventReporter func(eventType, severity string, details map[string]string)
 
+// BeforeRestart, if set, runs before the service is restarted (the agent
+// sends the events it still holds). Set once at startup.
+var BeforeRestart func()
+
 // CheckStartupHealth should be called once at agent startup. It detects
 // repeated crash loops after an update and automatically rolls back to the
 // previous binary. The crash marker is a small file in stateDir (root only)
@@ -361,6 +365,9 @@ func rollback() {
 // restartService tries systemd, then upstart, then sysvinit.
 // Returns an error if all methods fail.
 func restartService() error {
+	if BeforeRestart != nil {
+		BeforeRestart()
+	}
 	// systemd
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		if err := exec.Command("systemctl", "restart", "infrafence-agent").Run(); err == nil {

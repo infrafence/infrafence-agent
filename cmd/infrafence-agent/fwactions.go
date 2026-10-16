@@ -526,12 +526,13 @@ func applyFirewallActions(client *api.Client, actions []api.FirewallAction) {
 	fwStateMu.Unlock()
 }
 
-// Replaced in tests.
+// Replaced in tests. Sent outside the event queue: a result not delivered
+// is sent again at the next sync.
 var fwReport = func(client *api.Client, ev api.EventRequest) error {
 	if client == nil {
 		return nil
 	}
-	return client.ReportEvents([]api.EventRequest{ev})
+	return client.DeliverEvents([]api.EventRequest{ev})
 }
 
 // runFirewallAction applies one request and returns its result event.
