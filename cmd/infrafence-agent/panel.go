@@ -121,8 +121,9 @@ func runPanelCommand(req panel.Request) panel.Response {
 // config file says (never the token).
 func offlineStatus() panel.Response {
 	r := panel.OK(map[string]any{
-		"version": version, "agent_id": nil, "dashboard_url": nil, "last_heartbeat": nil,
-		"connected": false, "plan": nil, "automode": nil,
+		"version": version, "agent_id": nil, "dashboard_url": nil, "last_heartbeat": nil, "last_sync": nil,
+		"connected": false, "plan": nil, "automode": nil, "monitor_mode": nil, "suspended": nil,
+		"control_panel": orNull(panelDetectPanelID()),
 	})
 	if cfg, err := config.Load(); err == nil {
 		r["agent_id"] = cfg.AgentID
@@ -237,6 +238,15 @@ func cachedSites(panelID string) []preflight.Site {
 	return sitesCache.sites
 }
 
+// orNull: every documented key is always present (docs/panel-json.md); an
+// unknown value is null, never "".
+func orNull(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 func rfc3339(t time.Time) any {
 	if t.IsZero() {
 		return nil
@@ -263,7 +273,7 @@ func panelStatus() panel.Response {
 		"monitor_mode":   v.monitorMode,
 		"suspended":      v.suspended,
 		"dashboard_url":  nil,
-		"control_panel":  panelInfo.panelID,
+		"control_panel":  orNull(panelInfo.panelID),
 	})
 	if v.plan != "" {
 		r["plan"] = v.plan
@@ -279,7 +289,7 @@ func panelStatus() panel.Response {
 
 type panelBan struct {
 	IP      string `json:"ip"`
-	Reason  string `json:"reason"`
+	Reason  any    `json:"reason"`
 	Source  string `json:"source"`
 	Created any    `json:"created"`
 	Expires any    `json:"expires"`
@@ -315,7 +325,7 @@ func panelBans(limit int) panel.Response {
 			}
 		}
 		seen[b.IPAddress] = true
-		pb := panelBan{IP: b.IPAddress, Reason: cleanText(b.Reason, 200), Source: b.Source}
+		pb := panelBan{IP: b.IPAddress, Reason: orNull(cleanText(b.Reason, 200)), Source: b.Source}
 		if b.CreatedAt != "" {
 			pb.Created = cleanText(b.CreatedAt, 40)
 		}
@@ -334,8 +344,8 @@ func panelBans(limit int) panel.Response {
 			}
 		}
 		if local {
-			if pb.Reason == "" {
-				pb.Reason = cleanText(lb.reason, 200)
+			if pb.Reason == nil {
+				pb.Reason = orNull(cleanText(lb.reason, 200))
 			}
 			if pb.Created == nil {
 				pb.Created = rfc3339(lb.created)
@@ -345,7 +355,7 @@ func panelBans(limit int) panel.Response {
 	}
 	for ip, lb := range info {
 		if !seen[ip] && !lifted[ip] && panelIsBanned(ip) {
-			out = append(out, panelBan{IP: ip, Reason: cleanText(lb.reason, 200), Source: "local", Created: rfc3339(lb.created)})
+			out = append(out, panelBan{IP: ip, Reason: orNull(cleanText(lb.reason, 200)), Source: "local", Created: rfc3339(lb.created)})
 		}
 	}
 	slices.SortStableFunc(out, func(a, b panelBan) int {
@@ -553,8 +563,8 @@ func panelDisallow(ip, actor string) panel.Response {
 type panelAllowItem struct {
 	Address string `json:"address"` // IP or CIDR
 	Source  string `json:"source"`  // panel, dashboard
-	Note    string `json:"note,omitempty"`
-	Actor   string `json:"actor,omitempty"`
+	Note    any    `json:"note"`
+	Actor   any    `json:"actor"`
 	Added   any    `json:"added"`
 }
 
@@ -565,7 +575,7 @@ func panelAllowlist() panel.Response {
 	seen := map[string]bool{}
 	for _, a := range panelState.p.Allowed {
 		seen[a.IP] = true
-		out = append(out, panelAllowItem{Address: a.IP, Source: "panel", Note: a.Note, Actor: a.Actor, Added: rfc3339(time.Unix(a.AddedAt, 0))})
+		out = append(out, panelAllowItem{Address: a.IP, Source: "panel", Note: orNull(a.Note), Actor: orNull(a.Actor), Added: rfc3339(time.Unix(a.AddedAt, 0))})
 	}
 	for _, w := range panelState.view.whitelists {
 		for _, addr := range []*string{w.IPAddress, w.IPRange} {
@@ -596,6 +606,15 @@ func panelFindings(limit int) panel.Response {
 	return panel.OK(map[string]any{"findings": out, "total": total})
 }
 
+// panelEventOut is one element of the events answer.
+type panelEventOut struct {
+	Type     string `json:"type"`
+	Severity string `json:"severity"`
+	SourceIP any    `json:"source_ip"`
+	Source   any    `json:"source"`
+	Time     string `json:"time"`
+}
+
 func panelEvents(limit int, since string) panel.Response {
 	var cutoff time.Time
 	if since != "" {
@@ -616,17 +635,44 @@ func panelEvents(limit int, since string) panel.Response {
 	if out == nil {
 		out = []panelEvent{}
 	}
-	return panel.OK(map[string]any{"events": out})
+	res := make([]panelEventOut, len(out))
+	for i, e := range out {
+		res[i] = panelEventOut{Type: e.Type, Severity: e.Severity, SourceIP: orNull(e.SourceIP), Source: orNull(e.Source), Time: e.Time}
+	}
+	return panel.OK(map[string]any{"events": res})
 }
 
 func panelCoexistenceAnswer() panel.Response {
 	c := panelCoexistence()
-	return panel.OK(map[string]any{"mode": c.Mode, "tools": c.Tools})
+	type toolOut struct {
+		ID       string   `json:"id"`
+		Name     string   `json:"name"`
+		Kind     string   `json:"kind"`
+		Active   bool     `json:"active"`
+		Version  any      `json:"version"`
+		Rulesets []string `json:"rulesets"`
+		Firewall bool     `json:"manages_firewall"`
+		ActionID string   `json:"action_id"`
+		Action   string   `json:"action"`
+	}
+	tools := make([]toolOut, len(c.Tools))
+	for i, t := range c.Tools {
+		rs := t.Rulesets
+		if rs == nil {
+			rs = []string{}
+		}
+		tools[i] = toolOut{ID: t.ID, Name: t.Name, Kind: t.Kind, Active: t.Active, Version: orNull(t.Version),
+			Rulesets: rs, Firewall: t.Firewall, ActionID: t.ActionID, Action: t.Action}
+	}
+	return panel.OK(map[string]any{"mode": c.Mode, "tools": tools})
 }
 
 type panelSite struct {
-	preflight.Site
-	Covered bool `json:"scan_covered"`
+	Account      any    `json:"account"`
+	Domain       string `json:"domain"`
+	Kind         string `json:"kind"`
+	DocumentRoot any    `json:"document_root"`
+	Covered      bool   `json:"scan_covered"`
 }
 
 // panelSitesAnswer lists the sites and whether the malware scan covers each
@@ -641,7 +687,7 @@ func panelSitesAnswer(panelID string, roots []malware.WebRoot, scanEnabled *bool
 	sites := cachedSites(panelID)
 	out := make([]panelSite, 0, len(sites))
 	for _, s := range sites {
-		ps := panelSite{Site: s}
+		ps := panelSite{Account: orNull(s.Account), Domain: s.Domain, Kind: s.Kind, DocumentRoot: orNull(s.DocumentRoot)}
 		if s.DocumentRoot != "" {
 			if p, err := filepath.EvalSymlinks(s.DocumentRoot); err == nil && systemTree(p) == "" {
 				ps.Covered = slices.ContainsFunc(resolved, func(root string) bool { return within(p, root) })
@@ -649,7 +695,7 @@ func panelSitesAnswer(panelID string, roots []malware.WebRoot, scanEnabled *bool
 		}
 		out = append(out, ps)
 	}
-	r := panel.OK(map[string]any{"control_panel": panelID, "sites": out, "malware_scan_enabled": nil})
+	r := panel.OK(map[string]any{"control_panel": orNull(panelID), "sites": out, "malware_scan_enabled": nil})
 	if scanEnabled != nil {
 		r["malware_scan_enabled"] = *scanEnabled
 	}

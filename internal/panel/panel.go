@@ -31,7 +31,6 @@ const (
 	ErrAgentNotRunning = "agent_not_running"
 	ErrNotBanned       = "not_banned"
 	ErrNotAllowed      = "not_in_allowlist"
-	ErrProtectedIP     = "protected_ip"
 	ErrManaged         = "managed_by_dashboard"
 	ErrUnknownPath     = "not_a_document_root"
 	ErrScanRunning     = "scan_running"

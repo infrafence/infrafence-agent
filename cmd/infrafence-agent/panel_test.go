@@ -469,15 +469,15 @@ func TestPanelEventsAndFindings(t *testing.T) {
 	panelNoteEvent(api.EventRequest{Type: "quarantine_completed", Severity: "info", OccurredAt: at(-30 * time.Minute),
 		Details: map[string]string{"file": "/home/alice/public_html/x.php"}})
 
-	ev := handlePanel(panel.Request{Command: "events", Limit: 50})["events"].([]panelEvent)
+	ev := handlePanel(panel.Request{Command: "events", Limit: 50})["events"].([]panelEventOut)
 	if len(ev) != 4 || ev[0].Type != "quarantine_completed" || ev[3].SourceIP != "203.0.113.7" {
 		t.Errorf("events: %+v", ev)
 	}
 	since := f.now.Add(-90 * time.Minute).Format(time.RFC3339)
-	if ev := handlePanel(panel.Request{Command: "events", Limit: 50, Since: since})["events"].([]panelEvent); len(ev) != 2 {
+	if ev := handlePanel(panel.Request{Command: "events", Limit: 50, Since: since})["events"].([]panelEventOut); len(ev) != 2 {
 		t.Errorf("since: %+v", ev)
 	}
-	if ev := handlePanel(panel.Request{Command: "events", Limit: 1})["events"].([]panelEvent); len(ev) != 1 {
+	if ev := handlePanel(panel.Request{Command: "events", Limit: 1})["events"].([]panelEventOut); len(ev) != 1 {
 		t.Errorf("limit: %+v", ev)
 	}
 

@@ -100,7 +100,7 @@ type panelEvent struct {
 type panelFinding struct {
 	Path     string `json:"path"`
 	Kind     string `json:"kind"` // malware, integrity
-	Name     string `json:"name,omitempty"`
+	Name     any    `json:"name"`
 	Severity string `json:"severity"`
 	Status   string `json:"status"` // detected, quarantined
 	Detected string `json:"detected"`
@@ -337,7 +337,7 @@ func noteFindingLocked(path, kind, name, severity, at string) {
 		}
 	}
 	panelState.findings = append(panelState.findings, panelFinding{
-		Path: path, Kind: kind, Name: name, Severity: severity, Status: "detected", Detected: at, LastSeen: at, key: key,
+		Path: path, Kind: kind, Name: orNull(name), Severity: severity, Status: "detected", Detected: at, LastSeen: at, key: key,
 	})
 	if n := len(panelState.findings) - maxFindings; n > 0 {
 		panelState.findings = slices.Delete(panelState.findings, 0, n)
