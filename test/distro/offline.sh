@@ -7,9 +7,9 @@
 # expiring ban must expire on this server while the dashboard still refuses
 # the agent, a ban made meanwhile (198.51.100.200) must be reported once the
 # dashboard answers again, and the refused agent must not keep asking.
-# Sets R_RESTORE, R_GEO, R_ALLOW, R_EXPIRE, R_OUTBOX, R_QUIET; appends to
+# Sets R_PRESTORE, R_GEO, R_ALLOW, R_EXPIRE, R_OUTBOX, R_QUIET; appends to
 # EXTRA_RESULT and sets EXTRA_FAIL=1 on a failure.
-R_RESTORE=fail R_GEO=fail R_ALLOW=fail R_EXPIRE=fail R_OUTBOX=fail R_QUIET=fail
+R_PRESTORE=fail R_GEO=fail R_ALLOW=fail R_EXPIRE=fail R_OUTBOX=fail R_QUIET=fail
 API=http://127.0.0.1:8080
 WL=198.51.100.2 GEO=198.51.100.3 ATK=198.51.100.200
 EXP_BAN=203.0.113.77 PERM_BAN=203.0.113.78
@@ -35,8 +35,11 @@ ssh_from() {
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o PreferredAuthentications=password,publickey \
     "$2@198.51.100.1" true 2>&1
 }
-# reaches ADDR: sshd answered (a refused login), not a dropped connection.
-reaches() { ssh_from "$1" probe | grep -qiE 'permission denied|closed by|reset by'; }
+# reaches ADDR: sshd's banner arrives from that source address (not a
+# dropped connection).
+reaches() {
+  ip netns exec c3 curl -s --interface "$1" --connect-timeout 3 -m 4 telnet://198.51.100.1:22 </dev/null 2>/dev/null | grep -q '^SSH-'
+}
 brute() { for i in $(seq 1 8); do ssh_from "$1" "nosuch$i" >/dev/null; done; }
 mock_bans() { curl -s "$API/state" | grep -o '"bans":\[[^]]*\]'; }
 denied() { curl -s "$API/state" | grep -o '"denied":[0-9]*' | cut -d: -f2; }
@@ -60,6 +63,7 @@ for _ in $(seq 1 100); do
   sleep 1
 done
 log "dashboard state applied and saved: $ready ($(ipset_mode && echo ipset || echo iptables))"
+reaches $WL || { log "baseline: $WL does not reach SSH: $(ssh_from $WL probe | tail -1)"; iptables -S INFRAFENCE; ipset list infrafence-allow 2>/dev/null | tail -3; }
 [ $ready = yes ] || { journalctl -u infrafence-agent --no-pager | grep -iE 'sync|geo|protection' | tail -10; ls -l $STATE; }
 stat -c '%a' $STATE 2>/dev/null | grep -qx 600 || { log "state file mode $(stat -c '%a' $STATE 2>/dev/null)"; ready=no; }
 
@@ -82,7 +86,7 @@ if [ $ready = yes ]; then
     if banned $EXP_BAN && banned $PERM_BAN && { ! ipset_mode || ipset list -n | grep -qx infrafence-geo-xx; }; then ok=yes; break; fi
     sleep 1
   done
-  [ $ok = yes ] && R_RESTORE=ok || { log "after the restart: bans $(banned $EXP_BAN && echo $EXP_BAN) $(banned $PERM_BAN && echo $PERM_BAN)"; journalctl -u infrafence-agent --no-pager | grep -iE 'protection|restor' | tail -6; }
+  [ $ok = yes ] && R_PRESTORE=ok || { log "after the restart: bans $(banned $EXP_BAN && echo $EXP_BAN) $(banned $PERM_BAN && echo $PERM_BAN)"; journalctl -u infrafence-agent --no-pager | grep -iE 'protection|restor' | tail -6; }
   if ipset_mode; then
     if ! reaches $GEO && reaches $WL; then R_GEO=ok; else log "geo: $GEO reaches=$(reaches $GEO && echo yes) $WL reaches=$(reaches $WL && echo yes)"; fi
   else
@@ -119,6 +123,6 @@ fi
 # ── back to the plain state ──
 curl -s "$API/deny?mode=off" >/dev/null
 curl -s -X POST "$API/set-sync" -d '{"config": {"bf_threshold": 5, "bf_window": 60, "monitor_mode": false}, "whitelists": [], "bans": []}' >/dev/null
-EXTRA_RESULT="${EXTRA_RESULT:-} restore=${R_RESTORE} geo=${R_GEO} allow=${R_ALLOW} expire=${R_EXPIRE} outbox=${R_OUTBOX} quiet=${R_QUIET}"
-[ "$R_RESTORE$R_ALLOW$R_EXPIRE$R_OUTBOX$R_QUIET" = okokokokok ] && [ "$R_GEO" != fail ] || EXTRA_FAIL=1
+EXTRA_RESULT="${EXTRA_RESULT:-} protection_restore=${R_PRESTORE} geo=${R_GEO} allow=${R_ALLOW} expire=${R_EXPIRE} outbox=${R_OUTBOX} quiet=${R_QUIET}"
+[ "$R_PRESTORE$R_ALLOW$R_EXPIRE$R_OUTBOX$R_QUIET" = okokokokok ] && [ "$R_GEO" != fail ] || EXTRA_FAIL=1
 ip netns pids c3 2>/dev/null | xargs -r kill 2>/dev/null

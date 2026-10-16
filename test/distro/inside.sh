@@ -118,6 +118,9 @@ fi
 # ── dashboard refusing the agent, restart, local expiry (test/distro/offline.sh) ──
 . /distro/offline.sh
 
+# ── refused past the limit: protection switched off, then back (test/distro/disable.sh) ──
+. /distro/disable.sh
+
 # ── uninstall: nothing may be left behind ──
 bash /distro/install.sh --uninstall >/tmp/uninstall.log 2>&1
 left=""
