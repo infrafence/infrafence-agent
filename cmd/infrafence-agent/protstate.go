@@ -371,6 +371,20 @@ func banExpiries(bans []api.Ban) []firewall.Ban {
 	return out
 }
 
+// unexpiredBans leaves out the bans whose expiry is at or before now.
+func unexpiredBans(bans []api.Ban, now time.Time) []api.Ban {
+	kept := bans[:0:0]
+	for _, b := range bans {
+		if b.ExpiresAt != nil {
+			if t, ok := parseBanExpiry(*b.ExpiresAt); ok && !t.After(now) {
+				continue
+			}
+		}
+		kept = append(kept, b)
+	}
+	return kept
+}
+
 // parseBanExpiry reads the dashboard's expires_at (RFC 3339, or "2006-01-02
 // 15:04:05" in UTC). Unreadable: no expiry, and the dashboard lifts the ban
 // at a sync.

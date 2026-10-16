@@ -248,4 +248,9 @@ func TestBanExpiries(t *testing.T) {
 	if !got[0].Expires.Equal(want) || !got[1].Expires.Equal(want) || !got[2].Expires.IsZero() || !got[3].Expires.IsZero() {
 		t.Fatalf("%+v", got)
 	}
+	past := "2026-10-16T11:59:59Z"
+	kept := unexpiredBans([]api.Ban{{IPAddress: "203.0.113.1", ExpiresAt: &s1}, {IPAddress: "203.0.113.2", ExpiresAt: &past}, {IPAddress: "203.0.113.3"}}, want.Add(-24*time.Hour))
+	if len(kept) != 2 || kept[0].IPAddress != "203.0.113.1" || kept[1].IPAddress != "203.0.113.3" {
+		t.Fatalf("unexpired: %+v", kept)
+	}
 }
