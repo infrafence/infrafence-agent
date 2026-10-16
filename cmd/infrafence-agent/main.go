@@ -99,6 +99,9 @@ func main() {
 	case "uninstall":
 		cmdUninstall(os.Args[2:])
 
+	case "panel":
+		cmdPanel(os.Args[2:])
+
 	case "check":
 		// Pre-flight self-test used by the auto-updater to verify the binary
 		// works before restarting the service. Exits 0 on success.
@@ -118,6 +121,9 @@ func printUsage() {
 	fmt.Println("  infrafence-agent check")
 	fmt.Println("  infrafence-agent preflight [--json]   read-only host compatibility scan")
 	fmt.Println("  infrafence-agent uninstall --clean    remove every change InfraFence made to this host")
+	fmt.Println("  infrafence-agent panel <command> [args] --json   for the WHM and Plesk plugins (root only):")
+	fmt.Println("      status | bans | unban <ip> | allow <ip> | allowlist | disallow <ip> | findings | events |")
+	fmt.Println("      coexistence | sites | scan <path>   (changes need --actor <panel user>)")
 }
 
 // runRegister performs first-boot registration and saves the config.
@@ -226,6 +232,9 @@ func runAgent() {
 
 	// Read-only host scan first: decides what the agent may change here.
 	startupPreflight(apiClient)
+	// Bans lifted and addresses allowed from a hosting panel (panel.go).
+	loadPanelState()
+	panelReportFn = apiClient.ReportEvents
 	go runDailyAudits(currentAPIClient.Load)
 
 	// Ports closed and egress blocked before the restart, re-checked, so the
@@ -665,6 +674,8 @@ func runAgent() {
 		sessionTracker.NotifySigmaEvent(e.Type, e.Severity)
 		// Addresses flagged as threats and SSH login addresses (fwstate.go).
 		noteEgressEvent(e)
+		// Recent events and findings for the panel plugins (panel.go).
+		panelNoteEvent(e)
 	})
 
 	// Every sync goes through one runner: never two at once, and bursts of
@@ -678,6 +689,9 @@ func runAgent() {
 
 	// Initial sync (applies config, whitelists, rules, bans)
 	_ = syncs.Now("initial")
+
+	// Local socket for the WHM and Plesk plugins (panel.go).
+	closePanel := startPanelSocket(apiClient, cfg, cpID, syncs.Request)
 
 	intel.SetVersion(version)
 	go runIntelUpdater(webW)
@@ -908,6 +922,7 @@ func runAgent() {
 				log.Printf("[heartbeat] error: %v", err)
 				continue
 			}
+			panelLastHeartbeat.Store(time.Now().Unix())
 
 			// Dashboard changes: sync at once when the config version moved,
 			// and keep the push channel matching what the dashboard reports.
@@ -959,6 +974,7 @@ func runAgent() {
 	<-quit
 
 	log.Println("Shutting down...")
+	closePanel()
 }
 
 // onBanSchedule receives the next ban expiry after each sync (zero: none).
@@ -972,6 +988,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 
 	// Handle suspension: when suspended, stop all active protection but keep heartbeat alive.
 	// The agent stays installed — upgrading the plan automatically lifts the suspension.
+	panelNoteSync(sync)
 	if sync.Config.Suspended {
 		log.Printf("[sync] agent is SUSPENDED (plan server limit exceeded) — disabling all watchers")
 		w.SetMonitorMode(true)
@@ -1061,6 +1078,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			wlCIDRs = append(wlCIDRs, *wl.IPRange)
 		}
 	}
+	// Addresses allowed from a hosting panel (panel.go).
+	wlIPs = append(wlIPs, panelAllowedIPs()...)
 	w.UpdateWhitelist(wlIPs, wlCIDRs)
 	if mailW != nil {
 		mailW.UpdateWhitelist(wlIPs, wlCIDRs)
@@ -1096,7 +1115,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		log.Printf("[geoblock] monitor mode — country blocks not applied at kernel level")
 	}
 
-	// Apply bans (skipped in monitor mode)
+	// Apply bans (skipped in monitor mode). Bans lifted from a hosting panel
+	// are left out until the dashboard drops them (panelstate.go).
+	sync.Bans = panelFilterBans(sync.Bans)
 	activeBanIPs := make(map[string]bool, len(sync.Bans))
 	banIPs := make([]string, 0, len(sync.Bans))
 	for _, b := range sync.Bans {
@@ -1431,6 +1452,11 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Check for agent update from sync response
 	if sync.AgentUpdate != nil && sync.AgentUpdate.LatestVersion != "" {
 		go maybeUpdate(client, sync.AgentUpdate.LatestVersion, sync.AgentUpdate.DownloadBaseURL, reportUpdateEvent)
+	}
+
+	// Panel changes the dashboard could not be told about yet.
+	if panelOutboxLen() > 0 {
+		go panelFlushOutbox()
 	}
 
 	return nil
@@ -2076,18 +2102,35 @@ func runIntelUpdater(webW *watcher.WebWatcher) {
 
 // runMalwareScan detects web roots, runs malware signature scanning and framework checks.
 func runMalwareScan(client *api.Client, intensityStr string) {
+	runMalwareScanOf(client, intensityStr, nil)
+}
+
+// runMalwareScanOf scans the given web roots, or every detected one when
+// roots is nil (a scan of one document root comes from the panel).
+func runMalwareScanOf(client *api.Client, intensityStr string, roots []malware.WebRoot) {
 	if !malwareScanRunning.CompareAndSwap(false, true) {
 		log.Printf("[malware] scan already running, skipping duplicate request")
 		return
 	}
 	defer malwareScanRunning.Store(false)
+	malwareScan(client, intensityStr, roots)
+}
+
+// malwareScan runs the scan; the caller holds the malwareScanRunning slot.
+func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoot) {
 	malwareScanCancel.Store(false)
 	log.Printf("[malware] starting scan (intensity=%s)", intensityStr)
 
+	startDetails := map[string]string{"intensity": intensityStr}
+	if roots != nil {
+		// One document root, asked from the hosting panel: not the whole
+		// server's scan.
+		startDetails["scope"] = "panel"
+	}
 	if err := client.ReportEvents([]api.EventRequest{{
 		Type:       "malware_scan_started",
 		Severity:   "info",
-		Details:    map[string]string{"intensity": intensityStr},
+		Details:    startDetails,
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 	}}); err != nil {
 		log.Printf("[malware] failed to report malware_scan_started: %v", err)
@@ -2101,7 +2144,10 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 		intensity = malware.IntensityHigh
 	}
 
-	webRoots := malware.DetectWebRoots(malwareCustomPaths)
+	webRoots := roots
+	if webRoots == nil {
+		webRoots = malware.DetectWebRoots(malwareCustomPaths)
+	}
 
 	// Report discovered web roots so the dashboard can show scan progress
 	if len(webRoots) > 0 {
@@ -2312,6 +2358,7 @@ func runMalwareScan(client *api.Client, intensityStr string) {
 		}
 	}
 
+	panelNoteScanFindings(allFindings)
 	malwareCount := 0
 	for _, f := range allFindings {
 		if f.SignatureID != "ROOTKIT_EXEC_IN_TMP" {
@@ -2425,6 +2472,10 @@ func modsecurityRemove() error { return modsecurity.New().Remove() }
 // dashboard ban) is no longer reported; once its ban expires and is cleaned
 // up, a new detection is reported as a new ban (which drives escalation).
 func banAndReport(client *api.Client, source, ip, reason string, count int) {
+	if panelAllowed(ip) {
+		log.Printf("[%s] %s is allowed from the hosting panel — not banned (%s)", source, ip, reason)
+		return
+	}
 	added, err := firewall.BanIPOnce(ip)
 	if !added {
 		if err != nil {
@@ -2435,6 +2486,7 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 		return
 	}
 	log.Printf("[%s] banning %s: %s (count=%d)", source, ip, reason, count)
+	panelNoteLocalBan(ip, reason)
 	if err != nil {
 		log.Printf("[firewall] error: %v", err)
 	}

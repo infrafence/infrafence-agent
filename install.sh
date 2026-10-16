@@ -953,6 +953,8 @@ uninstall() {
     rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
     rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
     rm -f /var/lib/infrafence/firewall-state.json  # saved closed ports / egress blocks
+    rm -f /var/lib/infrafence/panel-state.json     # bans lifted / addresses allowed from WHM or Plesk
+    rm -f /run/infrafence/panel.sock && rmdir /run/infrafence 2>/dev/null || true
     rm -f /tmp/infrafence-agent-crash-count /tmp/infrafence-agent-recovered  # before v1.0.29
     rm -rf "$CONFIG_DIR"
 

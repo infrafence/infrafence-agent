@@ -292,6 +292,10 @@ func cmdUninstall(args []string) {
 	if err := os.Remove(fwStatePath); err == nil {
 		fmt.Println("removed", fwStatePath)
 	}
+	// Bans lifted and addresses allowed from a hosting panel.
+	if err := os.Remove(panelStatePath); err == nil {
+		fmt.Println("removed", panelStatePath)
+	}
 	for name, fn := range map[string]func() error{
 		"nginx UA blocking":  webserver.RemoveNginxUABlock,
 		"apache UA blocking": webserver.RemoveApacheUABlock,

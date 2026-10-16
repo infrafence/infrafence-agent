@@ -298,6 +298,18 @@ func UnbanIP(ip string) error {
 	return nil
 }
 
+// IsBanned reports whether the agent currently bans ip (its own detection or
+// a dashboard ban).
+func IsBanned(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	fw.Lock()
+	defer fw.Unlock()
+	return fw.bans[parsed.String()]
+}
+
 var legacyBansMigrated sync.Once
 
 // ApplyBans applies the ban list from the server sync.

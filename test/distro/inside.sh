@@ -106,6 +106,9 @@ fi
 # ── preflight (read only) for the record ──
 /usr/local/bin/infrafence-agent preflight 2>/dev/null | head -25 | sed 's/^/[preflight] /'
 
+# ── hosting panel commands (test/distro/panel.sh) ──
+. /distro/panel.sh
+
 # ── closed ports and egress blocks (test/distro/firewall.sh) ──
 . /distro/firewall.sh
 
@@ -118,6 +121,8 @@ left=""
 iptables -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables"
 ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
+[ -e /var/lib/infrafence/panel-state.json ] && left="$left panel-state"
+[ -e /run/infrafence/panel.sock ] && left="$left panel-socket"
 ipset list -n 2>/dev/null | grep -q infrafence && left="$left ipset"
 systemctl list-unit-files 2>/dev/null | grep -q infrafence-agent && left="$left service"
 [ -e /usr/local/bin/infrafence-agent ] && left="$left binary"
