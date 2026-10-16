@@ -7,6 +7,7 @@ package preflight
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,23 +86,27 @@ type Env interface {
 
 type hostEnv struct{}
 
+// Commands get a fixed, minimal environment (never the caller's: the panel
+// command runs from WHM and Plesk) and run in their own process group,
+// killed as a whole after runTimeout.
+var cmdEnv = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C"}
+
+var runTimeout = 10 * time.Second
+
 func (hostEnv) Run(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
-	done := make(chan struct{})
-	var out []byte
-	var err error
-	go func() {
-		out, err = cmd.CombinedOutput()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		<-done
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = cmdEnv
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// The whole group: plesk db leaves a mysql child behind otherwise.
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+	// Output pipes held open by a stray grandchild don't block the return.
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 func (hostEnv) LookPath(name string) bool { _, err := exec.LookPath(name); return err == nil }

@@ -1,0 +1,1 @@
+{"agent_running":true,"allowlist":[{"actor":"root","added":"2026-10-14T12:00:00Z","address":"198.51.100.4","note":"Office VPN","source":"panel"},{"actor":null,"added":null,"address":"203.0.113.20","note":null,"source":"dashboard"},{"actor":null,"added":null,"address":"10.0.0.0/8","note":null,"source":"dashboard"}],"ok":true}

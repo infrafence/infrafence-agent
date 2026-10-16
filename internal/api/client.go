@@ -514,6 +514,11 @@ type SyncConfig struct {
 	MalwareScanConfig *MalwareScanConfig `json:"malware_scan_config,omitempty"`
 	SigmaConfig       *SigmaConfig       `json:"sigma_config,omitempty"`
 	SessionConfig     *SessionConfig     `json:"session_config,omitempty"`
+	// The organization's plan and AutoMode state, shown read-only by
+	// "infrafence-agent panel status". Absent from dashboards that don't
+	// send them.
+	Plan     string          `json:"plan,omitempty"`
+	AutoMode json.RawMessage `json:"automode,omitempty"`
 }
 
 // MonitorConfig holds monitoring settings synced from the panel.
@@ -589,6 +594,11 @@ type Ban struct {
 	ID        int64   `json:"id"`
 	IPAddress string  `json:"ip_address"`
 	ExpiresAt *string `json:"expires_at"`
+	// Optional, shown by "infrafence-agent panel bans" when the dashboard
+	// sends them: local, network, automode or manual.
+	Reason    string `json:"reason,omitempty"`
+	Source    string `json:"source,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 func (c *Client) Register(req RegisterRequest) (*RegisterResponse, error) {

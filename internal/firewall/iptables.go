@@ -211,6 +211,12 @@ func collectLocalIPs() map[string]bool {
 	return ips
 }
 
+// IsLocalIP reports whether ip is bound to one of this server's interfaces.
+func IsLocalIP(ip string) bool {
+	p := net.ParseIP(ip)
+	return p != nil && isLocalIP(p)
+}
+
 // isLocalIP returns true if the given IP belongs to this server.
 func isLocalIP(ip net.IP) bool {
 	localIPsOnce.Do(func() { localIPs = collectLocalIPs() })
@@ -296,6 +302,18 @@ func UnbanIP(ip string) error {
 	}
 	_, _ = run("iptables", "-D", chainName, "-s", ip, "-j", "DROP")
 	return nil
+}
+
+// IsBanned reports whether the agent currently bans ip (its own detection or
+// a dashboard ban).
+func IsBanned(ip string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	fw.Lock()
+	defer fw.Unlock()
+	return fw.bans[parsed.String()]
 }
 
 var legacyBansMigrated sync.Once

@@ -16,6 +16,9 @@ type Config struct {
 	ReverbURL    string `json:"reverb_url"`
 	ReverbAppKey string `json:"reverb_app_key"`
 	AuthEndpoint string `json:"auth_endpoint"`
+	// Panel turns on the hosting panel socket and commands on a host
+	// without cPanel/WHM or Plesk (where they are on by themselves).
+	Panel bool `json:"panel,omitempty"`
 }
 
 func path() string {
