@@ -17,9 +17,23 @@ import (
 )
 
 const (
-	maxRequest   = 16 << 10
-	connDeadline = 60 * time.Second
-	maxConns     = 4
+	maxRequest = 16 << 10
+	maxConns   = 4
+)
+
+// Replaced in tests.
+var (
+	// readTimeout: the client sends its one-line request at once.
+	readTimeout = 5 * time.Second
+	// writeTimeout starts after the handler (which may wait on the
+	// dashboard), so a slow handler never eats the time to answer.
+	writeTimeout = 5 * time.Second
+	// closeWait bounds how long Close waits for requests in progress: well
+	// below systemd's stop timeout (90 s) used by install.sh.
+	closeWait = 3 * time.Second
+	// bindRetry: during a restart the old agent may still answer for a
+	// moment; Listen waits for it this long.
+	bindRetry = 5 * time.Second
 )
 
 // Handler answers one request.
@@ -35,6 +49,8 @@ type Server struct {
 	sem    chan struct{}
 	// peerOK checks the connecting process (root only); replaced in tests.
 	peerOK func(net.Conn) error
+	// Copied from readTimeout and writeTimeout by Listen.
+	readTimeout, writeTimeout time.Duration
 }
 
 // Listen creates the socket at path: its directory is created 0700 (an
@@ -66,11 +82,10 @@ func Listen(path string) (*Server, error) {
 		if st.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("%s exists and is not a socket", path)
 		}
-		if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
-			c.Close()
+		if !waitUnused(path) {
 			return nil, fmt.Errorf("%s is in use by another process", path)
 		}
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
@@ -84,7 +99,25 @@ func Listen(path string) (*Server, error) {
 	}
 	// The socket file is removed by Close, not by the listener.
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
-	return &Server{path: path, ln: ln, sem: make(chan struct{}, maxConns), peerOK: peerIsRoot}, nil
+	return &Server{path: path, ln: ln, sem: make(chan struct{}, maxConns), peerOK: peerIsRoot,
+		readTimeout: readTimeout, writeTimeout: writeTimeout}, nil
+}
+
+// waitUnused waits up to bindRetry for nobody to answer on path (the
+// previous agent shutting down).
+func waitUnused(path string) bool {
+	deadline := time.Now().Add(bindRetry)
+	for {
+		c, err := net.DialTimeout("unix", path, time.Second)
+		if err != nil {
+			return true
+		}
+		c.Close()
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // Serve answers connections until Close. One request per connection.
@@ -102,6 +135,7 @@ func (s *Server) Serve(h Handler) {
 		select {
 		case s.sem <- struct{}{}:
 		default:
+			_ = c.SetWriteDeadline(time.Now().Add(time.Second))
 			writeResponse(c, Fail(ErrInternal, "agent busy, try again"))
 			c.Close()
 			continue
@@ -124,15 +158,19 @@ func (s *Server) Serve(h Handler) {
 
 func (s *Server) handle(c net.Conn, h Handler) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(connDeadline))
+	_ = c.SetReadDeadline(time.Now().Add(s.readTimeout))
+	reply := func(r Response) {
+		_ = c.SetWriteDeadline(time.Now().Add(s.writeTimeout))
+		writeResponse(c, r)
+	}
 	if err := s.peerOK(c); err != nil {
 		log.Printf("[panel] refused connection: %v", err)
-		writeResponse(c, Fail(ErrBadRequest, "only root may use the panel socket"))
+		reply(Fail(ErrBadRequest, "only root may use the panel socket"))
 		return
 	}
 	line, err := bufio.NewReader(io.LimitReader(c, maxRequest+1)).ReadBytes('\n')
 	if len(line) > maxRequest {
-		writeResponse(c, Fail(ErrBadRequest, "request too large"))
+		reply(Fail(ErrBadRequest, "request too large"))
 		return
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
@@ -142,14 +180,14 @@ func (s *Server) handle(c net.Conn, h Handler) {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeResponse(c, Fail(ErrBadRequest, "invalid request"))
+		reply(Fail(ErrBadRequest, "invalid request"))
 		return
 	}
 	if resp := Validate(&req); resp != nil {
-		writeResponse(c, resp)
+		reply(resp)
 		return
 	}
-	writeResponse(c, safeCall(h, req))
+	reply(safeCall(h, req))
 }
 
 // safeCall keeps a panic in a handler from taking the agent down.
@@ -171,8 +209,8 @@ func writeResponse(w io.Writer, r Response) {
 	_ = json.NewEncoder(w).Encode(r)
 }
 
-// Close stops listening, waits for requests in progress and removes the
-// socket file.
+// Close stops listening, waits up to closeWait for requests in progress
+// and removes the socket file.
 func (s *Server) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -182,7 +220,13 @@ func (s *Server) Close() error {
 	s.closed = true
 	s.mu.Unlock()
 	err := s.ln.Close()
-	s.wg.Wait()
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(closeWait):
+		log.Printf("[panel] shutting down with requests still in progress")
+	}
 	if rmErr := os.Remove(s.path); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
 		err = rmErr
 	}

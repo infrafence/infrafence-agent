@@ -86,6 +86,9 @@ func TestStaleSocketReplacedOthersRefused(t *testing.T) {
 	s := serve(t, path, func(Request) Response { return OK(nil) })
 
 	// A second agent must not take over a live socket.
+	saved := bindRetry
+	bindRetry = 300 * time.Millisecond
+	defer func() { bindRetry = saved }()
 	if _, err := Listen(path); err == nil || !strings.Contains(err.Error(), "in use") {
 		t.Errorf("live socket taken over: %v", err)
 	}
@@ -183,4 +186,85 @@ func TestBadRequestsAndPanics(t *testing.T) {
 	if out := raw(`{"command":"status"}` + "\n"); !strings.Contains(out, ErrInternal) {
 		t.Errorf("nil answer: %s", out)
 	}
+}
+
+// shorten sets a timeout variable for one test.
+func shorten(t *testing.T, v *time.Duration, d time.Duration) {
+	saved := *v
+	*v = d
+	t.Cleanup(func() { *v = saved })
+}
+
+// During a restart the old agent may still answer for a moment.
+func TestListenWaitsForTheOldAgent(t *testing.T) {
+	shorten(t, &bindRetry, 3*time.Second)
+	path := filepath.Join(sockDir(t), "panel.sock")
+	old, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.peerOK = func(net.Conn) error { return nil }
+	go old.Serve(func(Request) Response { return OK(nil) })
+	time.AfterFunc(500*time.Millisecond, func() { old.Close() })
+	s, err := Listen(path)
+	if err != nil {
+		t.Fatalf("new agent could not bind: %v", err)
+	}
+	s.Close()
+}
+
+// A client that connects and sends nothing is dropped after readTimeout.
+func TestSilentClientDropped(t *testing.T) {
+	shorten(t, &readTimeout, 200*time.Millisecond)
+	path := filepath.Join(sockDir(t), "panel.sock")
+	serve(t, path, func(Request) Response { return OK(nil) })
+	c, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	start := time.Now()
+	buf := make([]byte, 64)
+	if _, err := c.Read(buf); err == nil || time.Since(start) > 2*time.Second {
+		t.Errorf("not dropped: %v after %s", err, time.Since(start))
+	}
+}
+
+// The write deadline starts after the handler: a handler slower than the
+// read timeout still answers.
+func TestSlowHandlerStillAnswers(t *testing.T) {
+	shorten(t, &readTimeout, 200*time.Millisecond)
+	shorten(t, &writeTimeout, 200*time.Millisecond)
+	path := filepath.Join(sockDir(t), "panel.sock")
+	serve(t, path, func(Request) Response { time.Sleep(600 * time.Millisecond); return OK(map[string]any{"slow": true}) })
+	resp, err := Call(path, Request{Command: "status"}, 5*time.Second)
+	if err != nil || resp["slow"] != true {
+		t.Errorf("slow handler: %v %v", resp, err)
+	}
+}
+
+// Close never waits longer than closeWait for a stuck request.
+func TestCloseIsBounded(t *testing.T) {
+	shorten(t, &closeWait, 300*time.Millisecond)
+	path := filepath.Join(sockDir(t), "panel.sock")
+	s, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.peerOK = func(net.Conn) error { return nil }
+	release := make(chan struct{})
+	started := make(chan struct{})
+	go s.Serve(func(Request) Response { close(started); <-release; return OK(nil) })
+	go Call(path, Request{Command: "status"}, 10*time.Second)
+	<-started
+	begin := time.Now()
+	s.Close()
+	if d := time.Since(begin); d > 2*time.Second {
+		t.Errorf("Close took %s", d)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Errorf("socket left: %v", err)
+	}
+	close(release)
 }
