@@ -20,7 +20,7 @@
 
 <p align="center">
   <a href="https://github.com/infrafence/infrafence-agent/releases"><img src="https://img.shields.io/github/v/release/infrafence/infrafence-agent?label=version&color=brightgreen" alt="Version"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSL%201.1-blue.svg" alt="License: BSL 1.1"></a>
   <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
   <a href="https://github.com/infrafence/infrafence-agent"><img src="https://img.shields.io/badge/Platform-Linux-orange?logo=linux&logoColor=white" alt="Platform"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/infrafence/infrafence-agent"><img src="https://api.securityscorecards.dev/projects/github.com/infrafence/infrafence-agent/badge" alt="OpenSSF Scorecard"></a>
@@ -279,7 +279,7 @@ O agente é um único binário Go estático (~9 MB, sem dependências), executad
 
 | | Detalhe |
 |---|---|
-| **Código aberto** | O agente tem licença MIT. Revise cada linha antes de instalar. |
+| **Código disponível** | O agente tem licença BSL 1.1: gratuito em produção nos seus servidores e nos dos seus clientes, totalmente transparente, e você pode revisar cada linha antes de instalar. |
 | **O que ele lê** | Logs do sistema e do servidor web, os arquivos dos sites para a varredura de malware (incluindo `.env` e arquivos de configuração), posts e usuários do WordPress para a varredura WordPress, e o tráfego DNS e as conexões de rede do servidor. |
 | **O que ele envia** | Apenas eventos de segurança: IP do atacante, tipo, horário e os detalhes necessários para entendê-los — para um ataque web, a linha de log que o disparou; para um malware, o caminho do arquivo e o texto encontrado. Logs e arquivos completos nunca saem do seu servidor. Sem telemetria, sem compartilhamento com terceiros. |
 | **Firewall** | Suas próprias chains `INFRAFENCE`; suas regras existentes nunca são alteradas. |
@@ -302,7 +302,7 @@ bash scripts/firewall-integration.sh   # real firewall tests in Docker
 
 ## Licença
 
-[MIT](LICENSE)
+O agente é source-available sob a [Business Source License 1.1](LICENSE) (licenciante: ComCart S.r.l.). O uso em produção é gratuito em qualquer número de servidores, inclusive nos dos seus clientes, desde que você não o use para criar um produto concorrente. Quatro anos após cada versão, ela passa a estar disponível sob a licença Apache 2.0.
 
 <p align="center">
   <a href="https://infrafence.com">infrafence.com</a>
