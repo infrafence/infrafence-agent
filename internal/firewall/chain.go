@@ -557,6 +557,20 @@ func Ensure() (EnsureResult, error) {
 	ipset := HasIpset()
 	if ipset {
 		res.Repairs = append(res.Repairs, fw.ensureSets()...)
+		// Bans restored from the state file: an existing set (the agent
+		// restarted, the host did not) may lack some of them. Retried at
+		// the next Ensure until it works.
+		if fw.restored {
+			ips := make([]string, 0, len(fw.bans))
+			for ip := range fw.bans {
+				ips = append(ips, ip)
+			}
+			if err := ipsetBatchAdd(banSetName, ips); err != nil {
+				log.Printf("[firewall] restore bans: %v", err)
+			} else {
+				fw.restored = false
+			}
+		}
 	}
 	r, err := fw.syncChains(ipset)
 	res.Repairs = append(res.Repairs, r...)

@@ -198,3 +198,31 @@ func TestSetBanExpiryAndUnban(t *testing.T) {
 		t.Fatal("unban not recorded")
 	}
 }
+
+// Without ipset an IPv6 ban can't be enforced: it is refused before it
+// takes room (it would evict a real ban and block nothing).
+func TestIPv6WithoutIpsetTakesNoRoom(t *testing.T) {
+	f := withFakeBans(t, 1)
+	BanIPOnce("203.0.113.1")
+	if added, err := BanIPOnce("2001:db8::7"); added || err == nil {
+		t.Fatalf("IPv6 ban without ipset: added=%v err=%v", added, err)
+	}
+	ApplyBans([]Ban{{IP: "2001:db8::8"}})
+	if len(f.evicted) != 0 || !IsBanned("203.0.113.1") || IsBanned("2001:db8::8") {
+		t.Fatalf("evicted %v, bans %v", f.evicted, Bans())
+	}
+}
+
+// Bans without expiry (permanent dashboard bans) are evicted only after
+// every ban that expires, even newer ones.
+func TestEvictionSparesPermanentBans(t *testing.T) {
+	f := withFakeBans(t, 2)
+	BanIPOnce("203.0.113.1") // permanent, oldest
+	f.tick(time.Second)
+	BanIPOnceUntil("203.0.113.2", f.now.Add(time.Hour))
+	f.tick(time.Second)
+	BanIPOnceUntil("203.0.113.3", f.now.Add(time.Hour))
+	if !reflect.DeepEqual(f.evicted, []string{"203.0.113.2"}) || !IsBanned("203.0.113.1") {
+		t.Fatalf("evicted %v, want the oldest expiring ban", f.evicted)
+	}
+}

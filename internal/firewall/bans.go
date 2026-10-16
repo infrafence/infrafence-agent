@@ -63,8 +63,11 @@ func bansChanged() {
 	}
 }
 
-// makeRoomLocked removes the oldest bans so that n new ones fit, never one
-// of keep. Callers hold fw and remove the evicted bans from the kernel.
+// makeRoomLocked removes bans so that n new ones fit, never one of keep:
+// the oldest of the bans that expire first, and bans without expiry (the
+// dashboard's permanent ones) only when no other is left, so a flood of
+// short local bans cannot push them out. Callers hold fw and remove the
+// evicted bans from the kernel.
 func (s *fwState) makeRoomLocked(n int, keep map[string]bool) []string {
 	over := len(s.bans) + n - banCap()
 	if over <= 0 {
@@ -77,7 +80,11 @@ func (s *fwState) makeRoomLocked(n int, keep map[string]bool) []string {
 		}
 	}
 	sort.Slice(ips, func(i, j int) bool {
-		a, b := s.bans[ips[i]].added, s.bans[ips[j]].added
+		x, y := s.bans[ips[i]], s.bans[ips[j]]
+		if px, py := x.expires.IsZero(), y.expires.IsZero(); px != py {
+			return py // the permanent one last
+		}
+		a, b := x.added, y.added
 		if !a.Equal(b) {
 			return a.Before(b)
 		}
@@ -101,10 +108,18 @@ var dropFromKernel = func(ips []string) {
 		return
 	}
 	if HasIpset() {
+		// Under the lock, leaving out an address banned again meanwhile:
+		// its new ban must stay in the set.
+		fw.Lock()
+		defer fw.Unlock()
+		gone := ips[:0:0]
 		for _, ip := range ips {
-			if err := ipsetDel(banSetName, ip); err != nil {
-				log.Printf("[firewall] %v", err)
+			if _, again := fw.bans[ip]; !again {
+				gone = append(gone, ip)
 			}
+		}
+		if err := ipsetBatchDel(banSetName, gone); err != nil {
+			log.Printf("[firewall] %v", err)
 		}
 		return
 	}
@@ -186,7 +201,7 @@ func RestoreBans(bans []Ban) int {
 	var ok []Ban
 	for _, b := range bans {
 		p := net.ParseIP(b.IP)
-		if p == nil || isSafeIP(p) || (!b.Expires.IsZero() && !b.Expires.After(now)) {
+		if p == nil || isSafeIP(p) || (!b.Expires.IsZero() && !b.Expires.After(now)) || !enforceable(p) {
 			continue
 		}
 		if b.Added.IsZero() || b.Added.After(now) {
@@ -229,6 +244,10 @@ func SetBanExpiry(ip string, expires time.Time) bool {
 	}
 	return ok
 }
+
+// enforceable: without ipset only IPv4 bans can be put in the chain; an
+// IPv6 one would take room and evict a real ban while blocking nothing.
+func enforceable(ip net.IP) bool { return ip.To4() != nil || HasIpset() }
 
 func short(ips []string) []string {
 	if len(ips) > 10 {

@@ -22,20 +22,6 @@ func Init() {
 		log.Printf("[firewall] setup failed: %v", err)
 		return
 	}
-	// Bans restored from the state file: an existing set (the agent
-	// restarted, the host did not) may lack some of them.
-	fw.Lock()
-	var restored []string
-	if fw.restored && HasIpset() {
-		for ip := range fw.bans {
-			restored = append(restored, ip)
-		}
-	}
-	fw.restored = false
-	fw.Unlock()
-	if err := ipsetBatchAdd(banSetName, restored); err != nil {
-		log.Printf("[firewall] restore bans: %v", err)
-	}
 	mode := "iptables (limited capacity)"
 	if HasIpset() {
 		mode = "ipset"
@@ -286,6 +272,9 @@ func BanIPOnceUntil(ip string, expires time.Time) (added bool, err error) {
 	if isSafeIP(parsed) {
 		return false, fmt.Errorf("refusing to ban safe IP: %s", ip)
 	}
+	if !enforceable(parsed) {
+		return false, fmt.Errorf("IPv6 bans need ipset: %s", ip)
+	}
 	added, out := claimBan(parsed.String(), expires)
 	evicted(out)
 	err = applyBan(parsed, ip)
@@ -379,6 +368,9 @@ func ApplyBans(bans []Ban) {
 			if e := expires[ip]; !e.IsZero() && (b.Expires.IsZero() || b.Expires.After(e)) {
 				expires[ip] = b.Expires
 			}
+			continue
+		}
+		if !enforceable(parsed) {
 			continue
 		}
 		expires[ip] = b.Expires
