@@ -144,7 +144,13 @@ func (c *Client) do(hc *http.Client, req *http.Request) (*http.Response, error) 
 	resp, err := hc.Do(req)
 	if err != nil {
 		c.recycleConns(time.Now().UnixNano())
+		if req.Context().Err() == nil {
+			c.gate.Unreachable()
+		}
 		return nil, err
+	}
+	if resp.StatusCode >= 500 {
+		c.gate.Unreachable() // the dashboard is down, not refusing
 	}
 	switch {
 	case resp.StatusCode < 400:

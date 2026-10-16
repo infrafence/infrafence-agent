@@ -35,6 +35,20 @@ type Gate struct {
 	code      int
 	suspended bool
 
+	// The refusal clock: since is the first refusal with no accepted
+	// request after it (kept across restarts by the agent, Restore), last
+	// the latest refusal, unreachable the latest time the dashboard could
+	// not be reached (network error, timeout, 5xx).
+	since, last, unreachable time.Time
+	// idle: protection is off after a long refusal; the agent only asks
+	// the dashboard every Suspended.
+	idle bool
+	// onAccepted, if set, is called (without the lock) by the first OK
+	// after a refusal.
+	onAccepted func()
+	// onChange, if set, is called (without the lock) when since changes.
+	onChange func()
+
 	now  func() time.Time
 	rand func() float64
 	logf func(format string, args ...any)
@@ -43,6 +57,66 @@ type Gate struct {
 // New returns a Gate that lets every request through.
 func New() *Gate {
 	return &Gate{now: time.Now, rand: rand.Float64, logf: log.Printf}
+}
+
+// OnAccepted sets a function called when the dashboard accepts the agent
+// again after refusing it. Set before use, or from one goroutine.
+func (g *Gate) OnAccepted(fn func()) {
+	g.mu.Lock()
+	g.onAccepted = fn
+	g.mu.Unlock()
+}
+
+// OnClockChange sets a function called when the refusal clock starts or is
+// reset (to save it). Set before use.
+func (g *Gate) OnClockChange(fn func()) { g.onChange = fn }
+
+// RestoreClock sets the start of the refusal clock saved before a restart
+// (zero: none). The backoff itself starts afresh.
+func (g *Gate) RestoreClock(since time.Time) {
+	g.mu.Lock()
+	g.since = since
+	g.mu.Unlock()
+}
+
+// SetIdle makes every refusal wait Suspended (about 30 minutes): the agent
+// only checks whether the dashboard accepts it again.
+func (g *Gate) SetIdle(on bool) {
+	g.mu.Lock()
+	g.idle = on
+	g.mu.Unlock()
+}
+
+// RefusedSince is the start of the current refusal streak (zero: the
+// dashboard accepted the agent since its last refusal, or never refused).
+func (g *Gate) RefusedSince() time.Time {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.since
+}
+
+// Unreachable records that the dashboard could not be reached (network
+// error, timeout, 5xx): not a refusal, and the refusal clock does not
+// count it as one (see RefusedFor).
+func (g *Gate) Unreachable() {
+	g.mu.Lock()
+	g.unreachable = g.now()
+	g.mu.Unlock()
+}
+
+// RefusedFor returns how long the dashboard has refused the agent, counted
+// only while it answers: every answer since the clock started was a
+// refusal, the latest answer came within fresh, and nothing after it
+// failed to reach the dashboard. Otherwise it returns 0 (an outage on the
+// dashboard's side is never a refusal).
+func (g *Gate) RefusedFor(fresh time.Duration) time.Duration {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	if g.since.IsZero() || g.last.IsZero() || now.Sub(g.last) > fresh || !g.unreachable.Before(g.last) {
+		return 0
+	}
+	return now.Sub(g.since)
 }
 
 // NewWith is New with its clock, random source and logger replaced (tests).
@@ -94,8 +168,19 @@ func (g *Gate) Refused(status int, body []byte) time.Duration {
 		return 0
 	}
 	suspended := IsSuspended(status, body)
+	notify := false
+	defer func() { // registered first: runs after the unlock
+		if notify && g.onChange != nil {
+			g.onChange()
+		}
+	}()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	now0 := g.now()
+	g.last = now0
+	if g.since.IsZero() {
+		g.since, notify = now0, true
+	}
 	// Requests sent together when the wait ended (heartbeat, sync, events)
 	// are one try: only the first refusal of a round extends the backoff.
 	if now := g.now(); g.failures > 0 && now.Before(g.until) && suspended == g.suspended && status == g.code {
@@ -105,7 +190,7 @@ func (g *Gate) Refused(status int, body []byte) time.Duration {
 	g.failures++
 	g.code, g.suspended = status, suspended
 	wait := Delay(g.failures, g.rand())
-	if suspended {
+	if suspended || g.idle {
 		wait = Suspended - time.Duration(g.rand()*float64(Suspended)/10)
 	}
 	g.until = g.now().Add(wait)
@@ -125,13 +210,34 @@ func (g *Gate) Refused(status int, body []byte) time.Duration {
 // OK records an accepted request: the next ones go through at once. It
 // reports whether the agent was being refused until now.
 func (g *Gate) OK() bool {
+	notify := false
+	defer func() { // registered first: runs after the unlock
+		if notify && g.onChange != nil {
+			g.onChange()
+		}
+	}()
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	notify = g.clearClock()
+	if notify && g.onAccepted != nil {
+		fn := g.onAccepted
+		defer func() { go fn() }()
+	}
 	if g.failures == 0 {
 		return false
 	}
 	g.logf("[api] the dashboard accepts the agent again after %d refusal(s)", g.failures)
 	g.failures, g.code, g.suspended, g.until = 0, 0, false, time.Time{}
+	return true
+}
+
+// clearClock resets the refusal clock after an accepted request; it
+// reports whether it was running.
+func (g *Gate) clearClock() bool {
+	if g.since.IsZero() && g.last.IsZero() {
+		return false
+	}
+	g.since, g.last = time.Time{}, time.Time{}
 	return true
 }
 

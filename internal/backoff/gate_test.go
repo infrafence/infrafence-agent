@@ -144,3 +144,72 @@ func TestGateOneStepPerRound(t *testing.T) {
 		t.Fatalf("next round: %s, want %s", w, 4*Min)
 	}
 }
+
+// The refusal clock counts only while the dashboard answers with refusals:
+// it starts at the first one, survives a restart (RestoreClock), is reset by
+// any success, and an unreachable dashboard never counts.
+func TestRefusalClock(t *testing.T) {
+	g, clk, _ := newGate(0)
+	changes := 0
+	g.OnClockChange(func() { changes++ })
+	start := clk.now()
+	g.Refused(403, []byte(`{"error":"suspended"}`))
+	if !g.RefusedSince().Equal(start) || changes != 1 {
+		t.Fatalf("since %s changes %d", g.RefusedSince(), changes)
+	}
+	for i := 0; i < 48; i++ { // a day of refusals every 30 minutes
+		clk.add(30 * time.Minute)
+		g.Refused(403, []byte(`{"error":"suspended"}`))
+	}
+	if d := g.RefusedFor(time.Hour); d != 24*time.Hour || changes != 1 {
+		t.Fatalf("refused for %s (changes %d), want 24h", d, changes)
+	}
+	// The latest answer must be fresh.
+	clk.add(2 * time.Hour)
+	if d := g.RefusedFor(time.Hour); d != 0 {
+		t.Fatalf("stale refusal counted: %s", d)
+	}
+	// Unreachable after the latest refusal: not counted.
+	g.Refused(403, nil)
+	g.Unreachable()
+	if d := g.RefusedFor(time.Hour); d != 0 {
+		t.Fatalf("an unreachable dashboard counted as refusing: %s", d)
+	}
+	clk.add(time.Minute)
+	g.Refused(403, nil)
+	if d := g.RefusedFor(time.Hour); d == 0 {
+		t.Fatal("refusal after the outage not counted")
+	}
+
+	// A restart keeps the start.
+	g2, clk2, _ := newGate(0)
+	clk2.t = clk.t
+	g2.RestoreClock(start)
+	g2.Refused(401, nil)
+	if !g2.RefusedSince().Equal(start) {
+		t.Fatalf("restored clock lost: %s", g2.RefusedSince())
+	}
+	// Any success resets it.
+	accepted := make(chan struct{}, 1)
+	g2.OnAccepted(func() { accepted <- struct{}{} })
+	g2.OnClockChange(func() { changes++ })
+	before := changes
+	g2.OK()
+	if !g2.RefusedSince().IsZero() || g2.RefusedFor(time.Hour) != 0 || changes != before+1 {
+		t.Fatal("success did not reset the clock")
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("OnAccepted not called")
+	}
+}
+
+// After the switch-off the agent only asks every 30 minutes.
+func TestGateIdle(t *testing.T) {
+	g, _, _ := newGate(0)
+	g.SetIdle(true)
+	if w := g.Refused(401, nil); w != Suspended {
+		t.Fatalf("idle wait %s, want %s", w, Suspended)
+	}
+}
