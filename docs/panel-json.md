@@ -20,6 +20,13 @@ or when `/etc/infrafence/config.json` has `"panel": true`. On every other server
 There, commands answer as if the agent were not running: `agent_running: false`, and `agent_not_running` for
 the commands that need the agent.
 
+## Who may see it
+
+Every reply covers **the whole server**: all accounts' sites, bans, events and findings, and the server's
+allow list. The agent has no notion of resellers or account owners. Restricting what a reseller or an
+account sees is the plugin's job. In v1 the plugins are for root/administrators only (WHM `acls=all`, the
+Plesk administrator), and must not expose any of this to resellers or customers.
+
 ## Rules for every reply
 
 - stdout carries exactly one JSON object followed by a newline. Nothing else is printed on stdout or
@@ -216,6 +223,7 @@ printable text).
   "banned": false,
   "ip": "198.51.100.77",
   "ok": true,
+  "own_address": false,
   "reported": true
 }
 ```
@@ -228,9 +236,11 @@ printable text).
 | `ip` | string | | yes | Canonical form. |
 | `reported` | boolean | | no | Absent when `already` is `true`. As for `unban`. |
 | `banned` | boolean | | no | Absent when `already` is `true`. `true`: the address is also banned. The allow list wins: it is not blocked, but the ban is still listed. |
-| `already` | boolean | `true` | no | Present (and the only extra field) when the address was already allowed (this list, the dashboard's, or the server's own addresses). Nothing was changed or reported. |
+| `already` | boolean | `true` | no | Present when the address was already allowed (this list, the dashboard's, or the server's own addresses). Nothing was changed or reported. Then only `ip` and `own_address` come with it. |
+| `own_address` | boolean | | yes | `true`: this is one of the server's own addresses (bound locally, or its public address). It is never banned anyway; show a warning, since this is usually a mistake. |
 
-Errors: `invalid_ip`, `invalid_actor`, `bad_request` (invalid note, or 1,000 entries already), `internal_error`.
+Errors: `loopback_address`, `invalid_ip`, `invalid_actor`, `bad_request` (invalid note, or 1,000 entries
+already), `internal_error`.
 
 ### `allowlist`
 
@@ -677,6 +687,7 @@ Error codes:
 | `invalid_actor` | `--actor` missing on a command that changes something, or not 1–64 of `A–Z a–z 0–9 . _ @ - +`. |
 | `not_root` | The command was not run as root. |
 | `agent_not_running` | The agent is not running (all commands except `status`, `coexistence`, `sites`). |
+| `loopback_address` | `allow`: a loopback address (`127.0.0.0/8`, `::1`); it is never banned and is refused. |
 | `not_banned` | `unban`: the address is not banned on this server (or was already lifted). |
 | `not_in_allowlist` | `disallow`: the address is not on the allow list. |
 | `managed_by_dashboard` | `disallow`: the entry belongs to the organization's allow list in the dashboard. |

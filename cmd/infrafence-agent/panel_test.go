@@ -48,7 +48,7 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	f := &fakePanelHost{now: time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC), banned: map[string]bool{}}
 	saved := []any{panelStatePath, panelNow, panelIsBanned, panelUnbanIP, panelSetAllowList, panelIsAllowListed,
 		panelInThreatSet, panelRequestSync, panelReportFn, panelDetectSites, panelCoexistence, panelDetectRoots,
-		panelClaimScan, panelStartScan, panelEuid, panelDetectPanelID, panelSocketPath, panelInfo, panelSystemDirs, panelLookupUser}
+		panelClaimScan, panelStartScan, panelEuid, panelDetectPanelID, panelSocketPath, panelInfo, panelSystemDirs, panelLookupUser, panelOwnAddress}
 	panelStatePath = filepath.Join(t.TempDir(), "panel-state.json")
 	panelNow = func() time.Time { return f.now }
 	panelIsBanned = func(ip string) bool { return f.banned[ip] }
@@ -56,6 +56,7 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	panelSetAllowList = func(e []string) { f.allowSets = append(f.allowSets, append([]string(nil), e...)) }
 	panelIsAllowListed = func(string) bool { return false }
 	panelInThreatSet = func(string) bool { return false }
+	panelOwnAddress = func(ip string) bool { return ip == "203.0.113.50" }
 	panelRequestSync = func(r string) { f.syncs = append(f.syncs, r) }
 	panelReportFn = func(ev []api.EventRequest) error {
 		if f.reportErr != nil {
@@ -121,6 +122,7 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 		panelClaimScan = saved[12].(func() bool)
 		panelStartScan = saved[13].(func(malware.WebRoot, func() error))
 		panelLookupUser = saved[19].(func(string) (string, int, error))
+		panelOwnAddress = saved[20].(func(string) bool)
 		panelEuid = saved[14].(func() int)
 		panelDetectPanelID = saved[15].(func() string)
 		panelSocketPath = saved[16].(string)
@@ -129,6 +131,7 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 			agentID   int64
 			serverURL string
 			panelID   string
+			selfIP    string
 		})
 		resetPanelState()
 		webRootsCache.roots = nil
@@ -888,5 +891,28 @@ func TestPanelOffElsewhere(t *testing.T) {
 	// cPanel/WHM or Plesk: on, with the saved state.
 	if !panelEnable("plesk", false, func([]api.EventRequest) error { return nil }) || !panelOn.Load() || len(panelState.p.Lifted) != 1 {
 		t.Errorf("not enabled on Plesk: on=%v lifted=%v", panelOn.Load(), panelState.p.Lifted)
+	}
+}
+
+func TestPanelAllowLoopbackAndOwnAddress(t *testing.T) {
+	f := withFakePanel(t)
+	syncWith(nil)
+	for _, ip := range []string{"127.0.0.1", "127.8.9.10", "::1"} {
+		if r := handlePanel(panel.Request{Command: "allow", IP: ip, Actor: "root"}); r["error"] != panel.ErrLoopback {
+			t.Errorf("allow %s: %v", ip, r)
+		}
+	}
+	if len(panelAllowedIPs()) != 0 || len(f.reported) != 0 {
+		t.Errorf("loopback recorded: %v %v", panelAllowedIPs(), f.reported)
+	}
+	// The server's own address: allowed, with a warning.
+	if r := handlePanel(panel.Request{Command: "allow", IP: "203.0.113.50", Actor: "root"}); !r.Succeeded() || r["own_address"] != true {
+		t.Errorf("own address: %v", r)
+	}
+	if r := handlePanel(panel.Request{Command: "allow", IP: "203.0.113.50", Actor: "root"}); r["already"] != true || r["own_address"] != true {
+		t.Errorf("own address again: %v", r)
+	}
+	if r := handlePanel(panel.Request{Command: "allow", IP: "198.51.100.5", Actor: "root"}); r["own_address"] != false {
+		t.Errorf("other address: %v", r)
 	}
 }

@@ -211,6 +211,12 @@ func collectLocalIPs() map[string]bool {
 	return ips
 }
 
+// IsLocalIP reports whether ip is bound to one of this server's interfaces.
+func IsLocalIP(ip string) bool {
+	p := net.ParseIP(ip)
+	return p != nil && isLocalIP(p)
+}
+
 // isLocalIP returns true if the given IP belongs to this server.
 func isLocalIP(ip net.IP) bool {
 	localIPsOnce.Do(func() { localIPs = collectLocalIPs() })

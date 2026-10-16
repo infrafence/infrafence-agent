@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -42,6 +43,7 @@ var (
 	panelSetAllowList  = firewall.SetAllowList
 	panelIsAllowListed = firewall.IsAllowListed
 	panelInThreatSet   = firewall.InThreatSet
+	panelOwnAddress    = func(ip string) bool { return firewall.IsLocalIP(ip) || ip == panelInfo.selfIP }
 	panelRequestSync   = func(string) {}
 	panelDetectSites   = preflight.DetectSites
 	panelCoexistence   = preflight.DetectCoexistence
@@ -57,6 +59,7 @@ var panelInfo struct {
 	agentID   int64
 	serverURL string
 	panelID   string
+	selfIP    string // public address (NAT'd clouds don't bind it locally)
 }
 
 // panelLastHeartbeat is the unix time of the last heartbeat the dashboard
@@ -149,6 +152,7 @@ func dashboardURL(serverURL string, agentID int64) string {
 // and the agent runs on without it.
 func startPanelSocket(client *api.Client, cfg *config.Config, panelID string, requestSync func(string)) func() {
 	panelInfo.agentID, panelInfo.serverURL, panelInfo.panelID = cfg.AgentID, cfg.ServerURL, panelID
+	panelInfo.selfIP = detectOutboundIP()
 	panelRequestSync = requestSync
 	// The scan slot is already claimed by panelScan.
 	panelStartScan = func(root malware.WebRoot, verify func() error) {
@@ -532,10 +536,16 @@ func panelApplyAllow() {
 // panelAllow adds ip to this server's allow list: never banned or blocked
 // by InfraFence again (it opens nothing in the host firewall).
 func panelAllow(ip, note, actor string) panel.Response {
+	if a, err := netip.ParseAddr(ip); err == nil && a.IsLoopback() {
+		return panel.Fail(panel.ErrLoopback, "%s is a loopback address: it is never banned and can't be allow-listed", ip)
+	}
+	// Allowed anyway (the server's own addresses are never banned), with a
+	// warning the plugin can show: usually a mistake.
+	own := panelOwnAddress(ip)
 	panelState.Lock()
 	if slices.ContainsFunc(panelState.p.Allowed, func(a panelAllowEntry) bool { return a.IP == ip }) || panelIsAllowListed(ip) {
 		panelState.Unlock()
-		return panel.OK(map[string]any{"ip": ip, "already": true})
+		return panel.OK(map[string]any{"ip": ip, "already": true, "own_address": own})
 	}
 	if len(panelState.p.Allowed) >= maxPanelAllow {
 		panelState.Unlock()
@@ -556,7 +566,7 @@ func panelAllow(ip, note, actor string) panel.Response {
 		details["note"] = note
 	}
 	reported := panelReport([]api.EventRequest{panelEventFor("panel_allow", actor, details)})
-	return panel.OK(map[string]any{"ip": ip, "reported": reported, "banned": panelIsBanned(ip)})
+	return panel.OK(map[string]any{"ip": ip, "reported": reported, "banned": panelIsBanned(ip), "own_address": own})
 }
 
 func panelDisallow(ip, actor string) panel.Response {

@@ -34,6 +34,7 @@ const (
 	ErrManaged         = "managed_by_dashboard"
 	ErrUnknownPath     = "not_a_document_root"
 	ErrNotScannable    = "not_scannable"
+	ErrLoopback        = "loopback_address"
 	ErrScanRunning     = "scan_running"
 	ErrInternal        = "internal_error"
 	ErrNotRoot         = "not_root"
