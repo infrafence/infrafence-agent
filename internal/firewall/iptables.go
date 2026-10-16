@@ -17,6 +17,10 @@ const banSetName = "infrafence-bans"
 // migrates rules earlier versions put directly into INPUT.
 func Init() {
 	checkIpset()
+	if Disabled() {
+		log.Printf("[firewall] protection is switched off: no %s chain, nothing changed", chainName)
+		return
+	}
 	res, err := Ensure()
 	if err != nil {
 		log.Printf("[firewall] setup failed: %v", err)
@@ -299,6 +303,9 @@ func claimBan(ip string, expires time.Time) (bool, []string) {
 }
 
 func applyBan(parsed net.IP, ip string) error {
+	if Disabled() {
+		return nil // recorded, applied when protection is back
+	}
 	if HasIpset() {
 		return ipsetAdd(banSetName, ip)
 	}
@@ -326,6 +333,9 @@ func UnbanIP(ip string) error {
 	fw.Unlock()
 	if had {
 		bansChanged()
+	}
+	if Disabled() {
+		return nil
 	}
 
 	if HasIpset() {
@@ -414,6 +424,9 @@ func ApplyBans(bans []Ban) {
 	if changed {
 		bansChanged()
 	}
+	if Disabled() {
+		return
+	}
 
 	if HasIpset() {
 		if err := ipsetBatchAdd(banSetName, safe); err != nil {
@@ -447,6 +460,9 @@ func CleanupStaleBans(activeBanIPs map[string]bool, activeRuleIPs map[string]boo
 	}
 
 	removed := 0
+	if Disabled() {
+		return 0
+	}
 	if HasIpset() {
 		// Also drop set members the agent no longer knows about (e.g. from
 		// before a restart).

@@ -44,6 +44,10 @@ type fwState struct {
 	initialized bool
 	allow       []string            // whitelist IPs/CIDRs from the dashboard
 	bans        map[string]banEntry // every IP currently banned by the agent
+	// disabled: protection is switched off (Disable): nothing of the
+	// agent's is in the kernel and nothing is put there until Enable; the
+	// desired state above is kept.
+	disabled bool
 	// restored: bans were loaded from the state file (RestoreBans) and are
 	// not in the ipset yet.
 	restored    bool
@@ -553,6 +557,9 @@ func Ensure() (EnsureResult, error) {
 	fw.Lock()
 	defer fw.Unlock()
 	res := EnsureResult{First: !fw.initialized}
+	if fw.disabled {
+		return res, nil
+	}
 
 	ipset := HasIpset()
 	if ipset {
@@ -625,6 +632,57 @@ func SetAllowList(entries []string) {
 			log.Printf("[firewall] apply allow list: %v", err)
 		}
 	}
+}
+
+// ErrDisabled is returned by changes refused while protection is off.
+var ErrDisabled = errors.New("InfraFence protection is switched off on this server")
+
+// Disabled reports whether protection is switched off (Disable).
+func Disabled() bool {
+	fw.Lock()
+	defer fw.Unlock()
+	return fw.disabled
+}
+
+// SetDisabled marks protection as off without touching the kernel: at
+// startup, before Init, when it was switched off before the restart.
+func SetDisabled(off bool) {
+	fw.Lock()
+	fw.disabled = off
+	fw.Unlock()
+}
+
+// Disable switches InfraFence's protection off: it removes every chain,
+// jump and set of its own (RemoveAll: other tools' rules and the tables are
+// never touched) and keeps them out, whatever Ensure, bans, country blocks
+// or threat feeds ask, until Enable. What it should enforce is kept in
+// memory for Enable. It returns what was removed.
+func Disable() []string {
+	fw.Lock()
+	fw.disabled = true
+	fw.resetSnapshotsLocked()
+	fw.Unlock()
+	return RemoveAll()
+}
+
+// Enable switches protection back on and rebuilds the chains and sets from
+// the kept state (the sync that follows brings the dashboard's).
+func Enable() (EnsureResult, error) {
+	fw.Lock()
+	fw.disabled = false
+	fw.resetSnapshotsLocked()
+	fw.restored = len(fw.bans) > 0 // an existing ban set may lack them
+	fw.Unlock()
+	return Ensure()
+}
+
+// resetSnapshotsLocked forgets what the chains looked like, so the next
+// Ensure rebuilds them all.
+func (s *fwState) resetSnapshotsLocked() {
+	s.lastDesired, s.applied = "", nil
+	s.peFailedKey, s.peInForce = "", false
+	s.v6Desired, s.v6Applied, s.v6FailedKey, s.v6InForce = "", nil, "", false
+	s.legacyDone = true
 }
 
 // RestoreAllowList sets the allow list saved before a restart, before Init,

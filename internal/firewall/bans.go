@@ -104,7 +104,7 @@ func (s *fwState) makeRoomLocked(n int, keep map[string]bool) []string {
 // rebuilds the chain without them. Call without the fw lock. Replaced in
 // tests.
 var dropFromKernel = func(ips []string) {
-	if len(ips) == 0 {
+	if len(ips) == 0 || Disabled() {
 		return
 	}
 	if HasIpset() {
