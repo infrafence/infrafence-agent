@@ -91,13 +91,6 @@ func TestRefusalSwitchesOffAfter24h(t *testing.T) {
 	if protectionDisabled() || h.disabled != 0 {
 		t.Fatal("switched off before 24 hours")
 	}
-	// Unreachable now: not counted, even past 24 hours.
-	g.Unreachable()
-	*now = now.Add(10 * time.Minute)
-	checkRefusal(g, refusalLimit, h.report)
-	if protectionDisabled() {
-		t.Fatal("switched off while the dashboard is unreachable")
-	}
 	step(time.Minute)
 	if !protectionDisabled() || h.disabled != 1 || h.detached != 1 || h.stopped != 1 {
 		t.Fatalf("not switched off: %+v", h)
@@ -144,9 +137,12 @@ func TestRefusalSwitchesOffAfter24h(t *testing.T) {
 func TestRefusalPersistsAcrossRestart(t *testing.T) {
 	h, g, now := withRefusal(t, false)
 	start := *now
-	g.Refused(401, nil)
-	*now = now.Add(25 * time.Hour)
-	g.Refused(401, nil)
+	unauth := []byte(`{"message":"Unauthenticated."}`)
+	for i := 0; i <= 50; i++ {
+		g.Refused(401, unauth)
+		*now = now.Add(30 * time.Minute)
+	}
+	*now = now.Add(-30 * time.Minute)
 	checkRefusal(g, refusalLimit, h.report)
 	if !protectionDisabled() {
 		t.Fatal("not switched off")
@@ -167,27 +163,52 @@ func TestRefusalPersistsAcrossRestart(t *testing.T) {
 	protCtl.Unlock()
 	g2 := backoff.NewWith(func() time.Time { return *now }, func() float64 { return 0 }, t.Logf)
 	restoreRefusal(st, g2)
-	if !protectionDisabled() || !firewall.Disabled() || !g2.RefusedSince().Equal(start) {
-		t.Fatalf("after restart: disabled=%v fw=%v since=%s", protectionDisabled(), firewall.Disabled(), g2.RefusedSince())
+	// Off again, and InfraFence's rules removed again (a reboot may have
+	// restored them).
+	if !protectionDisabled() || h.disabled != 2 || !g2.RefusedSince().Equal(start) {
+		t.Fatalf("after restart: disabled=%v removals=%d since=%s", protectionDisabled(), h.disabled, g2.RefusedSince())
 	}
-	if w := g2.Refused(401, nil); w < 27*time.Minute {
+	if w := g2.Refused(401, unauth); w < 27*time.Minute {
 		t.Fatalf("not idle after the restart: %s", w)
 	}
 }
 
 // A clock that restarted mid-way still counts from the first refusal; a
 // success resets it.
-func TestRefusalClockResetBySuccess(t *testing.T) {
+func TestRefusalClockResetBySuccessOrOutage(t *testing.T) {
 	h, g, now := withRefusal(t, false)
-	g.Refused(401, nil)
-	*now = now.Add(20 * time.Hour)
+	unauth := []byte(`{"message":"Unauthenticated."}`)
+	refuseFor := func(d time.Duration) {
+		for end := now.Add(d); now.Before(end); *now = now.Add(30 * time.Minute) {
+			g.Refused(401, unauth)
+		}
+		g.Refused(401, unauth)
+	}
+	refuseFor(20 * time.Hour)
 	g.OK()
-	g.Refused(401, nil)
-	*now = now.Add(5 * time.Hour)
-	g.Refused(401, nil)
+	refuseFor(5 * time.Hour)
 	checkRefusal(g, refusalLimit, h.report)
 	if protectionDisabled() {
 		t.Fatal("a success in between did not reset the clock")
+	}
+	// An outage in between: not 24 hours of refusal either.
+	refuseFor(20 * time.Hour)
+	g.Unreachable()
+	*now = now.Add(time.Hour)
+	refuseFor(5 * time.Hour)
+	checkRefusal(g, refusalLimit, h.report)
+	if protectionDisabled() {
+		t.Fatal("an outage counted as refusal")
+	}
+	// One refusal, a day of outage, one refusal: never.
+	g.Unreachable()
+	g.Refused(401, unauth)
+	*now = now.Add(26 * time.Hour)
+	g.Unreachable()
+	g.Refused(401, unauth)
+	checkRefusal(g, refusalLimit, h.report)
+	if protectionDisabled() {
+		t.Fatal("a refusal after a day of outage switched protection off")
 	}
 }
 

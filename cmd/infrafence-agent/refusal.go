@@ -86,6 +86,9 @@ func refusalLimitFor(ver string) time.Duration {
 
 // protCtl is the switch-off state, saved with the protection state.
 var protCtl = struct {
+	// op is held for a whole switch-off or switch-on, so they never
+	// interleave (a sync succeeding while protection is being switched off).
+	op sync.Mutex
 	sync.Mutex
 	disabledAt  time.Time
 	motdCreated bool // /etc/motd.d was created by the agent
@@ -131,12 +134,17 @@ func restoreRefusal(st *protPersisted, g *backoff.Gate) {
 	}
 	off := !protCtl.disabledAt.IsZero()
 	protCtl.Unlock()
-	if st != nil && st.RefusedSince > 0 {
-		g.RestoreClock(time.Unix(st.RefusedSince, 0))
+	if st != nil && st.RefusedSince > 0 && st.RefusedLast > 0 {
+		g.RestoreClock(time.Unix(st.RefusedSince, 0), time.Unix(st.RefusedLast, 0))
 	}
 	g.OnClockChange(scheduleProtectionSave)
 	if off {
-		firewall.SetDisabled(true)
+		// Off before the restart: whatever a reboot or a firewall restore
+		// brought back of InfraFence's own chains and sets goes again
+		// (only ours, as at the switch-off), and stays out.
+		if removed := disableFirewall(); len(removed) > 0 {
+			log.Printf("[protection] protection is switched off: removed again %v", removed)
+		}
 		g.SetIdle(true)
 		writeMotd()
 		log.Printf("[protection] WARNING: %s (switched off %s; checking the dashboard every 30 minutes)", motdText, time.Unix(st.DisabledAt, 0).UTC().Format(time.RFC3339))
@@ -162,23 +170,33 @@ func checkRefusal(g *backoff.Gate, limit time.Duration, report func([]api.EventR
 
 // disableProtection switches protection off (see the top of this file).
 func disableProtection(g *backoff.Gate, refusedFor time.Duration, report func([]api.EventRequest) error) {
-	protCtl.Lock()
-	if !protCtl.disabledAt.IsZero() {
-		protCtl.Unlock()
+	protCtl.op.Lock()
+	defer protCtl.op.Unlock()
+	// Again under op: a sync may have succeeded meanwhile.
+	if protectionDisabled() || g.RefusedFor(refusalFresh) == 0 {
 		return
 	}
 	now := refusalNow()
-	protCtl.disabledAt = now
+	protCtl.Lock()
 	ws := protCtl.watchers
 	protCtl.Unlock()
 
 	log.Printf("[protection] the dashboard has refused the agent for %s: switching InfraFence protection off", refusedFor.Round(time.Minute))
 	before := sshSnapshot()
 	ws.setMonitorMode(true)
+	intelState.Lock()
+	intelState.monitorMode = true // port-scan bans too
+	intelState.appliedKey = ""
+	intelState.Unlock()
 	removed := disableFirewall()
 	detachWebserver()
 	stopRealtimeMalware()
 	g.SetIdle(true)
+	// Saved as off only once everything is removed: a restart meanwhile
+	// finds protection on and the clock still running.
+	protCtl.Lock()
+	protCtl.disabledAt = now
+	protCtl.Unlock()
 	res := sshCheck(before)
 	if res.SSHOK {
 		log.Printf("[protection] removed %v; SSH still answers", removed)
@@ -207,6 +225,8 @@ func disableProtection(g *backoff.Gate, refusedFor time.Duration, report func([]
 // before the sync is applied (which brings the dashboard's state). It
 // reports whether protection was off.
 func enableProtection(report func([]api.EventRequest) error) bool {
+	protCtl.op.Lock()
+	defer protCtl.op.Unlock()
 	protCtl.Lock()
 	if protCtl.disabledAt.IsZero() {
 		protCtl.Unlock()
@@ -297,13 +317,23 @@ func writeMotd() {
 		protCtl.Unlock()
 	}
 	path := filepath.Join(motdDir, "infrafence")
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(motdText+"\n"), 0o644); err != nil {
-		log.Printf("[protection] write %s: %v", path, err)
-		return
+	tmp, err := os.CreateTemp(motdDir, ".infrafence.*") // new file, never followed
+	if err == nil {
+		_, err = tmp.WriteString(motdText + "\n")
+		if err == nil {
+			err = tmp.Chmod(0o644)
+		}
+		if cerr := tmp.Close(); err == nil {
+			err = cerr
+		}
+		if err == nil {
+			err = os.Rename(tmp.Name(), path)
+		}
+		if err != nil {
+			os.Remove(tmp.Name())
+		}
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err != nil {
 		log.Printf("[protection] write %s: %v", path, err)
 	}
 }

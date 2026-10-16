@@ -2574,6 +2574,9 @@ func modsecurityRemove() error { return modsecurity.New().Remove() }
 // dashboard ban) is no longer reported; once its ban expires and is cleaned
 // up, a new detection is reported as a new ban (which drives escalation).
 func banAndReport(client *api.Client, source, ip, reason string, count int) {
+	if protectionDisabled() {
+		return // switched off after a long refusal (refusal.go)
+	}
 	if panelAllowed(ip) {
 		log.Printf("[%s] %s is allowed from the hosting panel — not banned (%s)", source, ip, reason)
 		return

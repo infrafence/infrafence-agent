@@ -69,6 +69,7 @@ type protPersisted struct {
 	// The refusal clock and the switch-off (refusal.go), unix seconds;
 	// zero: none.
 	RefusedSince   int64 `json:"refused_since,omitempty"`
+	RefusedLast    int64 `json:"refused_last,omitempty"`
 	DisabledAt     int64 `json:"disabled_at,omitempty"`
 	MotdDirCreated bool  `json:"motd_dir_created,omitempty"`
 }
@@ -284,7 +285,7 @@ func saveProtectionState() {
 	protCtl.Unlock()
 	if g != nil {
 		if t := g.RefusedSince(); !t.IsZero() {
-			st.RefusedSince = t.Unix()
+			st.RefusedSince, st.RefusedLast = t.Unix(), g.LastRefusal().Unix()
 		}
 	}
 	if err := writeFileAtomic(protStatePath, st); err != nil {
