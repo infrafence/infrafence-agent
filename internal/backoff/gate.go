@@ -96,6 +96,11 @@ func (g *Gate) Refused(status int, body []byte) time.Duration {
 	suspended := IsSuspended(status, body)
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// Requests sent together when the wait ended (heartbeat, sync, events)
+	// are one try: only the first refusal of a round extends the backoff.
+	if now := g.now(); g.failures > 0 && now.Before(g.until) && suspended == g.suspended && status == g.code {
+		return g.until.Sub(now)
+	}
 	changed := g.failures == 0 || suspended != g.suspended || status != g.code
 	g.failures++
 	g.code, g.suspended = status, suspended

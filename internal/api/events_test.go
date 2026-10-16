@@ -894,3 +894,25 @@ func TestRefusalBackoffIsHonored(t *testing.T) {
 	clock.Advance(time.Millisecond)
 	eventually(t, "delivery", func() bool { return len(rec.got()) == 1 })
 }
+
+// A flush while requests are held gives up at once instead of retrying
+// until its deadline; the events are kept.
+func TestFlushGivesUpWhileHeld(t *testing.T) {
+	s, rec, _ := startSender(t)
+	rec.setFail(func([]EventRequest) error {
+		return &statusError{code: http.StatusForbidden, held: true, retryAfter: 20 * time.Minute}
+	})
+	_ = s.add([]EventRequest{info("a")})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := s.Flush(ctx); !IsHeld(err) {
+		t.Fatalf("flush: %v, want the held error", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("flush took %s", d)
+	}
+	if s.depth() != 1 {
+		t.Fatalf("depth %d, want the event kept", s.depth())
+	}
+}

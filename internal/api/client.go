@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -148,7 +149,7 @@ func (c *Client) do(hc *http.Client, req *http.Request) (*http.Response, error) 
 	switch {
 	case resp.StatusCode < 400:
 		c.gate.OK()
-	case backoff.Refusal(resp.StatusCode):
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && gatedPath(req.URL.Path):
 		// The body says why (403 {"error":"suspended"}); it is put back for
 		// the caller's error.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -161,10 +162,36 @@ func (c *Client) do(hc *http.Client, req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
+// gatedPath: a 403 on these refuses the agent itself; on another endpoint
+// it may only refuse that feature (plan limits) and starts no backoff. A
+// 401 always does: the token is the same for every endpoint.
+func gatedPath(p string) bool {
+	switch p {
+	case "/api/v1/agent/heartbeat", "/api/v1/agent/sync", "/api/v1/agent/events", "/api/v1/agent/bans":
+		return true
+	}
+	return false
+}
+
+// IsRejected reports whether the dashboard answered err's request with a
+// refusal of that request alone (4xx other than 401, 403, 408 and 429):
+// sending it again would not change it.
+func IsRejected(err error) bool {
+	var se *statusError
+	if !errors.As(err, &se) || se.held || se.code < 400 || se.code >= 500 {
+		return false
+	}
+	switch se.code {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return true
+}
+
 // statusErr is newStatusError plus, for a refusal, the backoff it started.
 func (c *Client) statusErr(resp *http.Response) error {
 	e := newStatusError(resp)
-	if backoff.Refusal(e.code) {
+	if backoff.Refusal(e.code) && c.gate.Wait() > 0 {
 		e.retryAfter = max(e.retryAfter, c.gate.Wait())
 	}
 	return e

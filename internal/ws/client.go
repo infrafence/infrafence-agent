@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/infrafence/infrafence-agent/internal/backoff"
 )
 
 // Pusher protocol message structure.
@@ -121,17 +124,18 @@ type Client struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
 
-	// gate, if set, is the refusal backoff shared with the API client: no
-	// connection is made while it runs, and a 401/403 from the channel auth
-	// endpoint starts or extends it. Set before Run.
+	// gate, if set, is the API client's refusal backoff: no connection is
+	// made while it runs. It is only read: a 401/403 of the channel auth
+	// endpoint (a route of its own, which may refuse for its own reasons)
+	// backs off the websocket alone. Set before Run.
 	gate Gate
+	// authOK: the last channel auth succeeded (set by getAuth, read by Run).
+	authOK bool
 }
 
 // Gate is the refusal backoff (internal/backoff.Gate).
 type Gate interface {
 	Wait() time.Duration
-	Refused(status int, body []byte) time.Duration
-	OK() bool
 }
 
 // SetGate makes the client wait on the dashboard's refusal backoff.
@@ -161,6 +165,7 @@ func New(reverbURL, appKey, authEndpoint, agentToken string, agentID int64, h Ha
 // Run connects and reconnects with exponential backoff. Blocks indefinitely.
 func (c *Client) Run() {
 	attempt := 0
+	refusals := 0
 
 	for {
 		// The dashboard refused the agent: wait for the shared backoff
@@ -171,10 +176,23 @@ func (c *Client) Run() {
 				continue
 			}
 		}
-		if err := c.connect(); err != nil {
+		err := c.connect()
+		// The channel auth succeeded during that connection: the refusal
+		// backoff starts again from 1 minute (getAuth runs in this goroutine).
+		if c.authOK {
+			refusals, c.authOK = 0, false
+		}
+		if err != nil {
 			var refused *refusedError
-			if errors.As(err, &refused) && c.gate != nil {
+			if errors.As(err, &refused) {
+				// 1 minute doubling up to 30, like the API's refusals.
+				refusals++
+				wait := backoff.Delay(refusals, rand.Float64())
+				if refusals == 1 {
+					log.Printf("[ws] channel auth refused (%v) — retrying in %s, backing off up to %s", err, wait.Round(time.Second), backoff.Max)
+				}
 				attempt = 0
+				time.Sleep(wait)
 				continue
 			}
 			wait := time.Duration(math.Min(float64(30*time.Second), float64(time.Second)*math.Pow(2, float64(attempt))))
@@ -316,17 +334,12 @@ func (c *Client) getAuth(socketID, channelName string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			if c.gate != nil {
-				c.gate.Refused(resp.StatusCode, b)
-			}
 			return "", &refusedError{code: resp.StatusCode, body: string(b)}
 		}
 		return "", fmt.Errorf("auth returned %d: %s", resp.StatusCode, string(b))
 	}
-	if c.gate != nil {
-		c.gate.OK()
-	}
 
+	c.authOK = true
 	var result struct {
 		Auth string `json:"auth"`
 	}

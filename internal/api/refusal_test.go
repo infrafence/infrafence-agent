@@ -105,3 +105,38 @@ func TestRefusal401BacksOffAnd503DoesNot(t *testing.T) {
 		t.Fatalf("after a second 401: wait %s, want %s", w, 2*backoff.Min)
 	}
 }
+
+// A 403 on a feature endpoint (a plan limit) holds nothing; a 401 there
+// does (the token is the same everywhere).
+func TestFeature403DoesNotHoldTheAgent(t *testing.T) {
+	var code atomic.Int32
+	code.Store(http.StatusForbidden)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(int(code.Load()))
+		_, _ = io.WriteString(w, `{"error":"feature not in plan"}`)
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "tok")
+	if err := c.ReportMonitorRun(MonitorRunRequest{}); err == nil || IsHeld(err) {
+		t.Fatalf("feature 403: %v", err)
+	}
+	if c.gate.Wait() != 0 {
+		t.Fatal("a feature 403 started the refusal backoff")
+	}
+	code.Store(http.StatusUnauthorized)
+	_ = c.ReportMonitorRun(MonitorRunRequest{})
+	if c.gate.Wait() == 0 {
+		t.Fatal("a 401 did not start the backoff")
+	}
+}
+
+func TestIsRejected(t *testing.T) {
+	for code, want := range map[int]bool{400: true, 404: true, 422: true, 401: false, 403: false, 429: false, 408: false, 500: false, 503: false} {
+		if got := IsRejected(&statusError{code: code}); got != want {
+			t.Errorf("IsRejected(%d) = %v", code, got)
+		}
+	}
+	if IsRejected(&statusError{code: 400, held: true}) || IsRejected(errors.New("dial tcp: refused")) {
+		t.Error("held or transport errors are not rejections")
+	}
+}

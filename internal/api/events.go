@@ -406,7 +406,14 @@ func (s *eventSender) run() {
 						wait = min(se.retryAfter, limit)
 					}
 					if len(waiters) > 0 {
-						wait = eventFlushRetry
+						if se.isHeld() {
+							// Nothing can be sent before the refusal
+							// backoff ends: the flush gives up now (urgent
+							// events are spooled at shutdown).
+							release(err)
+						} else {
+							wait = eventFlushRetry
+						}
 					}
 					if !se.isHeld() {
 						log.Printf("[api] event delivery failed (%d events), retrying in %s: %v", n, wait, err)

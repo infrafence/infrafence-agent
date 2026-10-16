@@ -67,6 +67,7 @@ func TestGateBackoffAndReset(t *testing.T) {
 		t.Fatalf("second refusal: %s, want %s", w2, 2*Min)
 	}
 	for i := 0; i < 10; i++ {
+		clk.add(g.Wait())
 		g.Refused(401, nil)
 	}
 	if w := g.Wait(); w > Max || w < Max-Max/10 {
@@ -124,5 +125,22 @@ func TestIsSuspended(t *testing.T) {
 		if got := IsSuspended(tc.code, []byte(tc.body)); got != tc.want {
 			t.Errorf("IsSuspended(%d, %q) = %v", tc.code, tc.body, got)
 		}
+	}
+}
+
+// Heartbeat, sync and events wake together when the wait ends: their
+// refusals are one try, not three steps of the backoff.
+func TestGateOneStepPerRound(t *testing.T) {
+	g, clk, _ := newGate(0)
+	g.Refused(401, nil)
+	clk.add(Min)
+	for i := 0; i < 4; i++ {
+		if w := g.Refused(401, nil); w != 2*Min {
+			t.Fatalf("refusal %d of the round: wait %s, want %s", i, w, 2*Min)
+		}
+	}
+	clk.add(2 * Min)
+	if w := g.Refused(401, nil); w != 4*Min {
+		t.Fatalf("next round: %s, want %s", w, 4*Min)
 	}
 }
