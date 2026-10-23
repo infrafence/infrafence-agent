@@ -48,7 +48,10 @@ systemctl daemon-reload
 curl -s "$API/deny?mode=suspended" >/dev/null
 systemctl restart infrafence-agent
 t0=$(date +%s)
-for _ in $(seq 1 300); do ours_left || break; sleep 1; done
+# The switch-off needs two refusals more than the limit apart, and the refused agent backs off with
+# jitter between attempts: on a slow first container the second refusal can come late. Give it
+# 10 minutes (it is 120 s everywhere in practice).
+for _ in $(seq 1 600); do ours_left || break; sleep 1; done
 log "switched off after $(( $(date +%s) - t0 ))s: $(ours_left && echo no || echo yes)"
 if ! ours_left; then R_OFF=ok; else
   { iptables -S; ipset list -n; } 2>/dev/null | grep -i infrafence | head -5
