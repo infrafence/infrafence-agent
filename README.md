@@ -11,7 +11,7 @@
   <img src="docs/logo.png" alt="InfraFence" width="200">
 </p>
 
-<h3 align="center">Server security that installs in 30 seconds</h3>
+<h3 align="center">Stop the attack. Fix what let it in.</h3>
 
 <p align="center">
   Lightweight Go agent for Linux servers that detects attacks in real time and blocks them automatically — inbound and outbound.<br>
@@ -35,15 +35,14 @@
 
 ---
 
-## The problem
+## Why InfraFence
 
-Spin up a fresh Linux VPS and the clock starts immediately — automated bots are scanning it, brute-forcing SSH, and probing for exploits within minutes, often before you've even finished the initial setup.
+- **It sees what leaves the server.** It reports outbound connections to known-bad IPs and reads every DNS query at packet level, tied to the program that made it: DNS tunnels and DGA lookups arrive with a process name and pid.
+- **It knows who was logged in.** Every SSH session gets a risk score from 0 to 100, which rises when the WAF, file integrity, malware, port scan, egress or DNS detectors fire while it is open.
+- **Fixes that don't take production down.** After every change (closing a port, blocking outbound traffic, a hardening fix, a virtual patch) it checks SSH and the monitored sites, and undoes the change if they stop answering.
+- **AI that acts only within fixed limits.** AutoMode picks from a fixed catalogue of actions, never runs commands of its own, and never blocks your own addresses or SSH logins.
 
-Most of that activity goes unnoticed. Nobody's watching the logs as it happens.
-
-Classic tools react to log lines one server at a time and show you little of what happened. Full security suites give you visibility and automation, but take real effort to set up and cost more per server.
-
-InfraFence sits in between: **install with one command, watch everything live from a dashboard, and let it block automatically — for €9/server**.
+Free for one server, paid plans from €8.90 per server per month: [see pricing](https://infrafence.com/pricing).
 
 ## Quick start
 
