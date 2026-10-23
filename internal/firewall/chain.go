@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Everything the agent enforces lives in its own chains, so it never has to
@@ -86,15 +88,59 @@ var fw = &fwState{bans: map[string]banEntry{}, geo: map[string][]string{}}
 
 // run executes iptables with args and returns combined output.
 var run = func(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return command("", name, args...)
 }
 
 var runStdin = func(stdin, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	return command(stdin, name, args...)
+}
+
+// execTimeout bounds every command the firewall code runs: a wedged
+// iptables or ipset must not stall the guard or keep fw locked (the
+// callers hold fw only through deferred unlocks, so a timeout releases it).
+var execTimeout = 15 * time.Second
+
+func command(stdin, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, withWait(name, args)...)
+	// A child that keeps the output pipe open must not outlive the timeout.
+	cmd.WaitDelay = time.Second
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		err = fmt.Errorf("%s timed out after %s: %w", name, execTimeout, ctx.Err())
+	}
 	return strings.TrimSpace(string(out)), err
+}
+
+// waitBins wait up to 5 s for the xtables lock with "-w 5" instead of
+// failing at once while another tool (csf, fail2ban) holds it. Versions
+// older than 1.6 lack "-w <seconds>", so support is probed once per binary.
+var (
+	waitBins = map[string]bool{"iptables": true, "ip6tables": true, "iptables-restore": true, "ip6tables-restore": true}
+	waitOK   sync.Map // binary name -> bool
+)
+
+func withWait(name string, args []string) []string {
+	if !waitBins[name] {
+		return args
+	}
+	ok, probed := waitOK.Load(name)
+	if !probed {
+		ok = probeWait(name)
+		waitOK.Store(name, ok)
+	}
+	if !ok.(bool) {
+		return args
+	}
+	return append([]string{"-w", "5"}, args...)
+}
+
+func probeWait(name string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, "-w", "5", "-V").Run() == nil
 }
 
 // allowEntries is everything InfraFence must never block: reserved ranges
@@ -450,16 +496,7 @@ func ensureJumpAheadOf(bin, chain, comment, target string) (repaired []string, e
 	if !ok {
 		return nil, fmt.Errorf("cannot list %s", chain)
 	}
-	jump := jumpLine(chain, comment, target)
-	ours, firstAccept := -1, -1
-	for i, l := range lines {
-		if l == jump && ours < 0 {
-			ours = i
-		}
-		if firstAccept < 0 && mayAccept(l) {
-			firstAccept = i
-		}
-	}
+	ours, firstAccept := jumpPosition(lines, jumpLine(chain, comment, target))
 	switch {
 	case ours < 0:
 		if out, err := run(bin, append([]string{"-I", chain, "1"}, jumpArgs(comment, target)...)...); err != nil {
@@ -478,6 +515,21 @@ func ensureJumpAheadOf(bin, chain, comment, target string) (repaired []string, e
 		repaired = append(repaired, "jump-order:"+prefix+chain)
 	}
 	return repaired, nil
+}
+
+// jumpPosition returns the index of jump in lines and of the first rule
+// that can ACCEPT, -1 for none.
+func jumpPosition(lines []string, jump string) (ours, firstAccept int) {
+	ours, firstAccept = -1, -1
+	for i, l := range lines {
+		if l == jump && ours < 0 {
+			ours = i
+		}
+		if firstAccept < 0 && mayAccept(l) {
+			firstAccept = i
+		}
+	}
+	return ours, firstAccept
 }
 
 // ensureDockerJump protects containers with published ports: that traffic
@@ -609,23 +661,32 @@ func Ensure() (EnsureResult, error) {
 }
 
 // NeedsRepair reports whether the INPUT jump to the INFRAFENCE chain is
-// gone, with a single iptables call: cheap enough for the guard to ask every
-// few seconds, so the bans are back within seconds of a firewall rebuild
-// (csf -r, a ufw or firewalld reload, iptables-restore) instead of at the
-// next full Ensure. False before the first Ensure and while switched off.
-func NeedsRepair() bool {
+// gone or no longer ahead of the first rule that can ACCEPT (a banned
+// address would pass behind it), with a single "iptables -S INPUT": cheap
+// enough for the guard to ask every few seconds, so the bans are back within
+// seconds of a firewall rebuild (csf -r, a ufw or firewalld reload,
+// iptables-restore) instead of at the next full Ensure. An error (iptables
+// failed or timed out) is not a verdict. False before the first Ensure and
+// while switched off.
+func NeedsRepair() (bool, error) {
 	fw.Lock()
 	skip := !fw.initialized || fw.disabled
 	fw.Unlock()
 	if skip {
-		return false
+		return false, nil
 	}
-	_, err := run("iptables", append([]string{"-C", "INPUT"}, jumpArgs(jumpComment, chainName)...)...)
-	// 1: no such rule; 2: our chain itself is gone (the jump's target does
-	// not load). Anything else (4: the xtables lock held by the tool
-	// rebuilding the firewall) is left to the next check.
-	var exit *exec.ExitError
-	return errors.As(err, &exit) && (exit.ExitCode() == 1 || exit.ExitCode() == 2)
+	out, err := run("iptables", "-S", "INPUT")
+	if err != nil {
+		return false, fmt.Errorf("iptables -S INPUT: %s (%w)", out, err)
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "-A ") {
+			lines = append(lines, strings.TrimSpace(l))
+		}
+	}
+	ours, firstAccept := jumpPosition(lines, jumpLine("INPUT", jumpComment, chainName))
+	return ours < 0 || (firstAccept >= 0 && ours > firstAccept), nil
 }
 
 // SetAllowList sets the dashboard whitelist (IPs or CIDRs). InfraFence never

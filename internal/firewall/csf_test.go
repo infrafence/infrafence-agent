@@ -1,107 +1,120 @@
 package firewall
 
 import (
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 )
 
 // /proc/locks as a container showed it while "csf -r" ran: csf.lock is
-// inode 12623540.
+// 00:272:12623540 (stat: device 0x200072), held by pid 9437.
 const csfLocks = `1: FLOCK  ADVISORY  WRITE 9437 00:272:12623540 0 EOF
 2: FLOCK  ADVISORY  WRITE 9437 00:272:12623541 0 EOF
 3: POSIX  ADVISORY  WRITE 812 fd:01:12623540 0 EOF
 `
 
-func TestLockHeld(t *testing.T) {
+func TestLockHolder(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		locks string
-		ino   uint64
-		want  bool
+		name      string
+		locks     string
+		dev, ino  uint64
+		inodeOnly bool
+		pid       int
+		held      bool
 	}{
-		{"csf restarting", csfLocks, 12623540, true},
-		{"waiting for it counts", "1: FLOCK  ADVISORY  WRITE 9437 00:272:1 0 EOF\n1: -> FLOCK  ADVISORY  WRITE 9500 00:272:99 0 EOF\n", 99, true},
-		// btrfs: the lock names the filesystem's device, stat a subvolume's.
-		{"device other than stat's", "1: FLOCK  ADVISORY  WRITE 1 00:2d:7 0 EOF\n", 7, true},
-		{"other inode", csfLocks, 1262354, false},
-		{"inode only as a suffix of digits", csfLocks, 3540, false},
-		{"pid or offset equal to the inode", "1: FLOCK  ADVISORY  WRITE 7 00:2d:9 7 EOF\n", 7, false},
-		{"no locks", "", 12623540, false},
+		{"csf restarting", csfLocks, 0x200072, 12623540, false, 9437, true},
+		{"waiting for it counts", "1: FLOCK  ADVISORY  WRITE 9437 00:272:1 0 EOF\n1: -> FLOCK  ADVISORY  WRITE 9500 00:272:99 0 EOF\n", 0x200072, 99, false, 9500, true},
+		{"same inode, other device", csfLocks, 0x803, 12623541, false, 0, false},
+		{"same inode, other device, btrfs/overlayfs", csfLocks, 0x803, 12623541, true, 9437, true},
+		{"other inode", csfLocks, 0x200072, 1262354, false, 0, false},
+		{"inode only as a suffix of digits", csfLocks, 0x200072, 3540, true, 0, false},
+		{"pid or offset equal to the inode", "1: FLOCK  ADVISORY  WRITE 7 00:2d:9 7 EOF\n", 0x2d, 7, true, 0, false},
+		{"large device numbers", "1: FLOCK  ADVISORY  WRITE 1 103:1f4:7 0 EOF\n", 0x1103f4, 7, false, 1, true},
+		{"no locks", "", 0x200072, 12623540, false, 0, false},
 	} {
-		if got := lockHeld(c.locks, c.ino); got != c.want {
-			t.Errorf("%s: lockHeld = %v, want %v", c.name, got, c.want)
+		pid, held := lockHolder(c.locks, c.dev, c.ino, c.inodeOnly)
+		if pid != c.pid || held != c.held {
+			t.Errorf("%s: lockHolder = %d, %v; want %d, %v", c.name, pid, held, c.pid, c.held)
 		}
 	}
 }
 
-// withCSFLock points CSFRestarting at a lock file of the test's.
-func withCSFLock(t *testing.T) string {
+// withCSF points CSFLockHolder at files of the test's: csf.conf (created
+// when installed) and the lock file (not created).
+func withCSF(t *testing.T, installed bool) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "csf.lock")
-	oldFile, oldLocks := csfLockFile, procLocks
-	csfLockFile = path
-	t.Cleanup(func() { csfLockFile, procLocks = oldFile, oldLocks })
-	return path
+	dir := t.TempDir()
+	oldConf, oldFile, oldLocks := csfConfFile, csfLockFile, procLocks
+	csfConfFile, csfLockFile = filepath.Join(dir, "csf.conf"), filepath.Join(dir, "csf.lock")
+	t.Cleanup(func() { csfConfFile, csfLockFile, procLocks = oldConf, oldFile, oldLocks })
+	if installed {
+		if err := os.WriteFile(csfConfFile, []byte("TESTING = \"0\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return csfLockFile
 }
 
-func TestCSFRestartingWithoutCSF(t *testing.T) {
-	withCSFLock(t) // never created
-	if CSFRestarting() {
-		t.Fatal("restarting without a lock file")
+func TestCSFLockHolderWithoutLockFile(t *testing.T) {
+	withCSF(t, true)
+	if _, held := CSFLockHolder(); held {
+		t.Fatal("held without a lock file")
 	}
 }
 
-// The kernel's own /proc/locks: true only while the file is flocked, the
-// way csf locks it.
-func TestCSFRestartingReadsKernelLocks(t *testing.T) {
-	if _, err := os.Stat("/proc/locks"); err != nil {
-		t.Skip("no /proc/locks")
-	}
-	path := withCSFLock(t)
+// flockFile holds an exclusive flock on path until the test ends or the
+// returned func is called.
+func flockFile(t *testing.T, path string) func() {
+	t.Helper()
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	if CSFRestarting() {
-		t.Fatal("restarting while nobody holds the lock")
-	}
+	t.Cleanup(func() { f.Close() })
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	if !CSFRestarting() {
-		locks, _ := os.ReadFile("/proc/locks")
-		t.Fatalf("lock not seen; /proc/locks:\n%s", locks)
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }
+}
+
+// The kernel's own /proc/locks: held only while the file is flocked, the
+// way csf locks it, and only where CSF is installed.
+func TestCSFLockHolderReadsKernelLocks(t *testing.T) {
+	if _, err := os.Stat("/proc/locks"); err != nil {
+		t.Skip("no /proc/locks")
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+	path := withCSF(t, true)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if CSFRestarting() {
-		t.Fatal("still restarting after the unlock")
+	if _, held := CSFLockHolder(); held {
+		t.Fatal("held while nobody holds the lock")
+	}
+	unlock := flockFile(t, path)
+	pid, held := CSFLockHolder()
+	if !held || pid != os.Getpid() {
+		locks, _ := os.ReadFile("/proc/locks")
+		t.Fatalf("lock not seen (pid %d, held %v); /proc/locks:\n%s", pid, held, locks)
+	}
+	unlock()
+	if _, held := CSFLockHolder(); held {
+		t.Fatal("still held after the unlock")
 	}
 }
 
-// fakeIptablesCheck makes "iptables -C" exit with code (0: the rule is
-// there) and records the calls.
-func fakeIptablesCheck(t *testing.T, code int) *[]string {
-	t.Helper()
-	var calls []string
-	old := run
-	run = func(name string, args ...string) (string, error) {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		if code == 0 {
-			return "", nil
-		}
-		err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
-		return "", err
+// Without csf.conf the lock file is not looked at: no CSF, no wait.
+func TestCSFLockHolderOnlyWithCSF(t *testing.T) {
+	if _, err := os.Stat("/proc/locks"); err != nil {
+		t.Skip("no /proc/locks")
 	}
-	t.Cleanup(func() { run = old })
-	return &calls
+	path := withCSF(t, false)
+	flockFile(t, path)
+	if _, held := CSFLockHolder(); held {
+		t.Fatal("waiting for a csf lock on a host without CSF")
+	}
 }
 
 func withFwFlags(t *testing.T, initialized, disabled bool) {
@@ -117,32 +130,43 @@ func withFwFlags(t *testing.T, initialized, disabled bool) {
 	})
 }
 
+const ourJump = "-A INPUT -m comment --comment infrafence -j INFRAFENCE"
+
 func TestNeedsRepair(t *testing.T) {
 	for _, c := range []struct {
 		name                  string
 		initialized, disabled bool
-		code                  int
-		want, calls           bool
+		input                 []string // iptables -S INPUT
+		err                   error
+		want, wantErr, calls  bool
 	}{
-		{"jump in place", true, false, 0, false, true},
-		{"jump gone (INPUT flushed)", true, false, 1, true, true},
-		{"chain gone too (csf -r deletes every chain)", true, false, 2, true, true},
-		{"xtables lock held by another tool", true, false, 4, false, true},
-		{"before the first Ensure", false, false, 1, false, false},
-		{"protection switched off", true, true, 1, false, false},
+		{"jump first", true, false, []string{ourJump, "-A INPUT -j LOCALINPUT", "-A INPUT -i lo -j ACCEPT"}, nil, false, false, true},
+		{"jump after DROP-only rules", true, false, []string{"-A INPUT -j f2b-sshd", "-A INPUT -s 192.0.2.9/32 -j DROP", ourJump, "-A INPUT -j LOCALINPUT"}, nil, false, false, true},
+		{"jump gone (csf -r)", true, false, []string{"-A INPUT -j LOCALINPUT", "-A INPUT -i lo -j ACCEPT"}, nil, true, false, true},
+		{"jump behind an ACCEPT", true, false, []string{"-A INPUT -i lo -j ACCEPT", ourJump}, nil, true, false, true},
+		{"jump behind CSF's chain (it can ACCEPT)", true, false, []string{"-A INPUT -j LOCALINPUT", ourJump}, nil, true, false, true},
+		{"iptables fails or times out", true, false, nil, errors.New("exit status 4"), false, true, true},
+		{"before the first Ensure", false, false, nil, nil, false, false, false},
+		{"protection switched off", true, true, nil, nil, false, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			withFwFlags(t, c.initialized, c.disabled)
-			calls := fakeIptablesCheck(t, c.code)
-			if got := NeedsRepair(); got != c.want {
-				t.Errorf("NeedsRepair = %v, want %v", got, c.want)
+			var calls []string
+			old := run
+			run = func(name string, args ...string) (string, error) {
+				calls = append(calls, name+" "+strings.Join(args, " "))
+				return strings.Join(append([]string{"-P INPUT DROP"}, c.input...), "\n"), c.err
 			}
-			if (len(*calls) > 0) != c.calls {
-				t.Errorf("iptables calls %q, want any: %v", *calls, c.calls)
+			t.Cleanup(func() { run = old })
+			got, err := NeedsRepair()
+			if got != c.want || (err != nil) != c.wantErr {
+				t.Errorf("NeedsRepair = %v, %v; want %v, error %v", got, err, c.want, c.wantErr)
 			}
-			want := "iptables -C INPUT -m comment --comment infrafence -j INFRAFENCE"
-			if len(*calls) > 0 && (*calls)[0] != want {
-				t.Errorf("checked %q, want %q", (*calls)[0], want)
+			if (len(calls) > 0) != c.calls {
+				t.Errorf("iptables calls %q, want any: %v", calls, c.calls)
+			}
+			if len(calls) > 0 && calls[0] != "iptables -S INPUT" {
+				t.Errorf("ran %q", calls[0])
 			}
 		})
 	}
