@@ -1488,7 +1488,17 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	if len(sync.CSFPortActions) > 0 && firewall.HasCSF() {
 		for _, action := range sync.CSFPortActions {
 			log.Printf("[csf] port action: %s port %d %s", action.Action, action.Port, action.Direction)
-			if err := firewall.CSFPortAction(action.Port, action.Direction, action.Action); err != nil {
+			err := firewall.CSFPortAction(action.Port, action.Direction, action.Action, sync.Config.MonitorMode)
+			if errors.Is(err, firewall.ErrCSFMonitorMode) {
+				// Report only: what would have changed.
+				log.Printf("[csf] monitor mode: port action not applied")
+				client.ReportEvents([]api.EventRequest{{
+					Type:       "csf_port_skipped",
+					Severity:   "info",
+					Details:    map[string]string{"port": fmt.Sprintf("%d", action.Port), "direction": action.Direction, "action": action.Action, "reason": "monitor_mode"},
+					OccurredAt: time.Now().UTC().Format(time.RFC3339),
+				}})
+			} else if err != nil {
 				log.Printf("[csf] port action failed: %v", err)
 				client.ReportEvents([]api.EventRequest{{
 					Type:       "csf_port_error",
