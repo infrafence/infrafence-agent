@@ -11,7 +11,7 @@
   <img src="docs/logo.png" alt="InfraFence" width="200">
 </p>
 
-<h3 align="center">Sicurezza server che si installa in 30 secondi</h3>
+<h3 align="center">Ferma l'attacco. Correggi ciò che l'ha fatto entrare.</h3>
 
 <p align="center">
   Agente Go leggero per server Linux che rileva gli attacchi in tempo reale e li blocca automaticamente — in entrata e in uscita.<br>
@@ -35,15 +35,14 @@
 
 ---
 
-## Il problema
+## Perché InfraFence
 
-Avvii un nuovo VPS Linux e il conto alla rovescia parte subito — bot automatici lo scansionano, tentano il brute force su SSH e cercano exploit nel giro di pochi minuti, spesso prima ancora che tu abbia finito la configurazione iniziale.
+- **Vede cosa esce dal server.** Segnala le connessioni in uscita verso IP noti come malevoli e legge ogni query DNS a livello di pacchetto, legata al programma che l'ha fatta: tunnel DNS e domini casuali (DGA) arrivano con nome del processo e pid.
+- **Sa chi era collegato.** Ogni sessione SSH riceve un punteggio di rischio da 0 a 100, che sale se WAF, integrità dei file, malware, port scan, traffico in uscita o DNS scattano mentre è aperta.
+- **Correzioni che non fermano la produzione.** Dopo ogni modifica (chiusura di una porta, blocco del traffico in uscita, correzione di hardening, virtual patch) controlla SSH e i siti monitorati, e annulla la modifica se smettono di rispondere.
+- **Un'AI che agisce solo entro limiti fissi.** AutoMode sceglie da un catalogo fisso di azioni, non esegue mai comandi propri e non blocca mai i tuoi indirizzi né i tuoi accessi SSH.
 
-La maggior parte di questa attività passa inosservata. Nessuno guarda i log mentre succede.
-
-Gli strumenti classici reagiscono alle righe di log un server alla volta e ti mostrano poco di ciò che è successo. Le suite di sicurezza complete danno visibilità e automazione, ma richiedono un vero lavoro di configurazione e costano di più per server.
-
-InfraFence sta nel mezzo: **installi con un comando, guardi tutto dal vivo da una dashboard e lasci che blocchi automaticamente — a 9 €/server**.
+Gratis per un server, piani a pagamento da 8,90 € per server al mese: [vedi i prezzi](https://infrafence.com/pricing).
 
 ## Avvio rapido
 

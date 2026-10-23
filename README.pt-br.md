@@ -11,7 +11,7 @@
   <img src="docs/logo.png" alt="InfraFence" width="200">
 </p>
 
-<h3 align="center">Segurança de servidor que se instala em 30 segundos</h3>
+<h3 align="center">Pare o ataque. Corrija o que o deixou entrar.</h3>
 
 <p align="center">
   Agente Go leve para servidores Linux que detecta ataques em tempo real e os bloqueia automaticamente — na entrada e na saída.<br>
@@ -35,15 +35,14 @@
 
 ---
 
-## O problema
+## Por que InfraFence
 
-Você sobe um novo VPS Linux e a contagem regressiva começa na hora — bots automatizados o escaneiam, tentam força bruta no SSH e procuram exploits em poucos minutos, muitas vezes antes de você terminar a configuração inicial.
+- **Ele vê o que sai do servidor.** Ele reporta as conexões de saída para IPs maliciosos conhecidos e lê cada consulta DNS no nível de pacote, ligada ao programa que a fez: túneis DNS e domínios aleatórios (DGA) chegam com o nome do processo e o pid.
+- **Ele sabe quem estava logado.** Cada sessão SSH recebe uma pontuação de risco de 0 a 100, que sobe se o WAF, a integridade de arquivos, o malware, uma varredura de portas, o tráfego de saída ou o DNS dispararem enquanto ela está aberta.
+- **Correções que não derrubam a produção.** Depois de cada mudança (fechar uma porta, bloquear tráfego de saída, uma correção de hardening, um patch virtual), ele verifica o SSH e os sites monitorados e desfaz a mudança se eles pararem de responder.
+- **Uma IA que age só dentro de limites fixos.** O AutoMode escolhe de um catálogo fixo de ações, nunca executa comandos próprios e nunca bloqueia seus próprios endereços nem seus logins SSH.
 
-A maior parte dessa atividade passa despercebida. Ninguém está olhando os logs enquanto acontece.
-
-As ferramentas clássicas reagem a linhas de log um servidor por vez e mostram pouco do que aconteceu. As suítes de segurança completas dão visibilidade e automação, mas exigem um trabalho real de configuração e custam mais por servidor.
-
-O InfraFence fica no meio: **instale com um comando, acompanhe tudo ao vivo em um painel e deixe-o bloquear automaticamente — por 9 €/servidor**.
+Grátis para um servidor, planos pagos a partir de 8,90 € por servidor por mês: [ver preços](https://infrafence.com/pricing).
 
 ## Início rápido
 

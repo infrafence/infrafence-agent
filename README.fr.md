@@ -11,7 +11,7 @@
   <img src="docs/logo.png" alt="InfraFence" width="200">
 </p>
 
-<h3 align="center">La sécurité serveur qui s'installe en 30 secondes</h3>
+<h3 align="center">Stoppez l'attaque. Corrigez ce qui l'a laissée entrer.</h3>
 
 <p align="center">
   Agent Go léger pour serveurs Linux qui détecte les attaques en temps réel et les bloque automatiquement — en entrée comme en sortie.<br>
@@ -35,15 +35,14 @@
 
 ---
 
-## Le problème
+## Pourquoi InfraFence
 
-Vous lancez un nouveau VPS Linux et le compte à rebours commence aussitôt — des bots automatisés le scannent, tentent la force brute sur SSH et cherchent des failles en quelques minutes, souvent avant même la fin de votre configuration initiale.
+- **Il voit ce qui sort du serveur.** Il signale les connexions sortantes vers des IP malveillantes connues et lit chaque requête DNS au niveau des paquets, rattachée au programme qui l'a faite : tunnels DNS et domaines aléatoires (DGA) arrivent avec le nom du processus et son pid.
+- **Il sait qui était connecté.** Chaque session SSH reçoit un score de risque de 0 à 100, qui monte si le WAF, l'intégrité des fichiers, les malwares, un scan de ports, le trafic sortant ou le DNS se déclenchent pendant qu'elle est ouverte.
+- **Des corrections qui ne cassent pas la production.** Après chaque changement (fermeture d'un port, blocage du trafic sortant, correctif de durcissement, patch virtuel), il vérifie SSH et les sites surveillés, et annule le changement s'ils ne répondent plus.
+- **Une IA qui n'agit que dans des limites fixes.** AutoMode choisit dans un catalogue fixe d'actions, n'exécute jamais ses propres commandes et ne bloque jamais vos propres adresses ni vos connexions SSH.
 
-L'essentiel de cette activité passe inaperçu. Personne ne regarde les logs pendant que ça se produit.
-
-Les outils classiques réagissent aux lignes de log un serveur à la fois et montrent peu de ce qui s'est passé. Les suites de sécurité complètes offrent visibilité et automatisation, mais demandent un vrai travail de configuration et coûtent plus cher par serveur.
-
-InfraFence se situe entre les deux : **installez-le en une commande, suivez tout en direct depuis un tableau de bord et laissez-le bloquer automatiquement — pour 9 €/serveur**.
+Gratuit pour un serveur, offres payantes à partir de 8,90 € par serveur et par mois : [voir les tarifs](https://infrafence.com/pricing).
 
 ## Démarrage rapide
 
