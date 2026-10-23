@@ -2307,14 +2307,13 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 			log.Printf("[malware] error scanning %s: %v", root.Path, err)
 			continue
 		}
+		for _, why := range rootResult.RootsSkipped {
+			reportEvent(client, "malware_root_skipped", "warning", map[string]string{"web_root": root.Path, "reason": why})
+		}
 
 		// YARA scan for this root
 		if yaraScanner != nil && yaraScanner.IsAvailable() {
-			scanDir := yaraScanner.ScanDirectory
-			if root.Strict {
-				scanDir = yaraScanner.ScanDirectoryNoFollow
-			}
-			for _, f := range scanDir(root.Path, root.Domain) {
+			for _, f := range yaraScanner.ScanDirectory(root.Path, root.Domain) {
 				rootResult.Findings = append(rootResult.Findings, f)
 			}
 		}
