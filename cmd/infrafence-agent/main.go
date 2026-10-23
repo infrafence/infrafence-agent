@@ -2518,12 +2518,44 @@ func runYaraRulesUpdater(client *api.Client) {
 // runFirewallGuard re-checks every minute that the INFRAFENCE chains, jumps
 // and sets are in place. Other tools (ufw/firewalld reloads, csf -r,
 // netfilter-persistent, iptables-restore) can remove them, which silently
-// stops every ban; this puts them back and reports it. Repeated repairs mean
-// something keeps rewriting the firewall, reported as a conflict.
+// stops every ban; this puts them back and reports it. Every few seconds in
+// between it only looks for the INPUT jump (one iptables call), so a rebuild
+// that flushes everything is repaired within seconds, not up to a minute.
+// A slow check (a huge rule set) spaces the quick checks out. It waits
+// while csf is rebuilding the firewall, for at most 2 minutes (a hung csf
+// must not leave the server without bans). Repeated repairs mean something
+// keeps rewriting the firewall, reported as a conflict.
 func runFirewallGuard(client *api.Client) {
 	var repairs []time.Time
-	var lastConflict time.Time
-	for range time.Tick(time.Minute) {
+	var lastConflict, nextQuick, csfSince time.Time
+	full := time.NewTicker(time.Minute)
+	quick := time.NewTicker(5 * time.Second)
+	for {
+		select {
+		case <-full.C:
+		case <-quick.C:
+			if time.Now().Before(nextQuick) {
+				continue
+			}
+			start := time.Now()
+			if !firewall.NeedsRepair() {
+				// Only a check that found everything in place measures
+				// the rule set's cost: one made while another tool
+				// rewrites it is slow for that reason alone.
+				nextQuick = start.Add(10 * time.Since(start))
+				continue
+			}
+		}
+		if firewall.CSFRestarting() {
+			if csfSince.IsZero() {
+				csfSince = time.Now()
+			}
+			if time.Since(csfSince) < 2*time.Minute {
+				continue // the next quick check repairs once csf is done
+			}
+			log.Printf("[firewall] guard: csf has held its restart lock for %s, repairing anyway", time.Since(csfSince).Round(time.Second))
+		}
+		csfSince = time.Time{}
 		res, err := firewall.Ensure()
 		if err != nil {
 			log.Printf("[firewall] guard: %v", err)
@@ -2540,7 +2572,11 @@ func runFirewallGuard(client *api.Client) {
 				recent = append(recent, t)
 			}
 		}
-		repairs = append(recent, now)
+		// Repairs less than 30 s apart are one rebuild by the other tool.
+		if len(recent) == 0 || now.Sub(recent[len(recent)-1]) >= 30*time.Second {
+			recent = append(recent, now)
+		}
+		repairs = recent
 		events := []api.EventRequest{{
 			Type:       "firewall_rules_restored",
 			Severity:   "warning",

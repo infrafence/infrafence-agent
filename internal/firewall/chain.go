@@ -608,6 +608,26 @@ func Ensure() (EnsureResult, error) {
 	return res, peErr
 }
 
+// NeedsRepair reports whether the INPUT jump to the INFRAFENCE chain is
+// gone, with a single iptables call: cheap enough for the guard to ask every
+// few seconds, so the bans are back within seconds of a firewall rebuild
+// (csf -r, a ufw or firewalld reload, iptables-restore) instead of at the
+// next full Ensure. False before the first Ensure and while switched off.
+func NeedsRepair() bool {
+	fw.Lock()
+	skip := !fw.initialized || fw.disabled
+	fw.Unlock()
+	if skip {
+		return false
+	}
+	_, err := run("iptables", append([]string{"-C", "INPUT"}, jumpArgs(jumpComment, chainName)...)...)
+	// 1: no such rule; 2: our chain itself is gone (the jump's target does
+	// not load). Anything else (4: the xtables lock held by the tool
+	// rebuilding the firewall) is left to the next check.
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && (exit.ExitCode() == 1 || exit.ExitCode() == 2)
+}
+
 // SetAllowList sets the dashboard whitelist (IPs or CIDRs). InfraFence never
 // blocks them; it does not open anything in the host firewall for them.
 // Egress blocks to an address the list now covers are lifted.

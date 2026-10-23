@@ -457,7 +457,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
   "ok": true,
   "tools": [
     {
-      "action": "InfraFence keeps its own chain and never edits csf.conf, csf.allow or csf.deny. After csf -r it restores only its own jump. CSF ports change only when you ask from the dashboard.",
+      "action": "InfraFence keeps its own chain and never edits csf.conf, csf.allow or csf.deny. After csf -r it restores only its own chains, jumps and sets, within seconds and never while csf is restarting. CSF ports change only when you ask from the dashboard.",
       "action_id": "coexist_csf",
       "active": true,
       "id": "csf",

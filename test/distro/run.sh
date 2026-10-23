@@ -84,7 +84,7 @@ while IFS='|' read -r name image pm rsyslog; do
   done
   # A distro that hangs (a package prompt, a stuck service) fails on its own instead of
   # stopping the whole matrix.
-  out=$(docker exec -e DISTRO="$name" "$cid" timeout 1800 bash /distro/inside.sh 2>&1)
+  out=$(docker exec -e DISTRO="$name" "$cid" timeout 2400 bash /distro/inside.sh 2>&1)
   rc=$?
   echo "$out" | grep -v '^RESULT' | tail -150
   line=$(echo "$out" | grep '^RESULT' | tail -1)

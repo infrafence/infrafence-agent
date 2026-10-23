@@ -134,7 +134,7 @@ Sigue cada sesión SSH de principio a fin — método de autenticación, reputac
 
 - **Revisa antes de cambiar** — `infrafence-agent preflight` es una revisión del servidor en solo lectura (firewall y otras herramientas de seguridad, servidores web, paneles de hosting, gestión de configuración, operaciones de paquetes, recursos). El instalador la ejecuta antes de cambiar nada; el agente, al arrancar y cada día.
 - **Valores por defecto prudentes** — los cambios en el servidor web y el bloqueo de entrada por listas de amenazas están apagados hasta que los activas; las actualizaciones automáticas pueden configurarse como solo aviso.
-- **Cadenas de firewall propias** — cada regla vive en las cadenas `INFRAFENCE` del agente, llamadas desde `INPUT` (y `DOCKER-USER`), reconstruidas de forma atómica y restauradas automáticamente en menos de un minuto si otra herramienta (ufw, firewalld, CSF) las elimina. Tus reglas existentes nunca se modifican. Las IPs en la lista blanca quedan exentas, nunca abiertas.
+- **Cadenas de firewall propias** — cada regla vive en las cadenas `INFRAFENCE` del agente, llamadas desde `INPUT` (y `DOCKER-USER`), reconstruidas de forma atómica y restauradas automáticamente en cuestión de segundos si otra herramienta (ufw, firewalld, CSF) las elimina. Tus reglas existentes nunca se modifican. Las IPs en la lista blanca quedan exentas, nunca abiertas.
 - **Desinstalación limpia** — elimina el agente y todo lo que añadió: cadenas de firewall, cambios en el servidor web, el servicio.
 
 ---

@@ -7,16 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // CSFStatus holds the current state of ConfigServer Firewall.
 type CSFStatus struct {
-	Installed bool   `json:"installed"`
-	Version   string `json:"version,omitempty"`
-	PortsIn   string `json:"ports_in,omitempty"`
-	PortsOut  string `json:"ports_out,omitempty"`
-	DenyCount int    `json:"deny_count"`
-	AllowCount int   `json:"allow_count"`
+	Installed  bool   `json:"installed"`
+	Version    string `json:"version,omitempty"`
+	PortsIn    string `json:"ports_in,omitempty"`
+	PortsOut   string `json:"ports_out,omitempty"`
+	DenyCount  int    `json:"deny_count"`
+	AllowCount int    `json:"allow_count"`
 }
 
 var (
@@ -40,6 +41,52 @@ func HasCSF() bool {
 		}
 	})
 	return csfAvailable
+}
+
+// csfLockFile is held (flock, exclusive) by csf from before it flushes the
+// firewall until it has rebuilt it, during "csf -r", "csf -s" and "csf -f".
+var csfLockFile = "/var/lib/csf/csf.lock"
+
+var procLocks = "/proc/locks"
+
+// CSFRestarting reports whether csf is rebuilding the firewall right now.
+// A repair in the middle would race it: a chain or set of ours referenced
+// again between its flush and its "--delete-chain" or "ipset destroy" makes
+// those fail and leaves CSF's own chains and sets half removed. It only
+// reads /proc/locks: taking the lock, even for a moment, would make a
+// concurrent "csf -r" fail.
+func CSFRestarting() bool {
+	fi, err := os.Stat(csfLockFile)
+	if err != nil {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	locks, err := os.ReadFile(procLocks)
+	if err != nil {
+		return false
+	}
+	return lockHeld(string(locks), uint64(st.Ino))
+}
+
+// lockHeld reports whether /proc/locks lists a lock (held, or waited for)
+// on a file with inode ino. /proc/locks names the file as
+// major:minor:inode; only the inode is compared, because the device it
+// prints (the superblock's) is not always the one stat reports (btrfs
+// subvolumes, overlayfs). Another file with the same inode on another
+// filesystem only delays a repair.
+func lockHeld(locks string, ino uint64) bool {
+	suffix := ":" + strconv.FormatUint(ino, 10)
+	for _, line := range strings.Split(locks, "\n") {
+		for _, f := range strings.Fields(line) {
+			if strings.Count(f, ":") == 2 && strings.HasSuffix(f, suffix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // CSFInfo gathers CSF status: version, open ports, deny/allow counts.

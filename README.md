@@ -134,7 +134,7 @@ Tracks every SSH session end-to-end — auth method, source IP reputation, login
 
 - **Checks before it changes** — `infrafence-agent preflight` is a read-only scan of the server (firewall and other security tools, web servers, hosting panels, configuration management, package operations, resources). The installer runs it before changing anything; the agent runs it at start and daily.
 - **Conservative defaults** — web server changes and inbound threat-list blocking are off until you turn them on; auto-updates can be set to notify-only.
-- **Dedicated firewall chains** — every rule lives in the agent's own `INFRAFENCE` chains, jumped to from `INPUT` (and `DOCKER-USER`), rebuilt atomically and repaired automatically within a minute if another tool (ufw, firewalld, CSF) removes them. Your existing rules are never modified. Whitelisted IPs are exempted, never opened.
+- **Dedicated firewall chains** — every rule lives in the agent's own `INFRAFENCE` chains, jumped to from `INPUT` (and `DOCKER-USER`), rebuilt atomically and repaired automatically within seconds if another tool (ufw, firewalld, CSF) removes them. Your existing rules are never modified. Whitelisted IPs are exempted, never opened.
 - **Clean uninstall** — removes the agent and everything it added: firewall chains, web server changes, the service.
 
 ---
