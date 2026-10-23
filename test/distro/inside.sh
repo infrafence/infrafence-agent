@@ -112,6 +112,9 @@ fi
 # ── closed ports and egress blocks (test/distro/firewall.sh) ──
 . /distro/firewall.sh
 
+# ── trust badge verification file in an nginx site (test/distro/trust.sh) ──
+. /distro/trust.sh
+
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 
@@ -129,6 +132,7 @@ ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
 [ -e /var/lib/infrafence/panel-state.json ] && left="$left panel-state"
 [ -e /var/lib/infrafence/protection-state.json ] && left="$left protection-state"
+[ -e /var/lib/infrafence/trust-state.json ] && left="$left trust-state"
 [ -e /run/infrafence/panel.sock ] && left="$left panel-socket"
 ipset list -n 2>/dev/null | grep -q infrafence && left="$left ipset"
 systemctl list-unit-files 2>/dev/null | grep -q infrafence-agent && left="$left service"

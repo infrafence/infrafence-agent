@@ -1320,6 +1320,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	if len(sync.QuarantineRestores) > 0 {
 		go restoreQuarantinedFiles(client, append([]string(nil), malwareCustomPaths...), sync.QuarantineRestores)
 	}
+	// Trust badge verification files — see trust.go.
+	applyTrustTokens(client, sync.TrustTokens)
 
 	// Apply dynamic malware signatures from backend
 	if len(sync.MalwareSignatures) > 0 && malwareScanner != nil {

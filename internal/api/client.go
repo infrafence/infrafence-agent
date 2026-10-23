@@ -489,6 +489,16 @@ type SyncResponse struct {
 	// each request is handled once and reported back.
 	VirtualPatches     []VirtualPatchRequest `json:"virtual_patches"`
 	QuarantineRestores []QuarantineRestore   `json:"quarantine_restores"`
+	// Domains whose trust badge needs the verification file now; a domain
+	// no longer listed has its token removed.
+	TrustTokens []TrustToken `json:"trust_tokens"`
+}
+
+// TrustToken is the verification token of one domain's trust badge, served
+// at https://<domain>/.well-known/infrafence-verification.txt.
+type TrustToken struct {
+	Domain string `json:"domain"`
+	Token  string `json:"token"`
 }
 
 // VirtualPatchRequest asks to apply or remove one catalog virtual patch.

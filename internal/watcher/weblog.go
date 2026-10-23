@@ -352,10 +352,11 @@ func DetectWebLogPaths() []string {
 	return paths
 }
 
-// nginxBlock holds server_name and access_log directives from a single nginx server{} block.
+// nginxBlock holds server_name, access_log and root directives from a single nginx server{} block.
 type nginxBlock struct {
 	serverNames []string
 	logPaths    []string
+	root        string // the server-level root ("" when unset or not a literal path)
 }
 
 // detectNginxLogInfo parses nginx config to find ALL access_log paths with their server_names.
@@ -433,6 +434,11 @@ func parseNginxBlocks(output string) []nginxBlock {
 						current.logPaths = append(current.logPaths, path)
 					}
 				}
+			}
+
+			// Only the server's own root: one inside a location serves that location only.
+			if braceDepth == 1 && strings.HasPrefix(trimmed, "root ") {
+				current.root = literalRoot(strings.TrimSuffix(strings.TrimPrefix(trimmed, "root "), ";"))
 			}
 		} else {
 			if strings.HasPrefix(trimmed, "access_log ") && globalDepth >= 1 {
@@ -555,40 +561,9 @@ func CollectAllWebServerDomains() []string {
 	}
 
 	// Apache: parse all vhost configs for ServerName/ServerAlias
-	apacheInstalled := false
-	for _, cmd := range []string{"apache2ctl", "apachectl", "httpd"} {
-		if _, err := exec.LookPath(cmd); err == nil {
-			apacheInstalled = true
-			break
-		}
-	}
-	if apacheInstalled {
-		configFiles := []string{
-			"/etc/apache2/apache2.conf",
-			"/etc/httpd/conf/httpd.conf",
-			"/usr/local/apache/conf/httpd.conf",
-		}
-		for _, pattern := range []string{
-			"/etc/apache2/sites-enabled/*.conf",
-			"/etc/httpd/conf.d/*.conf",
-			"/etc/apache2/conf-enabled/*.conf",
-			"/etc/apache2/plesk.conf.d/vhosts/*.conf",
-			"/var/www/vhosts/system/*/conf/*.conf",
-		} {
-			if matches, err := filepath.Glob(pattern); err == nil {
-				configFiles = append(configFiles, matches...)
-			}
-		}
-		for _, cf := range configFiles {
-			data, err := os.ReadFile(cf)
-			if err != nil {
-				continue
-			}
-			for _, vhost := range parseApacheVhosts(string(data)) {
-				for _, d := range vhost.serverNames {
-					domainSet[d] = true
-				}
-			}
+	for _, vhost := range allApacheVhosts() {
+		for _, d := range vhost.serverNames {
+			domainSet[d] = true
 		}
 	}
 
@@ -601,6 +576,96 @@ func CollectAllWebServerDomains() []string {
 	}
 	sort.Strings(domains)
 	return domains
+}
+
+// allApacheVhosts parses the VirtualHost blocks of every Apache vhost
+// config (none when Apache is not installed).
+func allApacheVhosts() []apacheVhost {
+	apacheInstalled := false
+	for _, cmd := range []string{"apache2ctl", "apachectl", "httpd"} {
+		if _, err := exec.LookPath(cmd); err == nil {
+			apacheInstalled = true
+			break
+		}
+	}
+	if !apacheInstalled {
+		return nil
+	}
+	configFiles := []string{
+		"/etc/apache2/apache2.conf",
+		"/etc/httpd/conf/httpd.conf",
+		"/usr/local/apache/conf/httpd.conf",
+	}
+	for _, pattern := range []string{
+		"/etc/apache2/sites-enabled/*.conf",
+		"/etc/httpd/conf.d/*.conf",
+		"/etc/apache2/conf-enabled/*.conf",
+		"/etc/apache2/plesk.conf.d/vhosts/*.conf",
+		"/var/www/vhosts/system/*/conf/*.conf",
+	} {
+		if matches, err := filepath.Glob(pattern); err == nil {
+			configFiles = append(configFiles, matches...)
+		}
+	}
+	var vhosts []apacheVhost
+	for _, cf := range configFiles {
+		data, err := os.ReadFile(cf)
+		if err != nil {
+			continue
+		}
+		vhosts = append(vhosts, parseApacheVhosts(string(data))...)
+	}
+	return vhosts
+}
+
+// SiteRoot is a server block or virtual host with its exact names and its
+// document root.
+type SiteRoot struct {
+	Names []string
+	Root  string
+}
+
+// DetectSiteRoots lists the nginx server blocks (nginx -T) and Apache
+// virtual hosts that have both a name and a literal document root, nginx
+// first, each in configuration order. Default servers without a name are
+// left out; wildcard and regular expression names are kept as written (a
+// caller matching exact names never matches them).
+func DetectSiteRoots() []SiteRoot {
+	var out []SiteRoot
+	if _, err := exec.LookPath("nginx"); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		dump, err := exec.CommandContext(ctx, "nginx", "-T").Output()
+		cancel()
+		if err == nil {
+			out = append(out, nginxSiteRoots(parseNginxBlocks(string(dump)))...)
+		}
+	}
+	for _, v := range allApacheVhosts() {
+		if len(v.serverNames) > 0 && v.docRoot != "" {
+			out = append(out, SiteRoot{Names: v.serverNames, Root: v.docRoot})
+		}
+	}
+	return out
+}
+
+func nginxSiteRoots(blocks []nginxBlock) []SiteRoot {
+	var out []SiteRoot
+	for _, b := range blocks {
+		if len(b.serverNames) > 0 && b.root != "" {
+			out = append(out, SiteRoot{Names: b.serverNames, Root: b.root})
+		}
+	}
+	return out
+}
+
+// literalRoot is a root or DocumentRoot value as an absolute path, quotes
+// removed; "" for anything with a variable or not absolute.
+func literalRoot(v string) string {
+	v = strings.Trim(strings.TrimSpace(v), `"'`)
+	if !filepath.IsAbs(v) || strings.ContainsAny(v, "$ \t") {
+		return ""
+	}
+	return filepath.Clean(v)
 }
 
 // resolveApacheEnvVars expands ${APACHE_LOG_DIR} in a path by parsing /etc/apache2/envvars.
@@ -721,6 +786,7 @@ func detectApacheLogInfo() []LogPathInfo {
 type apacheVhost struct {
 	serverNames []string
 	logPaths    []string
+	docRoot     string // DocumentRoot ("" when unset or not a literal path)
 }
 
 // isBandwidthLog reports whether a CustomLog directive points at a bandwidth
@@ -793,6 +859,9 @@ func parseApacheVhosts(content string) []apacheVhost {
 					current.logPaths = append(current.logPaths, path)
 				}
 			}
+		}
+		if strings.HasPrefix(lower, "documentroot ") {
+			current.docRoot = literalRoot(trimmed[len("documentroot "):])
 		}
 	}
 	return results

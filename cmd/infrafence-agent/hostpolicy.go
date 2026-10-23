@@ -296,6 +296,15 @@ func cmdUninstall(args []string) {
 	if err := os.Remove(panelStatePath); err == nil {
 		fmt.Println("removed", panelStatePath)
 	}
+	// Trust badge verification files (trust.go), then their state.
+	removed, err := removeTrustFiles()
+	for _, p := range removed {
+		fmt.Println("removed", p)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "could not remove trust badge verification files: %v\n", err)
+		failed = true
+	}
 	for name, fn := range map[string]func() error{
 		"nginx UA blocking":  webserver.RemoveNginxUABlock,
 		"apache UA blocking": webserver.RemoveApacheUABlock,
@@ -310,7 +319,7 @@ func cmdUninstall(args []string) {
 		failed = true
 	}
 	// Hardening fixes applied from the dashboard live in files of their own.
-	removed, err := remediation.RemoveAll(remediation.System)
+	removed, err = remediation.RemoveAll(remediation.System)
 	for _, p := range removed {
 		fmt.Println("removed", p)
 	}

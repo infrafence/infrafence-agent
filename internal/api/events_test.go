@@ -269,6 +269,7 @@ func TestUrgentEvents(t *testing.T) {
 		{EventRequest{Type: "quarantine_restored", Severity: "info"}, true},
 		{EventRequest{Type: "firewall_action_done", Severity: "info"}, true},
 		{EventRequest{Type: "virtual_patch_done", Severity: "info"}, true},
+		{EventRequest{Type: "trust_token_placed", Severity: "info"}, true},
 		{EventRequest{Type: "hardening_fix_rolled_back", Severity: "warning"}, true},
 		{EventRequest{Type: "yara_install_failed", Severity: "warning"}, true},
 		{EventRequest{Type: "update_completed", Severity: "info"}, true},
