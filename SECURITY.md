@@ -5,7 +5,7 @@
 If you discover a security vulnerability, please report it responsibly:
 
 1. **Do NOT open a public GitHub issue**
-2. Email **security@infrafence.com** with details
+2. Email **info@infrafence.com** with details (the same contact as https://infrafence.com/.well-known/security.txt)
 3. Include steps to reproduce if possible
 4. We will respond within 48 hours
 
