@@ -253,50 +253,8 @@ func CSFAllowList() []CSFDenyEntry {
 }
 
 // CSFPortAction adds or removes a port from CSF configuration.
-// direction: "in" or "out", action: "add" or "remove"
-func CSFPortAction(port int, direction string, action string) error {
-	key := "TCP_IN"
-	if direction == "out" {
-		key = "TCP_OUT"
-	}
-
-	current := csfConfigValue(key)
-	portStr := strconv.Itoa(port)
-	ports := strings.Split(current, ",")
-
-	if action == "add" {
-		// Check if already present
-		for _, p := range ports {
-			if strings.TrimSpace(p) == portStr {
-				return nil // already open
-			}
-		}
-		ports = append(ports, portStr)
-	} else if action == "remove" {
-		var filtered []string
-		for _, p := range ports {
-			if strings.TrimSpace(p) != portStr {
-				filtered = append(filtered, p)
-			}
-		}
-		ports = filtered
-	}
-
-	newValue := strings.Join(ports, ",")
-
-	// Use csf --profile to apply changes safely
-	// First update the config, then restart CSF
-	if err := csfSetConfigValue(key, newValue); err != nil {
-		return err
-	}
-
-	// Restart CSF to apply
-	return exec.Command("csf", "-r").Run()
-}
-
-// csfSetConfigValue updates a value in /etc/csf/csf.conf using sed.
-func csfSetConfigValue(key, value string) error {
-	// Use sed to replace the line in-place
-	pattern := `s/^` + key + ` = ".*"/` + key + ` = "` + value + `"/`
-	return exec.Command("sed", "-i", pattern, "/etc/csf/csf.conf").Run()
+// direction: "in" or "out", action: "add" or "remove". In monitor mode
+// nothing changes and it returns ErrCSFMonitorMode (see csf_conf.go).
+func CSFPortAction(port int, direction string, action string, monitorMode bool) error {
+	return csfEditPorts(strconv.Itoa(port), direction, action, monitorMode)
 }

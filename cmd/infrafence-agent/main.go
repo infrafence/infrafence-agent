@@ -800,6 +800,7 @@ func runAgent() {
 		},
 		OnRuleRemoved: func(p ws.RuleRemovedPayload) {
 			log.Printf("[reverb] rule.removed: id=%d", p.ID)
+			removeDashboardRule(p.ID)
 		},
 		OnScanRequested: func(p ws.ScanRequestedPayload) {
 			log.Printf("[reverb] scan.requested: scan_id=%d", p.ScanID)
@@ -1049,6 +1050,9 @@ const eventFlushTimeout = 5 * time.Second
 var onBanSchedule func(time.Time)
 
 func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatcher, mailW *watcher.MailWatcher, dbW *watcher.DBWatcher, ftpW *watcher.FTPWatcher, geo *geoip.Lookup, geoBlocker *firewall.GeoBlocker, reportUpdateEvent updater.EventReporter, wsType string) error {
+	// Before the request: rules applied or removed meanwhile are newer than
+	// what it returns (firewall.ReconcileRules).
+	rulesGen := firewall.RulesGeneration()
 	sync, err := client.Sync()
 	if err != nil {
 		return err
@@ -1252,15 +1256,29 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 
 	// Apply firewall rules that are pending or synced (skip country-only rules)
 	rulesApplied := 0
+	var rulesInForce []int64
 	for _, r := range sync.Rules {
 		// Country rules are handled by the geoip check, not iptables
 		if r.CountryCode != nil && *r.CountryCode != "" {
 			continue
 		}
 		if r.Status == "pending" || r.Status == "synced" {
+			if firewall.RuleRemovedSince(r.ID, rulesGen) {
+				continue // deleted from the dashboard since this sync's request
+			}
 			applyAndAckRule(client, r)
+			rulesInForce = append(rulesInForce, r.ID)
 			rulesApplied++
 		}
+	}
+	// Rules deleted from the dashboard go even if their rule.removed message
+	// was missed: the chain holds exactly the rules listed. Not on a sync
+	// that lists no rule at all, which could be a dashboard fault rather
+	// than every rule deleted (rule.removed still removes them one by one).
+	if len(sync.Rules) == 0 {
+		log.Printf("[firewall] sync lists no rules: rules in force kept")
+	} else if err := firewall.ReconcileRules(rulesGen, rulesInForce); err != nil {
+		log.Printf("[firewall] reconcile rules: %v", err)
 	}
 
 	// Apply bot fingerprints to web watcher. When the dashboard supplies none,
@@ -1490,7 +1508,17 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	if len(sync.CSFPortActions) > 0 && firewall.HasCSF() {
 		for _, action := range sync.CSFPortActions {
 			log.Printf("[csf] port action: %s port %d %s", action.Action, action.Port, action.Direction)
-			if err := firewall.CSFPortAction(action.Port, action.Direction, action.Action); err != nil {
+			err := firewall.CSFPortAction(action.Port, action.Direction, action.Action, sync.Config.MonitorMode)
+			if errors.Is(err, firewall.ErrCSFMonitorMode) {
+				// Report only: what would have changed.
+				log.Printf("[csf] monitor mode: port action not applied")
+				client.ReportEvents([]api.EventRequest{{
+					Type:       "csf_port_skipped",
+					Severity:   "info",
+					Details:    map[string]string{"port": fmt.Sprintf("%d", action.Port), "direction": action.Direction, "action": action.Action, "reason": "monitor_mode"},
+					OccurredAt: time.Now().UTC().Format(time.RFC3339),
+				}})
+			} else if err != nil {
 				log.Printf("[csf] port action failed: %v", err)
 				client.ReportEvents([]api.EventRequest{{
 					Type:       "csf_port_error",
@@ -1590,7 +1618,7 @@ func applyAndAckRule(client *api.Client, r api.Rule) {
 		Port:      r.Port,
 	}
 
-	if err := firewall.ApplyRule(spec); err != nil {
+	if err := firewall.ApplyRuleID(r.ID, spec); err != nil {
 		log.Printf("[firewall] failed to apply rule %d: %v", r.ID, err)
 		errMsg := err.Error()
 		if ackErr := client.AckRule(r.ID, api.RuleAckRequest{
@@ -1604,6 +1632,18 @@ func applyAndAckRule(client *api.Client, r api.Rule) {
 
 	if err := client.AckRule(r.ID, api.RuleAckRequest{Status: "applied"}); err != nil {
 		log.Printf("[api] failed to ack rule %d: %v", r.ID, err)
+	}
+}
+
+// removeDashboardRule removes a rule deleted from the dashboard from the
+// firewall at once.
+func removeDashboardRule(id int64) {
+	had, err := firewall.RemoveRuleID(id)
+	switch {
+	case err != nil:
+		log.Printf("[firewall] failed to remove rule %d: %v", id, err)
+	case !had:
+		log.Printf("[firewall] rule %d was not applied here: nothing to remove", id)
 	}
 }
 
@@ -2309,14 +2349,13 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 			log.Printf("[malware] error scanning %s: %v", root.Path, err)
 			continue
 		}
+		for _, why := range rootResult.RootsSkipped {
+			reportEvent(client, "malware_root_skipped", "warning", map[string]string{"web_root": root.Path, "reason": why})
+		}
 
 		// YARA scan for this root
 		if yaraScanner != nil && yaraScanner.IsAvailable() {
-			scanDir := yaraScanner.ScanDirectory
-			if root.Strict {
-				scanDir = yaraScanner.ScanDirectoryNoFollow
-			}
-			for _, f := range scanDir(root.Path, root.Domain) {
+			for _, f := range yaraScanner.ScanDirectory(root.Path, root.Domain) {
 				rootResult.Findings = append(rootResult.Findings, f)
 			}
 		}
