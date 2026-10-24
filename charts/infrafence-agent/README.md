@@ -88,7 +88,7 @@ logs:
 extraEnv:
   - name: WEB_LOG_PATH
     value: "/var/log/nginx/access.log"
-  - name: GEOIP_DB_PATH
+  - name: GEOIP_DB_PATH # your own country database: nothing is downloaded
     value: "/usr/share/GeoIP/GeoLite2-Country.mmdb"
   - name: DISABLE_K8S_AUTO_UPDATE
     value: "true"
@@ -115,7 +115,7 @@ extraEnv:
 - SSH brute-force detection and auto-banning via iptables/ipset
 - Web attack detection (SQL injection, XSS, path traversal, RCE, SSRF)
 - Log parsing: **nginx, Apache, Traefik (JSON), Caddy, LiteSpeed, uvicorn, gunicorn**
-- Country-based geoblocking (MaxMind GeoLite2)
+- Country-based geoblocking (the DB-IP country database, CC BY 4.0, downloaded from the dashboard while a country is blocked)
 - Bot fingerprint detection with configurable actions
 - Malware scanning with real-time progress (YARA, signature matching, heuristics)
 - Known vulnerabilities (CVE) of the installed packages, checked against the OSV database (Debian, Ubuntu, AlmaLinux, Rocky Linux) and ranked by real risk: exploited in the wild (CISA KEV) first, then exploit probability (EPSS)

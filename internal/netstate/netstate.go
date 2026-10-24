@@ -409,9 +409,16 @@ func sessionPorts(root string, socks []Conn) []int {
 // sshConnectionPort returns the server port of SSH_CONNECTION
 // ("client_ip client_port server_ip server_port") in an environ file, or 0.
 func sshConnectionPort(path string) int {
+	_, port := sshConnection(path)
+	return port
+}
+
+// sshConnection returns the client address and the server port of
+// SSH_CONNECTION in an environ file (nil, 0 without one).
+func sshConnection(path string) (net.IP, int) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0
+		return nil, 0
 	}
 	defer f.Close()
 	buf := make([]byte, 64*1024)
@@ -420,12 +427,56 @@ func sshConnectionPort(path string) int {
 		if v, ok := strings.CutPrefix(kv, "SSH_CONNECTION="); ok {
 			if f := strings.Fields(v); len(f) == 4 {
 				if p, err := strconv.Atoi(f[3]); err == nil && p > 0 && p < 65536 {
-					return p
+					return net.ParseIP(f[0]), p
 				}
 			}
 		}
 	}
-	return 0
+	return nil, 0
+}
+
+// SSHSessionAddrs returns the public client addresses of the SSH sessions
+// logged in right now: SSH_CONNECTION in the environment of a process (sshd
+// sets it only after authentication) whose address still has an
+// established connection to that server port.
+func SSHSessionAddrs() []string { return sessionAddrs(procRoot, PublicInbound) }
+
+func sessionAddrs(root string, inbound func(port int) []string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	clients := map[int]map[string]bool{} // server port -> client addresses
+	n := 0
+	for _, e := range entries {
+		pid := e.Name()
+		if pid == "" || pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+		if n++; n > maxProcs {
+			break
+		}
+		if ip, port := sshConnection(root + "/" + pid + "/environ"); ip != nil && IsPublic(ip) {
+			if clients[port] == nil {
+				clients[port] = map[string]bool{}
+			}
+			clients[port][ip.String()] = true
+		}
+	}
+	set := map[string]bool{}
+	for port, ips := range clients {
+		for _, a := range inbound(port) {
+			if p := net.ParseIP(a); p != nil && ips[p.String()] {
+				set[p.String()] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for a := range set {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // webProcesses are the process names (/proc/<pid>/comm) of web servers and

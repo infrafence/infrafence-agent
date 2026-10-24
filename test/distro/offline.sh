@@ -3,13 +3,16 @@
 # emptied. The last known protection must come back from the state file: the
 # allow list (198.51.100.2 is never banned, not even geo-blocked), the
 # country block (XX = 198.51.100.0/25, from a test GeoIP database: blocks
-# 198.51.100.3), the dashboard's bans (one expiring soon, one permanent). The
+# 198.51.100.3; the agent downloads the database from the dashboard once
+# the country is blocked, and only once), the dashboard's bans (one expiring
+# soon, one permanent). The
 # expiring ban must expire on this server while the dashboard still refuses
 # the agent, a ban made meanwhile (198.51.100.200) must be reported once the
 # dashboard answers again, and the refused agent must not keep asking.
-# Sets R_PRESTORE, R_GEO, R_ALLOW, R_EXPIRE, R_OUTBOX, R_QUIET; appends to
-# EXTRA_RESULT and sets EXTRA_FAIL=1 on a failure.
-R_PRESTORE=fail R_GEO=fail R_ALLOW=fail R_EXPIRE=fail R_OUTBOX=fail R_QUIET=fail
+# Sets R_PRESTORE, R_GEO, R_GEODB, R_ALLOW, R_EXPIRE, R_OUTBOX, R_QUIET;
+# appends to EXTRA_RESULT and sets EXTRA_FAIL=1 on a failure.
+R_PRESTORE=fail R_GEO=fail R_GEODB=fail R_ALLOW=fail R_EXPIRE=fail R_OUTBOX=fail R_QUIET=fail
+GEODB=/etc/infrafence/geoip-country.mmdb
 API=http://127.0.0.1:8080
 WL=198.51.100.2 GEO=198.51.100.3 ATK=198.51.100.200
 EXP_BAN=203.0.113.77 PERM_BAN=203.0.113.78
@@ -51,12 +54,13 @@ reaches() {
 brute() { for i in $(seq 1 8); do ssh_from "$1" "nosuch$i" >/dev/null; done; }
 mock_bans() { curl -s "$API/state" | grep -o '"bans":\[[^]]*\]'; }
 denied() { curl -s "$API/state" | grep -o '"denied":[0-9]*' | cut -d: -f2; }
+geoip_requests() { curl -s "$API/state" | grep -o '"geoip_requests":[0-9]*' | cut -d: -f2; }
 
 # ── the dashboard's state: allow list, country XX, two bans ──
-mkdir -p /etc/infrafence
-/distro/mkmmdb -out /etc/infrafence/GeoLite2-Country.mmdb -cidr 198.51.100.0/25 -country XX
-systemctl restart infrafence-agent # loads the GeoIP database
-sleep 10
+# The dashboard's country database (served by mockapi): no country was
+# blocked so far, so the agent has never asked for it.
+/distro/mkmmdb -out /tmp/mockapi-geoip.mmdb -cidr 198.51.100.0/25 -country XX -anchors -type DBIP-Country-Lite
+g0=$(geoip_requests)
 exp=$(date -u -d '+180 seconds' +%Y-%m-%dT%H:%M:%SZ)
 exp_at=$(date -u -d "$exp" +%s)
 curl -s -X POST "$API/set-sync" -d "{
@@ -66,7 +70,7 @@ curl -s -X POST "$API/set-sync" -d "{
              {\"id\": 902, \"ip_address\": \"$PERM_BAN\", \"expires_at\": null}]}" >/dev/null
 ready=no
 for _ in $(seq 1 100); do
-  if banned $EXP_BAN && banned $PERM_BAN && grep -q '"XX"' $STATE 2>/dev/null && grep -q "\"$WL\"" $STATE 2>/dev/null &&
+  if banned $EXP_BAN && banned $PERM_BAN && grep -q '"XX"' $STATE 2>/dev/null && grep -q "\"$WL\"" $STATE 2>/dev/null && [ -f $GEODB ] &&
      { ! ipset_mode || ipset list -n | grep -qx infrafence-geo-xx; }; then ready=yes; break; fi
   sleep 1
 done
@@ -74,6 +78,8 @@ log "dashboard state applied and saved: $ready ($(ipset_mode && echo ipset || ec
 reaches $WL || { log "baseline: $WL does not reach SSH: $(ssh_from $WL probe | tail -1)"; iptables -S INFRAFENCE; ipset list infrafence-allow 2>/dev/null | tail -3; }
 [ $ready = yes ] || { journalctl -u infrafence-agent --no-pager | grep -iE 'sync|geo|protection' | tail -10; ls -l $STATE; }
 stat -c '%a' $STATE 2>/dev/null | grep -qx 600 || { log "state file mode $(stat -c '%a' $STATE 2>/dev/null)"; ready=no; }
+g1=$(geoip_requests)
+log "country database: $(stat -c '%a %U %s' $GEODB 2>/dev/null), requests before the block $g0, after $g1"
 
 if [ $ready = yes ]; then
   # ── refused, and a restart that loses what is in the kernel ──
@@ -131,9 +137,15 @@ if [ $ready = yes ]; then
   if mock_bans | grep -q "$ATK" && banned $ATK; then R_OUTBOX=ok; else log "outbox: reported=$(mock_bans | grep -q "$ATK" && echo yes) banned=$(banned $ATK && echo yes)"; fi
 fi
 
+# The downloaded database is kept across the restarts and not asked for again.
+g2=$(geoip_requests)
+if [ "$g0" = 0 ] && [ "$g1" = 1 ] && [ "$g2" = 1 ] && [ "$(stat -c '%a %U' $GEODB 2>/dev/null)" = "644 root" ] &&
+   [ "$(sha256sum <$GEODB)" = "$(sha256sum </tmp/mockapi-geoip.mmdb)" ] && ! ls -A /etc/infrafence | grep -q '^\.geoip'; then R_GEODB=ok
+else log "geodb: requests $g0/$g1/$g2, $(ls -la /etc/infrafence | grep -i geoip | tr '\n' ' ')"; journalctl -u infrafence-agent --no-pager | grep -i geoip | tail -6; fi
+
 # ── back to the plain state ──
 curl -s "$API/deny?mode=off" >/dev/null
 curl -s -X POST "$API/set-sync" -d '{"config": {"bf_threshold": 5, "bf_window": 60, "monitor_mode": false}, "whitelists": [], "bans": []}' >/dev/null
-EXTRA_RESULT="${EXTRA_RESULT:-} protection_restore=${R_PRESTORE} geo=${R_GEO} allow=${R_ALLOW} expire=${R_EXPIRE} outbox=${R_OUTBOX} quiet=${R_QUIET}"
-[ "$R_PRESTORE$R_ALLOW$R_EXPIRE$R_OUTBOX$R_QUIET" = okokokokok ] && [ "$R_GEO" != fail ] || EXTRA_FAIL=1
+EXTRA_RESULT="${EXTRA_RESULT:-} protection_restore=${R_PRESTORE} geo=${R_GEO} geo_db=${R_GEODB} allow=${R_ALLOW} expire=${R_EXPIRE} outbox=${R_OUTBOX} quiet=${R_QUIET}"
+[ "$R_PRESTORE$R_GEODB$R_ALLOW$R_EXPIRE$R_OUTBOX$R_QUIET" = okokokokokok ] && [ "$R_GEO" != fail ] || EXTRA_FAIL=1
 ip netns pids c3 2>/dev/null | xargs -r kill 2>/dev/null

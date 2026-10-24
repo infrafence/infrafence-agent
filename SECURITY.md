@@ -63,7 +63,7 @@ The agent runs as root: it manages the firewall, reads system logs and network s
 | Permissions of `/etc/shadow`, `/etc/passwd`, `/etc/ssh/sshd_config`, `/root/.ssh/authorized_keys` | Write (`chmod`, only removes bits) | Hardening fixes | On request |
 | System packages | Write | Security updates of named packages; installing YARA (and `epel-release` on RHEL-family systems) | On request |
 | Files in web roots | Write (move) | Quarantine: the file is moved to `/var/lib/infrafence/quarantine` (mode 0400) with its owner and mode recorded; restore puts it back without overwriting anything | On request, only for regular files inside a detected web root |
-| `/etc/infrafence/` | Read + Write | Configuration and agent token (`config.json`, mode 0600), YARA rules, threat feed and bot list caches, GeoIP database | Always |
+| `/etc/infrafence/` | Read + Write | Configuration and agent token (`config.json`, mode 0600), YARA rules, threat feed and bot list caches, the country database `geoip-country.mmdb` (mode 0644, downloaded from the dashboard only while a country is blocked) | Always |
 | `/var/lib/infrafence/` (mode 0700) | Read + Write | `protection-state.json`, `firewall-state.json`, `panel-state.json`, `unsent-events.json`, crash and recovery markers, `quarantine/` | Always |
 | `/run/infrafence/panel.sock` | Read + Write | Local socket for the WHM and Plesk plugins. Directory 0700, socket 0600, and every caller must be root (checked with `SO_PEERCRED`) | Only on cPanel or Plesk servers, or with `"panel": true` in the configuration |
 | `/etc/motd.d/infrafence` | Write | Login notice while protection is switched off | Only after 24 hours of refusal (see below) |
@@ -103,7 +103,7 @@ All communication with the dashboard uses HTTPS. The agent authenticates with it
 - Bans: address, reason, count and expiry.
 - Hosting panel actions (unban, allow, disallow, scan): who did it, the address or path, and a note of up to 200 characters.
 
-The agent pulls its configuration, bans, allow list, rules, signatures and requested actions from the dashboard every 5 minutes, and at once when the dashboard signals a change.
+The agent pulls its configuration, bans, allow list, rules, signatures and requested actions from the dashboard every 5 minutes, and at once when the dashboard signals a change. While a country is blocked it also downloads the country database ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) from the dashboard, at most once a day, sending only the checksum of the copy it has.
 
 **Never transmitted:**
 - Full log files (only the single lines described above)

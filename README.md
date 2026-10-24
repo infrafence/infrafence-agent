@@ -124,7 +124,7 @@ Tracks every SSH session end-to-end — auth method, source IP reputation, login
 ### And more
 - **Mail, database and FTP** — brute force detection for Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD and vsftpd
 - **Docker-aware** — finds web containers' logs and protects published container ports (`DOCKER-USER`)
-- **Country blocking** from the dashboard (needs `ipset`)
+- **Country blocking** from the dashboard (needs `ipset`). The agent downloads the country database from your dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) only while a country is blocked, at most once a day. The allow list, the server's own addresses and SSH sessions open when a country is blocked are never blocked
 - **Hosting panels recognized** (24, e.g. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) and **LiteSpeed / OpenLiteSpeed** — InfraFence never edits a configuration a panel or LiteSpeed manages
 - **Monitor mode** — detect everything, block nothing
 - **System metrics** — CPU, memory, disk and network
@@ -249,7 +249,7 @@ On the server:
 | `WEB_LOG_PATH` | Web access logs, comma-separated (default: auto-detected from nginx, Apache, LiteSpeed, panels, Docker) |
 | `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Override the detected mail, database and FTP logs |
 | `MODSEC_AUDIT_LOG` | ModSecurity audit log |
-| `GEOIP_DB_PATH` | GeoIP country database |
+| `GEOIP_DB_PATH` | Country database (MaxMind DB format) to use instead of the one downloaded from the dashboard to `/etc/infrafence/geoip-country.mmdb`; when set, nothing is downloaded |
 | `INFRAFENCE_CONFIG` | Agent config file (default `/etc/infrafence/config.json`) |
 
 Set them with `sudo systemctl edit infrafence-agent` (`[Service]` → `Environment=...`), then restart the service.

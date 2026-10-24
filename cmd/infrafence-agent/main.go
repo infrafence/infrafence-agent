@@ -71,7 +71,7 @@ var dnsInspector = dnswatch.NewInspector(
 // currentAPIClient lets package-level components report events.
 var currentAPIClient atomic.Pointer[api.Client]
 
-// geoLookup is the GeoLite2 database once loaded (events get a country).
+// geoLookup is the country database once loaded (events get a country).
 var geoLookup atomic.Pointer[geoip.Lookup]
 
 func main() {
@@ -357,6 +357,7 @@ func runAgent() {
 	geoBlocker := firewall.NewGeoBlocker(func(cc string) ([]string, error) {
 		return geo.ExtractCIDRs(cc)
 	}, cfg.ServerURL)
+	geoBlocker.SetExempt(sshSessionAddrs)
 
 	// Initialize Kubernetes client (nil if not running in K8s)
 	k8sClient := kubernetes.NewClient()
@@ -720,6 +721,7 @@ func runAgent() {
 	syncs := newSyncRunner(func() error {
 		return syncAndApply(apiClient, w, webW, mailW, dbW, ftpW, geo, geoBlocker, reportUpdateEvent, wsName)
 	})
+	startGeoUpdater(apiClient, geo, geoBlocker, syncs.Request)
 	go syncs.Loop(context.Background())
 	// While switched off the agent only asks every 30 minutes; the first
 	// accepted request asks for a sync, which switches protection back on.
@@ -1186,6 +1188,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		}
 	}
 	geo.SetBlocked(blockedCountries)
+	// The country database is downloaded only while a country is blocked.
+	if geoUpdater != nil {
+		geoUpdater.Want(len(blockedCountries) > 0)
+	}
 
 	// Whitelisted IPs/CIDRs are exempted from every InfraFence block (bans,
 	// threat feeds, geo). This does not open anything in the host firewall.
@@ -1194,8 +1200,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Apply proactive country blocks via ipset hash:net (kernel-level, all CIDRs)
 	if !sync.Config.MonitorMode {
 		geoBlocker.ApplyCountryBlocks(blockedCountries)
-	} else if len(blockedCountries) > 0 {
+		geoMonitorLogged = false
+	} else if len(blockedCountries) > 0 && !geoMonitorLogged {
 		log.Printf("[geoblock] monitor mode — country blocks not applied at kernel level")
+		geoMonitorLogged = true
 	}
 	// Kept for a restart while the dashboard can't be reached (protstate.go).
 	noteSyncedSettings(dashboardIPs, wlCIDRs, blockedCountries, sync.Config.MonitorMode, sync.Config.BFThreshold, sync.Config.BFWindow)
