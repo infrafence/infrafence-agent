@@ -41,7 +41,7 @@
 - **Vede cosa esce dal server.** Segnala le connessioni in uscita verso IP noti come malevoli e legge ogni query DNS a livello di pacchetto, legata al programma che l'ha fatta: tunnel DNS e domini casuali (DGA) arrivano con nome del processo e pid.
 - **Sa chi era collegato.** Ogni sessione SSH riceve un punteggio di rischio da 0 a 100, che sale se WAF, integrità dei file, malware, port scan, traffico in uscita o DNS scattano mentre è aperta.
 - **Correzioni che non fermano la produzione.** Dopo ogni modifica (chiusura di una porta, blocco del traffico in uscita, correzione di hardening, virtual patch) controlla SSH e i siti monitorati, e annulla la modifica se smettono di rispondere.
-- **Un'AI che agisce solo entro limiti fissi.** AutoMode sceglie da un catalogo fisso di azioni, non esegue mai comandi propri e non blocca mai i tuoi indirizzi né i tuoi accessi SSH.
+- **Un'AI che agisce solo entro limiti fissi.** AutoMode sceglie da un catalogo fisso di azioni, non esegue mai comandi propri e non blocca mai i tuoi indirizzi né i tuoi accessi SSH. Le azioni che non sono automatiche (per esempio chiudere una porta MySQL o PostgreSQL che non è sotto attacco, alcune correzioni PHP, una patch virtuale fuori dalla regola automatica) attendono l'approvazione nella dashboard, e può deciderle solo un proprietario o un admin che ha effettuato l'accesso con l'autenticazione a due fattori. [Cosa richiede la tua approvazione](https://infrafence.com/it/documentazione/automode#what-needs-your-approval)
 
 Starter è gratis per un server, piani a pagamento da 8,90 € per server al mese: [vedi i prezzi](https://infrafence.com/it/prezzi).
 
@@ -53,7 +53,7 @@ Crea un token di installazione nella dashboard (Server → Aggiungi server), poi
 curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --token <YOUR_TOKEN>
 ```
 
-Vuoi prima vedere cosa farebbe? Aggiungi `--dry-run`: scarica l'agente, controlla il server in sola lettura, mostra il piano e non modifica nulla.
+Vuoi prima vedere cosa farebbe? Aggiungi `--dry-run` (non serve il token): scarica l'agente, controlla il server in sola lettura, mostra il piano e non modifica nulla.
 
 > **[Ottieni il tuo token su infrafence.com](https://infrafence.com/add-server)** — il piano Starter è gratuito e include 1 server con protezione completa.
 
@@ -124,7 +124,7 @@ Segue ogni sessione SSH dall'inizio alla fine — metodo di autenticazione, repu
 ### E altro
 - **Posta, database e FTP** — rilevamento del brute force per Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD e vsftpd
 - **Compatibile con Docker** — trova i log dei container web e protegge le porte pubblicate (`DOCKER-USER`)
-- **Blocco per paese** dalla dashboard (richiede `ipset`). L'agent scarica il database dei paesi dalla tua dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) solo finché un paese è bloccato, al massimo una volta al giorno. La lista consentiti, gli indirizzi del server stesso e le sessioni SSH aperte quando un paese viene bloccato non vengono mai bloccati
+- **Blocco per paese** dalla dashboard (richiede `ipset`). L'agent scarica il database dei paesi dalla tua dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) solo finché un paese è bloccato, al massimo una volta al giorno. La lista consentiti, gli indirizzi del server stesso e le sessioni SSH aperte quando un paese viene bloccato non vengono mai bloccati. [Blocco per paese](https://infrafence.com/it/documentazione/blocco-per-paese)
 - **Pannelli di hosting riconosciuti** (24, ad es. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) e **LiteSpeed / OpenLiteSpeed** — InfraFence non modifica mai una configurazione gestita da un pannello o da LiteSpeed
 - **Modalità monitor** — rileva tutto, non blocca nulla
 - **Metriche di sistema** — CPU, memoria, disco e rete
@@ -136,16 +136,16 @@ Segue ogni sessione SSH dall'inizio alla fine — metodo di autenticazione, repu
 Cosa aggiunge InfraFence ai rilevatori qui sopra, ognuno con la sua pagina nella [documentazione](https://infrafence.com/it/documentazione):
 
 - **Hardening, vulnerabilità e punteggio di sicurezza** — circa 40 controlli di hardening, con correzione in un clic per quelli sicuri; le vulnerabilità note (CVE) dei pacchetti installati in ordine di rischio reale: prima quelle già sfruttate dagli attaccanti (CISA KEV), poi per probabilità di sfruttamento (EPSS); un punteggio di sicurezza da 0 a 100. [Hardening e vulnerabilità](https://infrafence.com/it/documentazione/hardening-e-vulnerabilita)
-- **Hardening di PHP** — trova le impostazioni PHP rischiose in ogni runtime e pool, e corregge quelle sicure. È hardening e sorveglianza della configurazione: in PHP non viene caricato nulla, e non è una protezione che gira dentro le tue applicazioni. [Hardening di PHP](https://infrafence.com/it/documentazione/hardening-e-vulnerabilita#php-hardening)
+- **Hardening di PHP** — trova le impostazioni PHP rischiose in ogni runtime e pool, e corregge quelle sicure. Le correzioni vanno in un file di InfraFence (`zz-infrafence-hardening.ini`), vengono verificate e annullate se un sito smette di rispondere; `cgi.fix_pathinfo` e `disable_functions` richiedono l'approvazione. L'agente sorveglia anche la configurazione di PHP e segnala un valore rischioso appena compare. È hardening e sorveglianza della configurazione: in PHP non viene caricato nulla, e non è una protezione che gira dentro le tue applicazioni. [Hardening di PHP](https://infrafence.com/it/documentazione/hardening-e-vulnerabilita#php-hardening)
 - **Chiudi le porte esposte, blocca le destinazioni pericolose** (Pro · AutoMode) — ogni modifica viene verificata e annullata se rompe qualcosa. [Porte e blocco in uscita](https://infrafence.com/it/documentazione/porte-e-blocco-in-uscita)
 - **Patch virtuali per le vulnerabilità sfruttate** (Pro · AutoMode) — una regola ModSecurity mirata protegge il software vulnerabile finché non installi l'aggiornamento; Apache con ModSecurity. [Patch virtuali](https://infrafence.com/it/documentazione/patch-virtuali)
 - **Modalità emergenza** — un pulsante rosso: per 24 ore InfraFence risponde da solo all'attacco, con lo stesso catalogo sicuro e gli stessi limiti di AutoMode (da Basic in su). [Modalità emergenza](https://infrafence.com/it/documentazione/modalita-emergenza)
 - **Avvisi** via email, Slack, Discord, Telegram o webhook, più un riepilogo settimanale via email. [Avvisi](https://infrafence.com/it/documentazione/avvisi)
 - **Analisi AI** — un'analisi immediata di ogni incidente su tutti i piani, calcolata nella dashboard; un'analisi con l'AI e correzioni sicure in un clic da Pro in su. [Eventi e attività](https://infrafence.com/it/documentazione/eventi-e-attivita)
 - **Rete InfraFence e mappa degli attacchi** — condivisione facoltativa: vengono segnalati gli indirizzi che attaccano più clienti, e i dati della rete compaiono solo dove hanno contribuito 3 o più organizzazioni. [La rete InfraFence](https://infrafence.com/it/documentazione/rete-infrafence) · [Mappa degli attacchi](https://infrafence.com/it/documentazione/mappa-degli-attacchi)
-- **Badge di monitoraggio** — il badge «Monitorato da InfraFence» rimanda a una pagina di trasparenza pubblica con l'ora dell'ultimo controllo, gli attacchi bloccati negli ultimi 30 giorni e le protezioni attive. Non è un certificato. [Badge di monitoraggio](https://infrafence.com/it/funzionalita#trust-badge) · [Guarda un esempio di pagina di trasparenza](https://infrafence.com/it/trust/demo)
+- **Badge di monitoraggio** — il badge «Monitorato da InfraFence» rimanda a una pagina di trasparenza pubblica con l'ora dell'ultimo controllo, gli attacchi bloccati negli ultimi 30 giorni e le protezioni attive. Per dimostrare che il dominio è servito dal tuo server, l'agente mette un file di verifica, `/.well-known/infrafence-verification.txt`, nella document root del sito, e lo rimuove quando il badge viene disattivato. Non è un certificato. [Badge di monitoraggio](https://infrafence.com/it/funzionalita#trust-badge) · [Guarda un esempio di pagina di trasparenza](https://infrafence.com/it/trust/demo)
 - **Protezione anche quando la dashboard non risponde** — ban, whitelist e blocchi per paese restano attivi, i nuovi attacchi vengono comunque bannati e gli eventi aspettano in coda. [Quando la dashboard non è raggiungibile](https://infrafence.com/it/documentazione/dashboard-non-raggiungibile)
-- **Accanto a CSF e agli altri strumenti** — InfraFence usa solo le proprie catene e non modifica mai i file di CSF né le regole di altri strumenti. [Coesistenza con altri strumenti di sicurezza](https://infrafence.com/it/documentazione/coesistenza)
+- **Accanto a CSF e agli altri strumenti** — InfraFence usa solo le proprie catene e non modifica mai i file di CSF né le regole di altri strumenti; dopo `csf -r` rimette le proprie regole in pochi secondi. [Coesistenza con altri strumenti di sicurezza](https://infrafence.com/it/documentazione/coesistenza)
 - **Plugin per cPanel & WHM** (accesso anticipato) **ed estensione per Plesk** (in sviluppo) — stato della protezione, ban, rilevamenti, eventi e scansioni per sito dentro il pannello. [cPanel & WHM](https://infrafence.com/it/integrazioni/cpanel-whm) · [Pannelli di hosting](https://infrafence.com/it/documentazione/pannelli-di-hosting)
 
 ---
@@ -195,10 +195,12 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 | Opzione | Effetto |
 |---|---|
-| `--dry-run` | Controlla il server e mostra il piano; non modifica nulla |
+| `--dry-run` | Controlla il server e mostra il piano; non modifica nulla. Non serve il token |
 | `--no-ipset` | Non installa `ipset` (i ban funzionano comunque, fino a 500; il blocco per paese e dalle liste di minacce lo richiede) |
 | `--skip-checksum` | **Non sicuro.** Installa anche quando il checksum della release non si può scaricare (il binario non viene verificato). Solo per una rete che blocca il file `.sha256` e nient'altro |
 | `--uninstall` | Rimuove l'agente e tutto ciò che ha aggiunto |
+
+L'agente viene scaricato solo da GitHub Releases, e l'installer si ferma se il checksum della release manca o non corrisponde. Il certificato radice di Let's Encrypt che può servire (ISRG Root X1) è incluso nello script, con un'impronta fissata, invece di essere scaricato. [Cosa fa l'installer](https://infrafence.com/it/documentazione/cosa-fa-l-installer)
 
 **Requisiti:** x86-64 o ARM64, accesso root, `iptables`; systemd, upstart o sysvinit. L'installer usa `apt`, `dnf` o `yum` per le dipendenze mancanti e installa `ipset` solo quando il controllo del server dice che è sicuro.
 
@@ -259,7 +261,7 @@ Impostale con `sudo systemctl edit infrafence-agent` (`[Service]` → `Environme
 
 **Comandi:** `infrafence-agent preflight [--json]` (controllo del server in sola lettura), `infrafence-agent check`, `infrafence-agent uninstall --clean`. Tutti i comandi: [Riferimento dei comandi](https://infrafence.com/it/documentazione/riferimento-comandi).
 
-**Pannelli di hosting (cPanel/WHM, Plesk):** i plugin dei pannelli eseguono `infrafence-agent panel <command> --json` come root e leggono un oggetto JSON da stdout (`{"ok": true, ...}` oppure `{"ok": false, "error": "<code>", "message": "..."}`, stato di uscita 0 solo se ok). Comandi: `status`, `bans [--limit N]`, `unban <ip>`, `allow <ip> [--note ...]`, `allowlist`, `disallow <ip>`, `findings [--limit N]`, `events [--limit N] [--since 24h]`, `coexistence`, `sites`, `scan <document root>`; quelli che modificano qualcosa richiedono `--actor <utente del pannello>` e vengono riportati alla dashboard come eventi con origine `panel`. Il comando parla con l'agente in esecuzione tramite `/run/infrafence/panel.sock` (solo root, permessi 0600, nessuna porta di rete); se l'agente non è in esecuzione risponde comunque, con `"agent_running": false`. Tutti i campi di ogni risposta: [docs/panel-json.md](docs/panel-json.md) (in inglese).
+**Pannelli di hosting (cPanel/WHM, Plesk):** i plugin dei pannelli eseguono `infrafence-agent panel <command> --json` come root e leggono un oggetto JSON da stdout (`{"ok": true, ...}` oppure `{"ok": false, "error": "<code>", "message": "..."}`, stato di uscita 0 solo se ok). Comandi: `status`, `bans [--limit N]`, `unban <ip>`, `allow <ip> [--note ...]`, `allowlist`, `disallow <ip>`, `findings [--limit N]`, `events [--limit N] [--since 24h]`, `coexistence`, `sites`, `scan <document root>`, `map [--hours 24|168]`, `score`; quelli che modificano qualcosa richiedono `--actor <utente del pannello>` e vengono riportati alla dashboard come eventi con origine `panel`. Il comando parla con l'agente in esecuzione tramite `/run/infrafence/panel.sock` (solo root, permessi 0600, nessuna porta di rete); se l'agente non è in esecuzione risponde comunque, con `"agent_running": false`. `map` (gli attacchi a questo server per paese e categoria) e `score` (il suo punteggio di sicurezza e l'andamento di 30 giorni) arrivano dalla dashboard, richiedono l'agente 1.0.33 o successivo e l'agente li tiene in cache: al massimo una richiesta ogni 5 minuti per la mappa e ogni 15 minuti per il punteggio, con `"stale": true` quando la dashboard non è raggiungibile. Tutti i campi di ogni risposta: [docs/panel-json.md](docs/panel-json.md) (in inglese).
 
 ---
 

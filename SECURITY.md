@@ -23,6 +23,16 @@ The agent runs as root: it manages the firewall, reads system logs and network s
 - **Setting**: only while the named dashboard setting is on.
 - **On request**: only when someone asks for it from the dashboard, or AutoMode or the emergency mode asks on their behalf. The agent cannot tell these apart and has no automatic actions of its own.
 
+### Who can ask for a change
+
+The agent only carries out what the dashboard sends it, and the dashboard decides who may ask:
+
+- **Owners and admins** of the organization request changes: bans, the allow list, firewall rules, closing ports, hardening fixes, virtual patches, quarantine, updates. **Members** can see everything and change nothing.
+- **AutoMode and the emergency mode** pick only from a fixed catalogue of actions, never run a command of their own, and never block the organization's own addresses or an address someone logged in from over SSH.
+- **Approvals.** Actions that aren't automatic wait for a person: for example closing a database port (MySQL, PostgreSQL…) that isn't both exposed and under attack, blocking a destination that wasn't a critical threat-list match, a virtual patch outside the automatic rule, a hardening fix that touches logins or can change how a site behaves (such as PHP's `cgi.fix_pathinfo` and `disable_functions`), an update of a critical package, quarantining a file outside the web folders, restoring a quarantined file. Only an owner or admin **signed in with two-factor authentication in that session** can approve or reject them; without it the dashboard refuses the decision (`mfa_required`). Approving runs every check again, so an approved action can still be refused. The link in an alert only opens the request, so a forwarded message cannot approve anything. Requests nobody answers expire after 24 hours. See [AutoMode](https://infrafence.com/docs/automode#what-needs-your-approval) and [Two-factor authentication](https://infrafence.com/docs/two-factor).
+- **Hosting panel plugins** (cPanel/WHM, Plesk) talk to the agent over a root-only local socket, and can only unban, allow or disallow an address and start a malware scan of one site. Each action is reported to the dashboard with the panel user who made it.
+- **Monitor mode** changes nothing on the server, whoever asks.
+
 ### Reads
 
 | Resource | Access | Purpose | When |
@@ -30,13 +40,15 @@ The agent runs as root: it manages the firewall, reads system logs and network s
 | SSH authentication log: systemd journal, `/var/log/auth.log` or `/var/log/secure` | Read | SSH brute force detection | Always |
 | Same log, plus login records (`last`, wtmp) | Read | SSH session timeline and `sudo` commands; recent admin addresses, so the agent never blocks them | Session tracking: setting (off by default). Login records: always |
 | Web server access logs and configuration (nginx, Apache, LiteSpeed, panel `domlogs`). In Docker, through the `docker` CLI, including `docker exec <container> nginx -T`. Any custom log path set in the dashboard | Read | Web attack and bot detection; finding logs and domains | Always |
+| PHP configuration of every runtime: `php.ini` and its scan directory, PHP-FPM pool files, the nginx and Apache configuration that maps pools to sites, and the per-site files of Plesk (`php.ini`) and cPanel (`.user.ini`) | Read | PHP hardening checks, and watching for a risky value (`allow_url_include`, `display_errors`) | Watching: always. Checks: daily, and on request |
+| PHP files in the web roots, read-only and without following symbolic links (at most 20,000 files and 30 s) | Read | Lists the site files that call a function before a `disable_functions` fix is approved | With the hardening scan, when that check fails |
 | ModSecurity audit log | Read | ModSecurity events | Always, if present |
 | Mail, database and FTP logs | Read | Brute force on those services | Only while that service is running |
 | `/proc`: network tables, CPU, memory and load, per-process `comm`, `exe`, `status`, `fd`. `/etc/resolv.conf` | Read | Metrics, listening services, port scans, outbound connections and the process that owns them | Always |
 | `/proc/<pid>/environ` | Read | Find open SSH sessions (only the `SSH_CONNECTION` variable is used), so their ports are never closed | Always |
 | Raw packet sockets: DNS packets (UDP port 53) and TCP SYN headers | Read | DNS threats (tunnelling, malicious resolvers and answers); port scans | On by default; each can be switched off |
-| Files under each detected web root and any custom scan path, including uploads, `.env`, `wp-config.php` and other framework configuration. Full scans follow symbolic links inside web roots | Read | Malware scan (signatures, YARA, heuristics), framework checks, plugin and theme inventory | Scheduled scans: setting. Also on request, or a scan started from a hosting panel plugin. While scheduled scanning is on, upload folders are checked every 30 seconds |
-| WordPress database, with the credentials in `wp-config.php` | Read (`SELECT` only) | Injected posts and options, administrators created in the last 7 days | During malware scans (not panel scans) |
+| Files under each detected web root and any custom scan path, including uploads, `.env`, `wp-config.php` and other framework configuration. Scans never follow a symbolic link: a symlink in a web root is skipped and counted, and a web root reached through a site user's symlink is not scanned (reported as `malware_root_skipped`) | Read | Malware scan (signatures, YARA, heuristics), framework checks, plugin and theme inventory | Scheduled scans: setting. Also on request, or a scan started from a hosting panel plugin. While scheduled scanning is on, upload folders are checked every 30 seconds |
+| WordPress database, with the credentials in `wp-config.php` (never read through a symlink; passed to `mysql` in a temporary 0600 option file, never on the command line) | Read (`SELECT` only) | Injected posts and options, administrators created in the last 7 days | During malware scans (not panel scans) |
 | Process command lines (`/proc/<pid>/cmdline`) | Read | Crypto miners, reverse shells | Full malware scans |
 | Package verification (`dpkg -V`, `rpm -Va`), `/etc/ld.so.preload`, executables in `/tmp` and `/dev/shm` | Read | Modified system binaries, rootkit signs | Full malware scans |
 | `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers` and `sudoers.d`, `/etc/ssh/sshd_config`, crontabs, `/etc/hosts`, `/etc/resolv.conf`, `/etc/ld.so.preload`, `authorized_keys` of root and users, systemd units in `/etc/systemd/system` | Read (SHA-256 only) | File integrity | Always, every 30 minutes |
@@ -56,21 +68,23 @@ The agent runs as root: it manages the firewall, reads system logs and network s
 | Other chains' rules | Write, rarely | At the first ban sync, removes `INPUT -s <ip> -j DROP` rules for addresses the agent itself bans (left by older versions). No other rule is ever changed | Once |
 | `conntrack` | Write | Drops established public connections to a port it has just closed | On request (closing a port) |
 | Closing ports, blocking outbound addresses | Write | Only a fixed list of database, cache and admin ports can be closed, never SSH or web ports. An outbound block needs an address the agent flagged in the last 24 hours. SSH and the sites are checked afterwards and the change is undone if they stop answering | On request |
-| CSF: `/etc/csf/csf.conf` (`TCP_IN`, `TCP_OUT`), then `csf -r` | Write | Open or close a port in CSF | On request, only if CSF is installed |
+| CSF: `/etc/csf/csf.conf` (`TCP_IN`, `TCP_OUT`), then `csf -r` | Write | Open or close a port in CSF. Only the line of that key changes, only to a validated port list, and the file is replaced atomically with its owner and mode. Nothing changes in monitor mode | On request, only if CSF is installed |
 | `/etc/modsecurity/infrafence/` and one `Include` line in the ModSecurity configuration (Apache) | Write | ModSecurity rules, bans and virtual patches | Setting: **Allow web server configuration changes**, and only where no panel or configuration manager owns the web server. Virtual patches: on request. The configuration is tested before reload and restored if the test fails |
 | nginx: `/etc/nginx/conf.d/infrafence-ua-block.conf` and one marked line (`# infrafence`) in each `server` block. Apache: `infrafence-ua-block.conf` in `conf-available` or `conf.d` | Write | Blocking bots by user agent | Same setting, and only when a bot is set to "block". Tested before reload, restored if the test fails |
 | `/etc/ssh/sshd_config.d/00-infrafence-hardening.conf`, `zz-infrafence-hardening.conf` for nginx or Apache | Write | Hardening fixes | On request. Checked with `sshd -t` or the web server's own test, reloaded, then SSH and the sites are checked; the previous state is restored on failure |
+| `zz-infrafence-hardening.ini` in each PHP runtime's scan directory | Write | PHP hardening fixes. `php.ini` and PHP-FPM pool files are never edited | On request (AutoMode: only `allow_url_include`, `display_errors`, `expose_php`). Tested with `php-fpm -t`, the new value checked to be in effect, PHP-FPM reloaded (never restarted), then the sites are checked; the previous state is restored on failure. Runtimes managed by cPanel, Plesk or CloudLinux are only reported |
 | Permissions of `/etc/shadow`, `/etc/passwd`, `/etc/ssh/sshd_config`, `/root/.ssh/authorized_keys` | Write (`chmod`, only removes bits) | Hardening fixes | On request |
 | System packages | Write | Security updates of named packages; installing YARA (and `epel-release` on RHEL-family systems) | On request |
-| Files in web roots | Write (move) | Quarantine: the file is moved to `/var/lib/infrafence/quarantine` (mode 0400) with its owner and mode recorded; restore puts it back without overwriting anything | On request, only for regular files inside a detected web root |
+| Files in web roots | Write (move) | Quarantine: the file is moved to `/var/lib/infrafence/quarantine` (mode 0400) with its owner and mode recorded; restore puts it back without overwriting anything | On request, only for regular files inside a detected web root; never in a custom scan path or a system directory (`/etc`, `/usr`, `/lib*`, `/root`, `/var/lib`…) |
+| `<document root>/.well-known/infrafence-verification.txt` | Write | Trust badge: proves to the dashboard that the domain is served by this server. One token per line, mode 0644, owned by the document root's owner. The document root is opened without following symlinks, a file the agent didn't write is never replaced, and `.well-known` is created only when missing (and removed only if the agent created it and it is empty) | Only for the domains whose badge is turned on in the dashboard; removed when it is turned off |
 | `/etc/infrafence/` | Read + Write | Configuration and agent token (`config.json`, mode 0600), YARA rules, threat feed and bot list caches, the country database `geoip-country.mmdb` (mode 0644, downloaded from the dashboard only while a country is blocked) | Always |
-| `/var/lib/infrafence/` (mode 0700) | Read + Write | `protection-state.json`, `firewall-state.json`, `panel-state.json`, `unsent-events.json`, crash and recovery markers, `quarantine/` | Always |
+| `/var/lib/infrafence/` (mode 0700) | Read + Write | `protection-state.json`, `firewall-state.json`, `panel-state.json`, `php-dropins.json`, `trust-state.json`, `unsent-events.json`, crash and recovery markers, `quarantine/` | Always |
 | `/run/infrafence/panel.sock` | Read + Write | Local socket for the WHM and Plesk plugins. Directory 0700, socket 0600, and every caller must be root (checked with `SO_PEERCRED`) | Only on cPanel or Plesk servers, or with `"panel": true` in the configuration |
 | `/etc/motd.d/infrafence` | Write | Login notice while protection is switched off | Only after 24 hours of refusal (see below) |
 | `/usr/local/bin/infrafence-agent` (and `.bak`) | Write | Updates, only after the checksum and Cosign signature verify | Setting: automatic updates |
 | `/usr/local/bin/infrafence-agent-recover.sh` and its `ExecStartPre` line in `infrafence-agent.service` | Write | Restores the previous or a verified binary if the installed one is broken | Always, on systemd hosts |
 
-Apart from the tables above, the agent does not read or change anything on the server. In particular, it does not read private SSH keys or mailboxes, it uses nothing from other processes' environments except `SSH_CONNECTION`, and it never modifies a website file except to quarantine or restore it.
+Apart from the tables above, the agent does not read or change anything on the server. In particular, it does not read private SSH keys or mailboxes, it uses nothing from other processes' environments except `SSH_CONNECTION`, and it never modifies a website file except to quarantine or restore it, and never writes in a web root except the trust badge verification file.
 
 ## What Data Leaves Your Server
 
@@ -97,13 +111,14 @@ All communication with the dashboard uses HTTPS. The agent authenticates with it
 
   Process and system binary findings stay on the server; only the security score they feed into is sent.
 - Malware hash lookup: the SHA-256 of scanned PHP files, sent to the dashboard only, without paths.
-- Hardening scan results: each check's outcome and the setting values it looked at.
+- Hardening scan results: each check's outcome and the setting values it looked at. For PHP, the file and line each value comes from and, before a `disable_functions` fix, up to 20 site files (`file:line`) that call those functions.
 - Installed packages and versions, for the vulnerability check.
 - The existing `INPUT` firewall rules, so they can be shown in the dashboard.
 - Bans: address, reason, count and expiry.
 - Hosting panel actions (unban, allow, disallow, scan): who did it, the address or path, and a note of up to 200 characters.
+- Trust badge: whether the verification file was placed, removed or could not be placed for a domain, and the path or the reason.
 
-The agent pulls its configuration, bans, allow list, rules, signatures and requested actions from the dashboard every 5 minutes, and at once when the dashboard signals a change. While a country is blocked it also downloads the country database ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) from the dashboard, at most once a day, sending only the checksum of the copy it has.
+The agent pulls its configuration, bans, allow list, rules, signatures and requested actions from the dashboard every 5 minutes, and at once when the dashboard signals a change. While a country is blocked it also downloads the country database ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) from the dashboard, at most once a day, sending only the checksum of the copy it has. On cPanel and Plesk servers, the panel plugins' `map` and `score` commands make the agent fetch this server's attack map and security score from the dashboard (at most every 5 and 15 minutes); these requests send only the agent's token and, for the map, the period asked for (24 hours or 7 days).
 
 **Never transmitted:**
 - Full log files (only the single lines described above)
@@ -114,7 +129,7 @@ The agent pulls its configuration, bans, allow list, rules, signatures and reque
 
 **Direct connections from the agent to third parties** are downloads only and send nothing about your server:
 - the Spamhaus DROP and Emerging Threats lists, and two public bot lists on GitHub, once a day;
-- YARA Forge rules from GitHub, once a day, if YARA is installed;
+- YARA Forge rules from GitHub, once a day, if YARA is installed, and only if the download matches the SHA-256 GitHub publishes for the release asset (otherwise the previous rules stay);
 - agent updates from GitHub Releases.
 
 The one exception is the WordPress checksum lookup at `api.wordpress.org`, which sends the WordPress version being checked. No data is shared with third parties by default.
@@ -206,7 +221,8 @@ sudo rm -rf /etc/infrafence/
 - its firewall chains, jumps and ipsets;
 - its ModSecurity files and includes;
 - user-agent blocking;
-- the hardening drop-in files.
+- the hardening drop-in files, PHP's `zz-infrafence-hardening.ini` included;
+- the trust badge verification files it wrote.
 
 Some things are not undone:
 - **Package updates.** Packages the agent updated or installed on request stay installed.
