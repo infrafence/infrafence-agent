@@ -1000,13 +1000,14 @@ uninstall() {
 main() {
     parse_args "$@"
 
-    # Require install token unless --install-only, or this server is already
-    # registered and --force-register wasn't passed (re-running the same
-    # one-liner to update just reinstalls the binary/service and keeps the
-    # existing registration — no token needed for that path).
+    # Require install token unless --install-only, --dry-run (it registers
+    # nothing), or this server is already registered and --force-register
+    # wasn't passed (re-running the same one-liner to update just reinstalls
+    # the binary/service and keeps the existing registration — no token
+    # needed for that path).
     local already_registered=false
     [[ -f "${CONFIG_DIR}/config.json" ]] && already_registered=true
-    if [[ "$INSTALL_ONLY" != true ]] && [[ -z "$INSTALL_TOKEN" ]]; then
+    if [[ "$INSTALL_ONLY" != true ]] && [[ "$DRY_RUN" != true ]] && [[ -z "$INSTALL_TOKEN" ]]; then
         if [[ "$already_registered" != true ]] || [[ "$FORCE_REGISTER" == true ]]; then
             error "Install token is required. Usage: curl -fsSL .../install.sh | sudo bash -s -- --token <TOKEN>"
         fi
@@ -1049,7 +1050,15 @@ main() {
         command -v ipset &>/dev/null || [[ "$NO_IPSET" == true ]] \
             || echo "    • install the ipset package (skip with --no-ipset)"
         echo "    • create the INFRAFENCE firewall chains (jumped to from INPUT, and DOCKER-USER if present)"
-        echo "    • register this server with your InfraFence dashboard"
+        if [[ "$INSTALL_ONLY" == true ]]; then
+            :
+        elif [[ -z "$INSTALL_TOKEN" ]] && { [[ "$already_registered" != true ]] || [[ "$FORCE_REGISTER" == true ]]; }; then
+            echo "    • register this server with your InfraFence dashboard (a real run needs --token <TOKEN>)"
+        elif [[ "$already_registered" != true ]] || [[ "$FORCE_REGISTER" == true ]]; then
+            echo "    • register this server with your InfraFence dashboard"
+        else
+            echo "    • keep this server's existing registration"
+        fi
         echo "  Web server config changes and inbound threat-feed blocking stay off until enabled in the dashboard."
         echo ""
         exit 0

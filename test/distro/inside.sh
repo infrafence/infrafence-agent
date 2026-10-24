@@ -34,6 +34,24 @@ fi
 /distro/mockapi -binary /distro/agent >/tmp/mockapi.log 2>&1 &
 sleep 1
 
+# ── dry run: no token needed, nothing changed, and the release download from
+# GitHub works (on RHEL-family hosts the dry run once replaced curl's CAs
+# with ISRG Root X1 alone, and github.com failed) ──
+R_DRYRUN=fail
+anchors=$(ls /etc/pki/ca-trust/source/anchors 2>/dev/null)
+if bash /distro/install.sh --dry-run >/tmp/dryrun.log 2>&1 \
+   && grep -q "Dry run — nothing was installed or changed" /tmp/dryrun.log \
+   && grep -q "needs --token" /tmp/dryrun.log \
+   && [ ! -e /usr/local/bin/infrafence-agent ] && [ ! -e /etc/infrafence ] \
+   && [ "$(ls /etc/pki/ca-trust/source/anchors 2>/dev/null)" = "$anchors" ] \
+   && ! ls /tmp/infrafence-ca-* /tmp/infrafence-isrg-* >/dev/null 2>&1; then
+  R_DRYRUN=ok
+else
+  log "dry run failed:"; tail -20 /tmp/dryrun.log; ls -d /tmp/infrafence-* 2>/dev/null
+fi
+EXTRA_RESULT="${EXTRA_RESULT:-} dryrun=${R_DRYRUN}"
+[ "$R_DRYRUN" = ok ] || EXTRA_FAIL=1
+
 # ── install with the real installer ──
 if INFRAFENCE_SERVER_URL=http://127.0.0.1:8080 RELEASE_BASE=http://127.0.0.1:8080/releases \
    INFRAFENCE_AGENT_NAME=distro-test bash /distro/install.sh --token distro-test >/tmp/install.log 2>&1; then
