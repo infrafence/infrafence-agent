@@ -6,7 +6,7 @@
 #   docker stack deploy -c docker-compose.swarm.yml infrafence
 #
 # Each agent auto-registers with the hostname of the Swarm node it runs on.
-# Get your token at: https://infrafence.com/dashboard → Add Server
+# Get your token at: https://infrafence.com/add-server
 
 services:
   agent:

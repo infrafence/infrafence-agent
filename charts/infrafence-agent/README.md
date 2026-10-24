@@ -6,7 +6,7 @@ Deploy the [InfraFence](https://infrafence.com) security agent as a DaemonSet on
 
 - Kubernetes 1.22+
 - Helm 3+
-- An InfraFence account and a **cluster key**: dashboard → Settings → Kubernetes → "Create cluster key". One key registers every node; each node shows up as its own server (the Starter plan covers one server, Pro has no limit).
+- An InfraFence account and a **cluster key**: dashboard → Settings → Kubernetes → "Create cluster key". One key registers every node; each node shows up as its own server. Starter (free) covers one server, so only one node can register; Basic and higher have no limit and bill one server per node.
 
 ## Install
 
@@ -29,7 +29,7 @@ A node that registers again (rebuilt node, wiped `/etc/infrafence`) keeps its se
 ## Uninstall
 
 ```bash
-helm uninstall infrafence-agent
+helm uninstall infrafence-agent --namespace infrafence
 ```
 
 ## Configuration
@@ -42,7 +42,7 @@ helm uninstall infrafence-agent
 | `image.repository` | Container image | `ghcr.io/infrafence/infrafence-agent` |
 | `image.tag` | Image tag (defaults to chart `appVersion`) | `""` |
 | `image.pullPolicy` | Image pull policy | `Always` |
-| `autoUpdate.enabled` | Agent patches its own DaemonSet for rolling updates. **Disable if using GitOps (ArgoCD, Flux).** | `true` |
+| `autoUpdate.enabled` | Lets the agent move its own DaemonSet to a new release image when an update is allowed (dashboard → Settings → Agent → Agent updates set to Install automatically, or Install now). **Disable if using GitOps (ArgoCD, Flux).** | `true` |
 | `ingressFirewall.enabled` | Create nginx-ingress RBAC for ConfigMap-level IP blocking. **Disable if not using nginx-ingress.** | `false` |
 | `ingressFirewall.namespace` | Namespace where nginx-ingress runs | `ingress-nginx` |
 | `ingressFirewall.configMapName` | nginx-ingress ConfigMap name | `ingress-nginx-controller` |
@@ -98,7 +98,7 @@ extraEnv:
 
 - **DaemonSet**: One agent pod per node (including control-plane via tolerations)
 - **ServiceAccount + ClusterRole + ClusterRoleBinding**: Read-only K8s API access (pods, nodes, events, ingresses, networkpolicies) + DaemonSet patch for auto-updates
-- **Secret**: Stores the API key
+- **Secret**: Stores the cluster key (`apiKey`)
 - **Role + RoleBinding** (optional): Only when `ingressFirewall.enabled: true` — grants ConfigMap write access in the ingress namespace
 
 ### Host mounts
@@ -118,14 +118,15 @@ extraEnv:
 - Country-based geoblocking (MaxMind GeoLite2)
 - Bot fingerprint detection with configurable actions
 - Malware scanning with real-time progress (YARA, signature matching, heuristics)
-- CVE advisory matching (NVD, CISA KEV, Exploit-DB)
+- Known vulnerabilities (CVE) of the installed packages, checked against the OSV database (Debian, Ubuntu, AlmaLinux, Rocky Linux) and ranked by real risk: exploited in the wild (CISA KEV) first, then exploit probability (EPSS)
 - System metrics (CPU, memory, disk, load, network I/O)
 - Kubernetes: pod inventory, NetworkPolicy audit, event monitoring
 - Real-time firewall rule management via WebSocket
-- Auto-update with SHA256 verification and crash-loop recovery
+- Updates: notify-only by default; when you allow them, the agent verifies the cosign signature of the new release image and pins its DaemonSet to that image digest
 
 ## Links
 
 - [InfraFence Dashboard](https://infrafence.com)
-- [Agent Documentation](https://github.com/infrafence/infrafence-agent#readme)
+- [Kubernetes documentation](https://infrafence.com/docs/kubernetes)
+- [Agent README](https://github.com/infrafence/infrafence-agent#readme)
 - [Report Issues](https://github.com/infrafence/infrafence-agent/issues)

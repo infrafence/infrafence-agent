@@ -2,22 +2,22 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "token": {
+    "apiKey": {
       "type": "string",
-      "description": "Install token from https://infrafence.com/dashboard"
-    },
-    "existingSecret": {
-      "type": "string",
-      "description": "Name of an existing Secret containing the token (key must be 'token')"
+      "description": "Cluster key (IFK-...) from the dashboard, Settings → Kubernetes. One key registers every node."
     },
     "serverUrl": {
       "type": "string",
-      "description": "InfraFence panel URL",
+      "description": "InfraFence dashboard URL",
       "default": "https://infrafence.com"
     },
-    "agentName": {
+    "clusterName": {
       "type": "string",
-      "description": "Agent name override (default: node hostname)"
+      "description": "Cluster name; nodes are grouped by it in the dashboard (detected from the cluster when empty)"
+    },
+    "nameOverride": {
+      "type": "string",
+      "description": "Override for the chart name in resource names"
     },
     "image": {
       "type": "object",
@@ -33,7 +33,7 @@
         "pullPolicy": {
           "type": "string",
           "enum": ["IfNotPresent", "Always", "Never"],
-          "default": "IfNotPresent"
+          "default": "Always"
         }
       }
     },
@@ -63,21 +63,8 @@
     "nodeSelector": {
       "type": "object"
     },
-    "affinity": {
-      "type": "object"
-    },
-    "hostPaths": {
-      "type": "object",
-      "properties": {
-        "log": {
-          "type": "string",
-          "default": "/var/log"
-        },
-        "dockerSocket": {
-          "type": "string",
-          "default": "/var/run/docker.sock"
-        }
-      }
+    "priorityClassName": {
+      "type": "string"
     },
     "extraEnv": {
       "type": "array",
@@ -89,6 +76,49 @@
           "value": { "type": "string" }
         },
         "required": ["name", "value"]
+      }
+    },
+    "autoUpdate": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Let the agent move its own DaemonSet to a new signed release image when an update is allowed. Disable with GitOps (ArgoCD, Flux).",
+          "default": true
+        }
+      }
+    },
+    "ingressFirewall": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Create the RBAC for blocking addresses in the nginx-ingress ConfigMap",
+          "default": false
+        },
+        "namespace": {
+          "type": "string",
+          "default": "ingress-nginx"
+        },
+        "configMapName": {
+          "type": "string",
+          "default": "ingress-nginx-controller"
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "default": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        }
       }
     }
   }

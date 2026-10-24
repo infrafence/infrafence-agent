@@ -1,6 +1,6 @@
 [Unit]
 Description=InfraFence Security Agent
-Documentation=https://infrafence.com/docs/agent
+Documentation=https://infrafence.com/docs
 After=network-online.target
 Wants=network-online.target
 # Disable systemd's start rate-limit so rapid successive auto-updates never
