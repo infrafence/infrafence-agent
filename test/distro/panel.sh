@@ -56,7 +56,7 @@ grep -q '"mode":"' <<<"$(pcmd coexistence)" || pf coexistence_mode
 
 # ── map and score: from the dashboard, at most one request per 5 (map) or
 # 15 (score) minutes, answered or not ──
-calls() { curl -s "$API/state" | grep -o "\"$1\":[0-9]*" | cut -d: -f2; }
+calls() { curl -s "$API/state" | grep -o "\"$1\":[0-9]*" | sed "s/.*://"; }
 curl -s "$API/info-down?on=1" >/dev/null
 out=$(pcmd map --hours 168); rc=$?
 { [ $rc = 1 ] && grep -q '"error":"not_connected"' <<<"$out" && grep -q '"agent_running":true' <<<"$out"; } || pf map_not_connected "rc=$rc $out"
