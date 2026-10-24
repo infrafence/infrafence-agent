@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // AttackMap is where this server's attacks came from in the last Hours
@@ -170,7 +169,6 @@ const (
 	maxScoreTrend  = 62
 	maxDetailKeys  = 16
 	maxDetailList  = 64
-	maxDetailText  = 64
 	scoreGradeList = "ABCDEF"
 )
 
@@ -281,14 +279,10 @@ func cleanDetail(d map[string]any) (map[string]any, bool) {
 	return out, true
 }
 
+// detailText: versions, names and the like. No markup characters, even
+// though the plugins escape everything they show.
+var detailTextRe = regexp.MustCompile(`^[A-Za-z0-9 ._:/@+,()-]{0,64}$`)
+
 func detailText(s string) (string, bool) {
-	if len(s) > maxDetailText {
-		return "", false
-	}
-	for _, c := range s {
-		if !unicode.IsPrint(c) {
-			return "", false
-		}
-	}
-	return s, true
+	return s, detailTextRe.MatchString(s)
 }

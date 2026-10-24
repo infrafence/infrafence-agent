@@ -152,6 +152,12 @@ func TestSecurityScore(t *testing.T) {
 		"nested":      `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":{"y":1}}}]}`,
 		"control":     `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"a\u0007b"}}]}`,
 		"long text":   `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"` + strings.Repeat("a", 65) + `"}}]}`,
+		"markup":      `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"<b>x</b>"}}]}`,
+		"ampersand":   `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"a&b"}}]}`,
+		"quote":       `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"a\"b"}}]}`,
+		"apostrophe":  `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"a'b"}}]}`,
+		"backtick":    `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":"a` + "`" + `b"}}]}`,
+		"list markup": `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","items":[{"key":"malware","points":3,"detail":{"x":["ok","<i>"]}}]}`,
 		"trend day":   `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","trend":[{"day":"yesterday","score":1}]}`,
 		"trend score": `{"generated_at":"2026-10-24T10:00:00Z","score":50,"grade":"E","trend":[{"day":"2026-10-20","score":900}]}`,
 	} {

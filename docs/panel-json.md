@@ -760,7 +760,8 @@ Errors: `not_connected`, `bad_request` (`--hours` other than 24 or 168).
 `infrafence-agent panel score --json`. This server's security score as the dashboard computes it, what takes
 points off it, and its daily scores of the last 30 days. Fetched like `map`: the running agent asks the
 dashboard (`GET /api/v1/agent/score`) **at most once every 15 minutes**, with the same `stale` and
-`not_connected` rules.
+`not_connected` rules. As everywhere in this reference, **HTML-escape every field you display**, also those the
+agent has checked.
 
 <!-- example:score -->
 ```json
@@ -822,7 +823,7 @@ dashboard (`GET /api/v1/agent/score`) **at most once every 15 minutes**, with th
 | `items` | array | | yes | What takes points off, most points first. Empty array for a perfect score. |
 | `items[].key` | string | open set, e.g. `hardening`, `no_hardening_scan`, `exploited_cves`, `vulnerable_packages`, `no_software_audit`, `exposed_ports`, `malware`, `monitor_mode`, `agent_outdated`, `no_2fa` | yes | Word it by key; show a generic line for an unknown key. |
 | `items[].points` | integer | 0–100 | yes | Points it takes off 100. |
-| `items[].detail` | object | | yes | The counts to word it with, by key (e.g. `hardening`: `failed`, `total`; `exposed_ports`: `ports`; `agent_outdated`: `version`, `latest`). Values are numbers, booleans, `null`, short text or lists of numbers and text; `{}` when there is nothing to add. |
+| `items[].detail` | object | | yes | The counts to word it with, by key (e.g. `hardening`: `failed`, `total`; `exposed_ports`: `ports`; `agent_outdated`: `version`, `latest`). Values are numbers, booleans, `null`, text or lists of numbers and text; `{}` when there is nothing to add. Text is at most 64 characters of letters, digits, space and `. _ : / @ + , ( ) -` (the agent refuses an answer with anything else), but HTML-escape it like every other field. |
 | `items[].detail.failed` | integer | | no | `hardening`: checks failed. |
 | `items[].detail.total` | integer | | no | `hardening`: checks run. |
 | `items[].detail.ports` | array of integer | | no | `exposed_ports`: the ports open to the internet. |
