@@ -85,7 +85,10 @@ func (c *Client) getInfo(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return newStatusError(resp)
+		// Only the status is kept (it ends up in the agent's log), never
+		// the body.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("the dashboard answered HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxInfoBody+1))
 	if err != nil {
@@ -118,14 +121,14 @@ func (m *AttackMap) check(hours int) error {
 	seen := map[string]bool{}
 	for _, c := range m.Countries {
 		if !mapCountryCode.MatchString(c.Code) || c.Attacks < 0 || seen[c.Code] {
-			return fmt.Errorf("%w: country %q", errInfoInvalid, c.Code)
+			return fmt.Errorf("%w: country %s", errInfoInvalid, shortQ(c.Code))
 		}
 		seen[c.Code] = true
 	}
 	clear(seen)
 	for _, c := range m.Categories {
 		if !mapCategory.MatchString(c.Cat) || c.Attacks < 0 || seen[c.Cat] {
-			return fmt.Errorf("%w: category %q", errInfoInvalid, c.Cat)
+			return fmt.Errorf("%w: category %s", errInfoInvalid, shortQ(c.Cat))
 		}
 		seen[c.Cat] = true
 	}
@@ -196,7 +199,7 @@ func (s *SecurityScore) check() error {
 	}
 	s.GeneratedAt = t.UTC().Format(time.RFC3339)
 	if s.Score < 0 || s.Score > 100 || len(s.Grade) != 1 || !strings.Contains(scoreGradeList, s.Grade) {
-		return fmt.Errorf("%w: score %d, grade %q", errInfoInvalid, s.Score, s.Grade)
+		return fmt.Errorf("%w: score %d, grade %s", errInfoInvalid, s.Score, shortQ(s.Grade))
 	}
 	if len(s.Items) > maxScoreItems || len(s.Trend) > maxScoreTrend {
 		return fmt.Errorf("%w: list sizes", errInfoInvalid)
@@ -204,17 +207,17 @@ func (s *SecurityScore) check() error {
 	for i := range s.Items {
 		it := &s.Items[i]
 		if !scoreKey.MatchString(it.Key) || it.Points < 0 || it.Points > 100 {
-			return fmt.Errorf("%w: item %q", errInfoInvalid, it.Key)
+			return fmt.Errorf("%w: item %s", errInfoInvalid, shortQ(it.Key))
 		}
 		d, ok := cleanDetail(it.Detail)
 		if !ok {
-			return fmt.Errorf("%w: detail of %q", errInfoInvalid, it.Key)
+			return fmt.Errorf("%w: detail of %s", errInfoInvalid, shortQ(it.Key))
 		}
 		it.Detail = d
 	}
 	for _, p := range s.Trend {
 		if _, err := time.Parse(time.DateOnly, p.Day); err != nil || p.Score < 0 || p.Score > 100 {
-			return fmt.Errorf("%w: trend day %q", errInfoInvalid, p.Day)
+			return fmt.Errorf("%w: trend day %s", errInfoInvalid, shortQ(p.Day))
 		}
 	}
 	if s.Items == nil {
@@ -285,4 +288,13 @@ var detailTextRe = regexp.MustCompile(`^[A-Za-z0-9 ._:/@+,()-]{0,64}$`)
 
 func detailText(s string) (string, bool) {
 	return s, detailTextRe.MatchString(s)
+}
+
+// shortQ quotes a value from the dashboard for an error (and the log):
+// at most 40 bytes of it.
+func shortQ(v string) string {
+	if len(v) > 40 {
+		v = v[:40]
+	}
+	return strconv.Quote(v)
 }

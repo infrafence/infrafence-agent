@@ -167,3 +167,23 @@ func TestSecurityScore(t *testing.T) {
 		}
 	}
 }
+
+// Errors (which end up in the agent's log) carry the status, never the
+// dashboard's body, and at most a short quote of a refused value.
+func TestPanelInfoErrorsAreShort(t *testing.T) {
+	var status atomic.Int32
+	var body atomic.Value
+	status.Store(http.StatusInternalServerError)
+	body.Store(strings.Repeat("BODY", 1024))
+	c := New(infoServer(t, &status, &body, nil).URL, "tok")
+	_, err := c.AttackMap(context.Background(), 24)
+	if err == nil || strings.Contains(err.Error(), "BODY") || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("status error: %v", err)
+	}
+	status.Store(http.StatusOK)
+	body.Store(`{"hours":24,"generated_at":"2026-10-24T10:00:00Z","total":{"attacks":1},"countries":[{"code":"` + strings.Repeat("X", 3000) + `","attacks":1}]}`)
+	_, err = c.AttackMap(context.Background(), 24)
+	if err == nil || len(err.Error()) > 200 {
+		t.Errorf("refused value: %d bytes: %.300v", len(err.Error()), err)
+	}
+}
