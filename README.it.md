@@ -134,7 +134,7 @@ Segue ogni sessione SSH dall'inizio alla fine — metodo di autenticazione, repu
 
 - **Controlla prima di modificare** — `infrafence-agent preflight` è una scansione in sola lettura del server (firewall e altri strumenti di sicurezza, web server, pannelli di hosting, gestione della configurazione, operazioni sui pacchetti, risorse). L'installer la esegue prima di modificare qualsiasi cosa; l'agente all'avvio e ogni giorno.
 - **Impostazioni prudenti** — le modifiche al web server e il blocco in entrata dalle liste di minacce restano disattivati finché non li attivi; gli aggiornamenti automatici possono essere impostati su solo notifica.
-- **Catene firewall dedicate** — ogni regola sta nelle catene `INFRAFENCE` dell'agente, richiamate da `INPUT` (e `DOCKER-USER`), ricostruite in modo atomico e ripristinate automaticamente entro un minuto se un altro strumento (ufw, firewalld, CSF) le rimuove. Le tue regole esistenti non vengono mai modificate. Gli IP in whitelist vengono esclusi, mai aperti.
+- **Catene firewall dedicate** — ogni regola sta nelle catene `INFRAFENCE` dell'agente, richiamate da `INPUT` (e `DOCKER-USER`), ricostruite in modo atomico e ripristinate automaticamente entro pochi secondi se un altro strumento (ufw, firewalld, CSF) le rimuove. Le tue regole esistenti non vengono mai modificate. Gli IP in whitelist vengono esclusi, mai aperti.
 - **Disinstallazione pulita** — rimuove l'agente e tutto ciò che ha aggiunto: catene firewall, modifiche al web server, il servizio.
 
 ---

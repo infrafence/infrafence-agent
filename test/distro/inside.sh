@@ -121,6 +121,9 @@ fi
 # ── refused past the limit: protection switched off, then back (test/distro/disable.sh) ──
 . /distro/disable.sh
 
+# ── CSF on the same host: csf -r, repaired within seconds (test/distro/csf.sh) ──
+. /distro/csf.sh
+
 # ── uninstall: nothing may be left behind ──
 bash /distro/install.sh --uninstall >/tmp/uninstall.log 2>&1
 left=""

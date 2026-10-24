@@ -134,7 +134,7 @@ Verfolgt jede SSH-Sitzung von Anfang bis Ende — Authentifizierungsmethode, Rep
 
 - **Prüfen vor dem Ändern** — `infrafence-agent preflight` ist eine rein lesende Prüfung des Servers (Firewall und andere Sicherheitswerkzeuge, Webserver, Hosting-Panels, Konfigurationsmanagement, Paketoperationen, Ressourcen). Der Installer führt sie aus, bevor er irgendetwas ändert; der Agent beim Start und täglich.
 - **Vorsichtige Voreinstellungen** — Änderungen am Webserver und eingehendes Blockieren über Bedrohungslisten bleiben aus, bis Sie sie aktivieren; automatische Updates lassen sich auf „nur benachrichtigen" stellen.
-- **Eigene Firewall-Chains** — jede Regel liegt in den `INFRAFENCE`-Chains des Agenten, aufgerufen aus `INPUT` (und `DOCKER-USER`), atomar neu aufgebaut und innerhalb einer Minute automatisch wiederhergestellt, falls ein anderes Werkzeug (ufw, firewalld, CSF) sie entfernt. Ihre bestehenden Regeln werden nie verändert. IPs auf der Whitelist werden ausgenommen, nie freigeschaltet.
+- **Eigene Firewall-Chains** — jede Regel liegt in den `INFRAFENCE`-Chains des Agenten, aufgerufen aus `INPUT` (und `DOCKER-USER`), atomar neu aufgebaut und innerhalb von Sekunden automatisch wiederhergestellt, falls ein anderes Werkzeug (ufw, firewalld, CSF) sie entfernt. Ihre bestehenden Regeln werden nie verändert. IPs auf der Whitelist werden ausgenommen, nie freigeschaltet.
 - **Saubere Deinstallation** — entfernt den Agenten und alles, was er hinzugefügt hat: Firewall-Chains, Webserver-Änderungen, den Dienst.
 
 ---

@@ -207,7 +207,7 @@ func ScanEnv(env Env) Report {
 	if env.Exists("/etc/csf/csf.conf") {
 		managers = append(managers, "csf")
 		add("csf", Warn, "CSF firewall detected",
-			"csf -r rebuilds the whole firewall; InfraFence restores its chain within a minute of each restart.")
+			"csf -r rebuilds the whole firewall; InfraFence restores its chains within seconds of each restart.")
 	}
 	if active("fail2ban") {
 		managers = append(managers, "fail2ban")

@@ -1,22 +1,24 @@
 package firewall
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // CSFStatus holds the current state of ConfigServer Firewall.
 type CSFStatus struct {
-	Installed bool   `json:"installed"`
-	Version   string `json:"version,omitempty"`
-	PortsIn   string `json:"ports_in,omitempty"`
-	PortsOut  string `json:"ports_out,omitempty"`
-	DenyCount int    `json:"deny_count"`
-	AllowCount int   `json:"allow_count"`
+	Installed  bool   `json:"installed"`
+	Version    string `json:"version,omitempty"`
+	PortsIn    string `json:"ports_in,omitempty"`
+	PortsOut   string `json:"ports_out,omitempty"`
+	DenyCount  int    `json:"deny_count"`
+	AllowCount int    `json:"allow_count"`
 }
 
 var (
@@ -40,6 +42,81 @@ func HasCSF() bool {
 		}
 	})
 	return csfAvailable
+}
+
+// csfLockFile is held (flock, exclusive) by csf from before it flushes the
+// firewall until it has rebuilt it, during "csf -r", "csf -s" and "csf -f".
+var (
+	csfConfFile = "/etc/csf/csf.conf"
+	csfLockFile = "/var/lib/csf/csf.lock"
+	procLocks   = "/proc/locks"
+)
+
+// Filesystems whose stat device is not the one /proc/locks prints: btrfs
+// gives every subvolume its own anonymous device, overlayfs reports its own
+// while the lock sits on the underlying file.
+const (
+	btrfsMagic   = 0x9123683e
+	overlayMagic = 0x794c7630
+)
+
+// CSFLockHolder reports whether csf is rebuilding the firewall right now,
+// and the pid of the process holding its lock. A repair in the middle would
+// race it: a chain or set of ours referenced again between its flush and
+// its "--delete-chain" or "ipset destroy" makes those fail and leaves CSF's
+// own chains and sets half removed. Only on a host with CSF installed. It
+// only reads /proc/locks: taking the lock, even for a moment, would make a
+// concurrent "csf -r" fail.
+func CSFLockHolder() (pid int, held bool) {
+	if _, err := os.Stat(csfConfFile); err != nil {
+		return 0, false
+	}
+	fi, err := os.Stat(csfLockFile)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	var fs syscall.Statfs_t
+	inodeOnly := false
+	if syscall.Statfs(csfLockFile, &fs) == nil {
+		t := uint32(fs.Type)
+		inodeOnly = t == btrfsMagic || t == overlayMagic
+	}
+	locks, err := os.ReadFile(procLocks)
+	if err != nil {
+		return 0, false
+	}
+	return lockHolder(string(locks), uint64(st.Dev), uint64(st.Ino), inodeOnly)
+}
+
+// lockHolder finds a lock (held, or waited for) on the file with device dev
+// and inode ino in /proc/locks, which names the file as major:minor:inode
+// (device numbers in hex) right after the pid. The device must match too,
+// except with inodeOnly, for a filesystem whose stat device /proc/locks
+// does not show (btrfs, overlayfs): there another file with the same inode
+// on another filesystem would only delay a repair.
+func lockHolder(locks string, dev, ino uint64, inodeOnly bool) (pid int, held bool) {
+	major := (dev>>8)&0xfff | (dev>>32)&^uint64(0xfff)
+	minor := dev&0xff | (dev>>12)&^uint64(0xff)
+	id := fmt.Sprintf("%02x:%02x:%d", major, minor, ino)
+	suffix := ":" + strconv.FormatUint(ino, 10)
+	for _, line := range strings.Split(locks, "\n") {
+		f := strings.Fields(line)
+		for i := 1; i < len(f); i++ {
+			if strings.Count(f[i], ":") != 2 {
+				continue
+			}
+			if f[i] == id || (inodeOnly && strings.HasSuffix(f[i], suffix)) {
+				p, _ := strconv.Atoi(f[i-1])
+				return p, true
+			}
+			break // one file per line
+		}
+	}
+	return 0, false
 }
 
 // CSFInfo gathers CSF status: version, open ports, deny/allow counts.

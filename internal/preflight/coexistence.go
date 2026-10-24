@@ -50,7 +50,8 @@ type Coexistence struct {
 // hosting panel).
 var coexistActions = map[string]string{
 	"csf": "InfraFence keeps its own chain and never edits csf.conf, csf.allow or csf.deny. " +
-		"After csf -r it restores only its own jump. CSF ports change only when you ask from the dashboard.",
+		"After csf -r it restores only its own chains, jumps and sets, within seconds and never while csf is restarting. " +
+		"CSF ports change only when you ask from the dashboard.",
 	"lfd":            "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set.",
 	"imunify":        "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently.",
 	"imunifyav":      "Both scan files. InfraFence never deletes or moves a file on its own: quarantine only on request.",
