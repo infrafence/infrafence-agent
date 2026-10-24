@@ -124,7 +124,7 @@ Verfolgt jede SSH-Sitzung von Anfang bis Ende — Authentifizierungsmethode, Rep
 ### Und mehr
 - **Mail, Datenbanken und FTP** — Brute-Force-Erkennung für Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD und vsftpd
 - **Docker-fähig** — findet die Logs von Web-Containern und schützt veröffentlichte Ports (`DOCKER-USER`)
-- **Länder-Sperre** im Dashboard (benötigt `ipset`)
+- **Länder-Sperre** im Dashboard (benötigt `ipset`). Der Agent lädt die Länderdatenbank von deinem Dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0), nur solange ein Land gesperrt ist und höchstens einmal am Tag. Die Erlaubt-Liste, die eigenen Adressen des Servers und SSH-Sitzungen, die beim Sperren eines Landes offen sind, werden nie gesperrt
 - **Erkannte Hosting-Panels** (24, z. B. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) und **LiteSpeed / OpenLiteSpeed** — InfraFence ändert nie eine Konfiguration, die von einem Panel oder von LiteSpeed verwaltet wird
 - **Überwachungsmodus** — erkennt alles, blockiert nichts
 - **Systemmetriken** — CPU, Arbeitsspeicher, Festplatte und Netzwerk
@@ -250,7 +250,7 @@ Auf dem Server:
 | `WEB_LOG_PATH` | Web-Access-Logs, kommagetrennt (Standard: erkannt aus nginx, Apache, LiteSpeed, Panels, Docker) |
 | `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Ersetzen die erkannten Mail-, Datenbank- und FTP-Logs |
 | `MODSEC_AUDIT_LOG` | ModSecurity-Audit-Log |
-| `GEOIP_DB_PATH` | GeoIP-Länderdatenbank |
+| `GEOIP_DB_PATH` | Länderdatenbank (MaxMind-DB-Format), die statt der vom Dashboard nach `/etc/infrafence/geoip-country.mmdb` geladenen verwendet wird; ist sie gesetzt, wird nichts heruntergeladen |
 | `INFRAFENCE_CONFIG` | Konfigurationsdatei des Agenten (Standard `/etc/infrafence/config.json`) |
 
 Setze sie mit `sudo systemctl edit infrafence-agent` (`[Service]` → `Environment=...`) und starte den Dienst neu.

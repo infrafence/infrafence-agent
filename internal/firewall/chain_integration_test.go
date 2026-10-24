@@ -296,6 +296,55 @@ func TestFirewallIntegration(t *testing.T) {
 		}
 	})
 
+	if ipset {
+		t.Run("country block spares open SSH sessions, the allow list and protected addresses", func(t *testing.T) {
+			_ = UnbanIP(clientIP)
+			if _, err := SetPortsEgress(nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !canConnect() {
+				t.Fatal("setup: client should connect")
+			}
+			// The client's network, and more networks than the 131072 a
+			// set held before (the United States has over 150000).
+			cidrs := []string{"203.0.113.0/24"}
+			for i := 0; i < 140000; i++ {
+				cidrs = append(cidrs, fmt.Sprintf("11.%d.%d.%d/30", i>>14&255, i>>6&255, (i&63)<<2))
+			}
+			gb := NewGeoBlocker(func(string) ([]string, error) { return cidrs, nil }, "")
+			gb.SetExempt(func() []string { return []string{clientIP} })
+			gb.ApplyCountryBlocks([]string{"XX"})
+			if n := ipsetEntryCount(ipsetSetName("XX")); n < 140000 {
+				t.Fatalf("country set holds %d entries", n)
+			}
+			if !canConnect() {
+				t.Fatal("a client with a session open when the country was blocked lost it")
+			}
+
+			gb.SetExempt(nil)
+			gb.Reload()
+			gb.ApplyCountryBlocks([]string{"XX"})
+			if canConnect() {
+				t.Fatal("client of a blocked country could connect")
+			}
+			SetAllowList([]string{clientIP})
+			if !canConnect() {
+				t.Fatal("an allow-listed client was blocked by its country")
+			}
+			SetAllowList(nil)
+			AddProtectedIPs(clientIP)
+			mustEnsure(t)
+			if !canConnect() {
+				t.Fatal("a protected address was blocked by its country")
+			}
+
+			gb.ApplyCountryBlocks(nil)
+			if strings.Contains(sh(t, "ipset list -n"), ipsetSetName("XX")) {
+				t.Fatal("country set left after the country was unblocked")
+			}
+		})
+	}
+
 	t.Run("uninstall removes everything InfraFence created, only that", func(t *testing.T) {
 		RemoveAll()
 		all := sh(t, "iptables -S")

@@ -174,6 +174,35 @@ func TestSessionPorts(t *testing.T) {
 	}
 }
 
+// Logged-in sessions: SSH_CONNECTION of a shell, whose client still has an
+// established connection to that port. A pre-authentication connection
+// (no process with SSH_CONNECTION) and a stale environment are left out.
+func TestSessionAddrs(t *testing.T) {
+	root := t.TempDir()
+	mk := func(pid, environ string) {
+		dir := filepath.Join(root, pid)
+		_ = os.MkdirAll(dir, 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "environ"), []byte(environ), 0o644)
+	}
+	mk("200", "HOME=/root\x00SSH_CONNECTION=203.0.113.7 51000 192.0.2.1 22\x00")
+	mk("201", "SSH_CONNECTION=203.0.113.8 51001 192.0.2.1 22\x00")   // session ended
+	mk("202", "SSH_CONNECTION=10.0.0.5 51002 192.0.2.1 22\x00")      // private
+	mk("203", "SSH_CONNECTION=203.0.113.9 51003 192.0.2.1 2222\x00") // other port
+	mk("300", "PATH=/usr/bin\x00")
+	inbound := func(port int) []string {
+		switch port {
+		case 22:
+			return []string{"203.0.113.7", "198.51.100.66", "10.0.0.5"} // 198.51.100.66: pre-auth
+		case 2222:
+			return []string{"203.0.113.9"}
+		}
+		return nil
+	}
+	if got := sessionAddrs(root, inbound); !reflect.DeepEqual(got, []string{"203.0.113.7", "203.0.113.9"}) {
+		t.Fatalf("got %v", got)
+	}
+}
+
 // A published container port: no listener on the host, the flow is only in
 // the conntrack table.
 func TestPublicInboundConntrack(t *testing.T) {

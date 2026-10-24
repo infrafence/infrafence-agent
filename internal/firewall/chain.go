@@ -364,10 +364,14 @@ func refillSet(name string, ips []string) error {
 // replaceNetSet atomically replaces the contents of a hash:net set.
 func replaceNetSet(name string, cidrs []string) error {
 	tmp := name + "-tmp"
-	if err := createIpsetHashNet(name); err != nil {
+	size := netSetMax(len(cidrs))
+	// A set that exists with a smaller maxelem cannot be created again
+	// with a larger one; the swap below gives it the size of tmp.
+	if err := createIpsetHashNet(name, size); err != nil && !ipsetExists(name) {
 		return err
 	}
-	if err := createIpsetHashNet(tmp); err != nil {
+	_ = destroyIpset(tmp) // a leftover may have another maxelem
+	if err := createIpsetHashNet(tmp, size); err != nil {
 		return err
 	}
 	defer destroyIpset(tmp)

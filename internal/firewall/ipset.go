@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -37,15 +38,32 @@ func ipsetSetName(countryCode string) string {
 }
 
 // createIpsetHashNet creates an ipset hash:net set if it doesn't exist.
-// maxelem defaults to 131072 (enough for any country).
-func createIpsetHashNet(name string) error {
-	// Try to create — if it already exists, ipset returns error code 1
+// maxelem is at least 131072; the United States alone is over 150000
+// networks in the DB-IP country database (see netSetMax).
+func createIpsetHashNet(name string, maxelem int) error {
+	// -exist: no error when the set exists with the same parameters
 	out, err := exec.Command("ipset", "create", name, "hash:net",
-		"maxelem", "131072", "-exist").CombinedOutput()
+		"maxelem", strconv.Itoa(maxelem), "-exist").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ipset create %s: %s (%w)", name, strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+// netSetMax is the maxelem of a hash:net set for n entries: 131072, or the
+// next power of two that holds them, at most 524288 (the country database
+// refuses a country with more than 500,000 networks).
+func netSetMax(n int) int {
+	m := 131072
+	for m < n && m < 524288 {
+		m *= 2
+	}
+	return m
+}
+
+// ipsetExists reports whether the set exists.
+func ipsetExists(name string) bool {
+	return exec.Command("ipset", "list", "-n", name).Run() == nil
 }
 
 // flushIpset removes all entries from an ipset set.

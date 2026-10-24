@@ -30,9 +30,11 @@ type state struct {
 	LastHeartbeat json.RawMessage `json:"last_heartbeat,omitempty"`
 	Syncs         int             `json:"syncs"`
 	// Denied counts the agent API calls refused while /deny is on.
-	Denied int               `json:"denied"`
-	Bans   []json.RawMessage `json:"bans"`
-	Events []json.RawMessage `json:"events"`
+	Denied int `json:"denied"`
+	// GeoIPRequests counts the requests for the country database.
+	GeoIPRequests int               `json:"geoip_requests"`
+	Bans          []json.RawMessage `json:"bans"`
+	Events        []json.RawMessage `json:"events"`
 	// InfoCalls counts the requests for the attack map ("map:24",
 	// "map:168") and the security score ("score").
 	InfoCalls map[string]int `json:"info_calls"`
@@ -45,6 +47,7 @@ type state struct {
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	binary := flag.String("binary", "", "agent binary served at /releases/infrafence-agent-linux-<arch>")
+	geoip := flag.String("geoip", "/tmp/mockapi-geoip.mmdb", "country database served at /api/v1/agent/geoip (missing: 503)")
 	flag.Parse()
 
 	bin, err := os.ReadFile(*binary)
@@ -233,6 +236,26 @@ func main() {
 		"score": 72, "grade": "C",
 		"items": []any{map[string]any{"key": "hardening", "points": 12, "detail": map[string]any{"failed": 22, "total": 43}}},
 		"trend": []any{map[string]any{"day": "2026-10-20", "score": 70}, map[string]any{"day": "2026-10-24", "score": 72}}}))
+	// The country database, tagged with its SHA-256 like the dashboard.
+	mux.HandleFunc("/api/v1/agent/geoip", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.GeoIPRequests++
+		st.mu.Unlock()
+		data, err := os.ReadFile(*geoip)
+		if err != nil {
+			http.Error(w, `{"error":"no database"}`, http.StatusServiceUnavailable)
+			return
+		}
+		sum := sha256.Sum256(data)
+		tag := `"` + hex.EncodeToString(sum[:]) + `"`
+		w.Header().Set("ETag", tag)
+		if r.Header.Get("If-None-Match") == tag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(data)
+	})
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()

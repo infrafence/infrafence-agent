@@ -36,8 +36,8 @@ priorityClassName: ""
 
 # Extra environment variables
 extraEnv: []
-#  - name: GEOIP_DB_PATH
-#    value: /etc/infrafence/GeoLite2-Country.mmdb
+#  - name: GEOIP_DB_PATH   # your own country database: nothing is downloaded
+#    value: /usr/share/GeoIP/GeoLite2-Country.mmdb
 
 # Auto-update: agent patches its own DaemonSet to trigger rolling updates.
 # Disable if using GitOps (ArgoCD, Flux) to manage updates externally.

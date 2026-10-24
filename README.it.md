@@ -124,7 +124,7 @@ Segue ogni sessione SSH dall'inizio alla fine — metodo di autenticazione, repu
 ### E altro
 - **Posta, database e FTP** — rilevamento del brute force per Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD e vsftpd
 - **Compatibile con Docker** — trova i log dei container web e protegge le porte pubblicate (`DOCKER-USER`)
-- **Blocco per paese** dalla dashboard (richiede `ipset`)
+- **Blocco per paese** dalla dashboard (richiede `ipset`). L'agent scarica il database dei paesi dalla tua dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) solo finché un paese è bloccato, al massimo una volta al giorno. La lista consentiti, gli indirizzi del server stesso e le sessioni SSH aperte quando un paese viene bloccato non vengono mai bloccati
 - **Pannelli di hosting riconosciuti** (24, ad es. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) e **LiteSpeed / OpenLiteSpeed** — InfraFence non modifica mai una configurazione gestita da un pannello o da LiteSpeed
 - **Modalità monitor** — rileva tutto, non blocca nulla
 - **Metriche di sistema** — CPU, memoria, disco e rete
@@ -250,7 +250,7 @@ Sul server:
 | `WEB_LOG_PATH` | Access log web, separati da virgola (predefinito: rilevati da nginx, Apache, LiteSpeed, pannelli, Docker) |
 | `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Sostituiscono i log di posta, database e FTP rilevati |
 | `MODSEC_AUDIT_LOG` | Log di audit di ModSecurity |
-| `GEOIP_DB_PATH` | Database GeoIP dei paesi |
+| `GEOIP_DB_PATH` | Database dei paesi (formato MaxMind DB) da usare al posto di quello scaricato dalla dashboard in `/etc/infrafence/geoip-country.mmdb`; se impostato, non viene scaricato nulla |
 | `INFRAFENCE_CONFIG` | File di configurazione dell'agente (predefinito `/etc/infrafence/config.json`) |
 
 Impostale con `sudo systemctl edit infrafence-agent` (`[Service]` → `Environment=...`), poi riavvia il servizio.
