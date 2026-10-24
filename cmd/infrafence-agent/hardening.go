@@ -42,7 +42,8 @@ func remediationPolicy() remediation.Policy {
 	return remediation.Policy{ConfigChangesSafe: false}
 }
 
-func reportEvent(client *api.Client, typ, severity string, details map[string]string) {
+// reportEvent sends one event (replaced in tests).
+var reportEvent = func(client *api.Client, typ, severity string, details map[string]string) {
 	if client == nil {
 		return
 	}
@@ -83,6 +84,11 @@ func runScan(client *api.Client, scanID int64) {
 		if !r.Passed {
 			failed++
 			f.Fixable, f.FixBlockedReason = remediation.Availability(r.CheckID, policy)
+		}
+		if remediation.IsPHPCheck(r.CheckID) && f.Details != nil {
+			// What AutoMode may apply on its own: never a fix this host
+			// can't take, never one that needs a person's approval.
+			f.Details["automode_safe"] = fmt.Sprint(!r.Passed && f.Fixable && remediation.AutoModeSafe(r.CheckID))
 		}
 		findings[i] = f
 	}
@@ -148,8 +154,8 @@ func applyHardeningFixes(client *api.Client, fixes []api.HardeningFix) {
 			action = "apply"
 		}
 		// The opposite operation undoes it if the host stops answering.
-		do := func() (string, error) { return remediation.Apply(remediation.System, f.CheckID, policy) }
-		undo := func() (string, error) { return remediation.Revert(remediation.System, f.CheckID) }
+		do := func() (string, error) { return fixApply(remediation.System, f.CheckID, policy) }
+		undo := func() (string, error) { return fixRevert(remediation.System, f.CheckID) }
 		if action == "revert" {
 			do, undo = undo, do
 		}
@@ -165,6 +171,14 @@ func applyHardeningFixes(client *api.Client, fixes []api.HardeningFix) {
 			details["status"] = "failed"
 			details["message"] = err.Error()
 			reportEvent(client, "hardening_fix_failed", "warning", details)
+			continue
+		}
+		if strings.HasPrefix(msg, remediation.PHPNoChange) {
+			// Nothing changed on the host: nothing to verify or roll back
+			// (a rollback would remove a setting other fixes rely on).
+			details["status"] = "applied"
+			details["message"] = msg
+			reportEvent(client, "hardening_fix_applied", "info", details)
 			continue
 		}
 		v := hardeningCheck(before)
@@ -200,11 +214,14 @@ func applyHardeningFixes(client *api.Client, fixes []api.HardeningFix) {
 		details["message"] = msg
 		reportEvent(client, "hardening_fix_applied", "info", details)
 	}
-	runScan(client, 0)
+	rescanAfterFixes(client)
 }
 
 // Replaced in tests.
 var (
+	fixApply          = remediation.Apply
+	fixRevert         = remediation.Revert
+	rescanAfterFixes  = func(client *api.Client) { runScan(client, 0) }
 	hardeningSnapshot = func() verify.State {
 		ssh, domains := verifyTargets()
 		return verify.Snapshot(context.Background(), ssh, domains)

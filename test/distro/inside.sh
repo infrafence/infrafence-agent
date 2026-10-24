@@ -115,6 +115,9 @@ fi
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 
+# ── PHP configuration: detection, verified fix and revert (test/distro/php.sh) ──
+. /distro/php.sh
+
 # ── dashboard refusing the agent, restart, local expiry (test/distro/offline.sh) ──
 . /distro/offline.sh
 
@@ -133,6 +136,7 @@ ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 ipset list -n 2>/dev/null | grep -q infrafence && left="$left ipset"
 systemctl list-unit-files 2>/dev/null | grep -q infrafence-agent && left="$left service"
 [ -e /usr/local/bin/infrafence-agent ] && left="$left binary"
+ls /etc/php/*/*/conf.d/zz-infrafence-hardening.ini /etc/php.d/zz-infrafence-hardening.ini >/dev/null 2>&1 && left="$left php-dropin"
 if [ -z "$left" ]; then R_UNINSTALL=ok; else log "left behind:$left"; fi
 # And sshd still answers the attacker's address now that the ban is gone.
 ip netns exec cl timeout 3 bash -c '</dev/tcp/203.0.113.1/22' 2>/dev/null || { R_UNINSTALL=fail; log "ssh still blocked after uninstall"; }
