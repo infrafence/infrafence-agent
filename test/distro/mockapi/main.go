@@ -11,6 +11,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type state struct {
@@ -31,6 +33,9 @@ type state struct {
 	Denied int               `json:"denied"`
 	Bans   []json.RawMessage `json:"bans"`
 	Events []json.RawMessage `json:"events"`
+	// InfoCalls counts the requests for the attack map ("map:24",
+	// "map:168") and the security score ("score").
+	InfoCalls map[string]int `json:"info_calls"`
 	// extra holds fields set through /set-sync, merged into every sync
 	// reply; version bumps on each change so the agent syncs again.
 	extra   map[string]json.RawMessage
@@ -47,7 +52,7 @@ func main() {
 		log.Fatalf("read binary: %v", err)
 	}
 	sum := sha256.Sum256(bin)
-	st := &state{extra: map[string]json.RawMessage{}}
+	st := &state{extra: map[string]json.RawMessage{}, InfoCalls: map[string]int{}}
 	// offline: the agent API answers 503, as a dashboard that is down.
 	var offline atomic.Bool
 	// deny: the agent API refuses the agent, "suspended" (403
@@ -60,10 +65,26 @@ func main() {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 
+	// Test control: /checksum?mode=missing (404) or mode=bad (another
+	// file's) for the release checksum; mode=ok: the right one.
+	var checksum atomic.Value
+	checksum.Store("ok")
 	mux := http.NewServeMux()
+	mux.HandleFunc("/checksum", func(w http.ResponseWriter, r *http.Request) {
+		checksum.Store(r.URL.Query().Get("mode"))
+		reply(w, map[string]any{"status": "ok"})
+	})
 	mux.HandleFunc("/releases/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sha256") {
-			_, _ = io.WriteString(w, hex.EncodeToString(sum[:])+"  infrafence-agent\n")
+			switch checksum.Load() {
+			case "missing":
+				http.NotFound(w, r)
+			case "bad":
+				other := sha256.Sum256([]byte("not the agent"))
+				_, _ = io.WriteString(w, hex.EncodeToString(other[:])+"  infrafence-agent\n")
+			default:
+				_, _ = io.WriteString(w, hex.EncodeToString(sum[:])+"  infrafence-agent\n")
+			}
 			return
 		}
 		_, _ = w.Write(bin)
@@ -172,6 +193,46 @@ func main() {
 		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok"})
 	})
+	// The attack map and the security score of "panel map" and "panel
+	// score"; /info-down?on=1 answers 404 (a dashboard without them).
+	var infoDown atomic.Bool
+	mux.HandleFunc("/info-down", func(w http.ResponseWriter, r *http.Request) {
+		infoDown.Store(r.URL.Query().Get("on") == "1")
+		reply(w, map[string]any{"status": "ok"})
+	})
+	info := func(key string, body map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			k := key
+			if key == "map" {
+				k = "map:" + r.URL.Query().Get("hours")
+			}
+			st.mu.Lock()
+			st.InfoCalls[k]++
+			st.mu.Unlock()
+			if infoDown.Load() {
+				http.NotFound(w, r)
+				return
+			}
+			// Computed now: an answer older than an hour is stale.
+			b := maps.Clone(body)
+			b["generated_at"] = time.Now().UTC().Format(time.RFC3339)
+			if key == "map" {
+				b["hours"] = 24
+				if r.URL.Query().Get("hours") == "168" {
+					b["hours"] = 168
+				}
+			}
+			reply(w, b)
+		}
+	}
+	mux.HandleFunc("/api/v1/agent/map", info("map", map[string]any{
+		"total":      map[string]any{"attacks": 123},
+		"countries":  []any{map[string]any{"code": "CN", "attacks": 40}, map[string]any{"code": "US", "attacks": 12}},
+		"categories": []any{map[string]any{"cat": "ssh", "attacks": 30}, map[string]any{"cat": "web", "attacks": 5}}}))
+	mux.HandleFunc("/api/v1/agent/score", info("score", map[string]any{
+		"score": 72, "grade": "C",
+		"items": []any{map[string]any{"key": "hardening", "points": 12, "detail": map[string]any{"failed": 22, "total": 43}}},
+		"trend": []any{map[string]any{"day": "2026-10-20", "score": 70}, map[string]any{"day": "2026-10-24", "score": 72}}}))
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()
