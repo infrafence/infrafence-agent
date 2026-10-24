@@ -337,11 +337,26 @@ bootstrap_ssl() {
     warn "Bootstrapping Let's Encrypt root CA (Go agent needs ISRG Root X1 in OpenSSL bundle)..."
 
     if [[ "$DRY_RUN" == true ]]; then
-        # Session only: trust the root for this run's downloads, change nothing.
-        local dry_ca
-        dry_ca="$(mktemp /tmp/infrafence-isrg-XXXXXX.pem 2>/dev/null)" || return 0
-        if curl -fsSk --max-time 15 "https://letsencrypt.org/certs/isrgrootx1.pem" -o "$dry_ca" 2>/dev/null; then
-            export CURL_CA_BUNDLE="$dry_ca"
+        # Session only: trust the root for this run's downloads, change
+        # nothing. curl gets the system CAs plus ISRG Root X1 in one temp
+        # bundle: a bundle with the root alone would make it refuse every
+        # other site (github.com and its release downloads). Without a
+        # system bundle to merge, RHEL's curl keeps its own CAs (as in a real
+        # run) and elsewhere the root alone is still better than nothing.
+        local dry_dir dry_sys=""
+        dry_dir="$(mktemp -d /tmp/infrafence-ca-XXXXXX 2>/dev/null)" || return 0
+        # shellcheck disable=SC2064
+        trap "rm -rf '$dry_dir'" EXIT
+        if curl -fsSk --max-time 15 "https://letsencrypt.org/certs/isrgrootx1.pem" -o "${dry_dir}/isrg.pem" 2>/dev/null \
+            && grep -q "BEGIN CERTIFICATE" "${dry_dir}/isrg.pem" 2>/dev/null; then
+            for f in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem; do
+                [[ -f "$f" ]] && dry_sys="$f" && break
+            done
+            if [[ -n "$dry_sys" ]] && cat "$dry_sys" "${dry_dir}/isrg.pem" > "${dry_dir}/bundle.pem" 2>/dev/null; then
+                export CURL_CA_BUNDLE="${dry_dir}/bundle.pem"
+            elif [[ "$is_rhel" == false ]]; then
+                export CURL_CA_BUNDLE="${dry_dir}/isrg.pem"
+            fi
             DRY_MISSING="${DRY_MISSING:+$DRY_MISSING, }Let's Encrypt root CA bundle for the agent"
         fi
         return 0
