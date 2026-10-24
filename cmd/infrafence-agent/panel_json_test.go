@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,6 +173,46 @@ var panelRefs = []panelRef{
 	{"scan", []string{"scan", "{base}/home/alice/public_html", "--actor", "root", "--json"}},
 	{"error", []string{"unban", "203.0.113.99", "--actor", "root", "--json"}},
 	{"error_invalid_ip", []string{"unban", "203.0.113.0/24", "--actor", "root", "--json"}},
+	{"map", []string{"map", "--hours", "24", "--json"}},
+	{"map_stale", []string{"map", "--hours", "24", "--json"}},
+	{"score", []string{"score", "--json"}},
+	{"error_not_connected", []string{"map", "--hours", "168", "--json"}},
+}
+
+// refDashboardDown: the dashboard stops answering the map from map_stale
+// on. The fakes are installed before the socket serves (no race with it).
+var refDashboardDown atomic.Bool
+
+func installRefDashboard() {
+	refDashboardDown.Store(false)
+	panelFetchMap = func(_ context.Context, hours int) (*api.AttackMap, error) {
+		if refDashboardDown.Load() {
+			return nil, errors.New("connection refused")
+		}
+		m := &api.AttackMap{Hours: hours, GeneratedAt: "2026-10-16T11:58:00Z",
+			Countries:  []api.MapCountry{{Code: "CN", Attacks: 40}, {Code: "US", Attacks: 12}, {Code: "BR", Attacks: 3}},
+			Categories: []api.MapCategory{{Cat: "ssh", Attacks: 30}, {Cat: "web", Attacks: 21}, {Cat: "scans", Attacks: 6}}}
+		m.Total.Attacks = 57 // 2 from an unknown country
+		return m, nil
+	}
+	panelFetchScore = func(context.Context) (*api.SecurityScore, error) {
+		return &api.SecurityScore{GeneratedAt: "2026-10-16T11:58:00Z", Score: 72, Grade: "C",
+			Items: []api.ScoreItem{
+				{Key: "exposed_ports", Points: 16, Detail: map[string]any{"ports": []any{3306.0, 6379.0}}},
+				{Key: "hardening", Points: 12, Detail: map[string]any{"failed": 22.0, "total": 43.0}}},
+			Trend: []api.ScorePoint{{Day: "2026-10-14", Score: 65}, {Day: "2026-10-15", Score: 70}, {Day: "2026-10-16", Score: 72}}}, nil
+	}
+}
+
+// panelRefSetups prepare the dashboard's side of a reference run.
+var panelRefSetups = map[string]func(f *fakePanelHost){
+	// The dashboard stops answering; the last request was 5 minutes ago.
+	"map_stale": func(f *fakePanelHost) {
+		refDashboardDown.Store(true)
+		panelInfoCache.Lock()
+		panelInfoCache.entries["map:24"].tried = f.now.Add(-panelMapEvery)
+		panelInfoCache.Unlock()
+	},
 }
 
 // Without a running agent (the socket does not exist).
@@ -218,10 +260,14 @@ func TestPanelJSONReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	installRefDashboard()
 	go srv.Serve(handlePanel)
 
 	got := map[string]string{}
 	for _, r := range panelRefs {
+		if setup := panelRefSetups[r.name]; setup != nil {
+			setup(f)
+		}
 		args := make([]string, len(r.args))
 		for i, a := range r.args {
 			args[i] = strings.ReplaceAll(a, "{base}", base)

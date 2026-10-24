@@ -1,0 +1,1 @@
+{"agent_running":true,"categories":[{"attacks":30,"cat":"ssh"},{"attacks":21,"cat":"web"},{"attacks":6,"cat":"scans"}],"connected":true,"countries":[{"attacks":40,"code":"CN"},{"attacks":12,"code":"US"},{"attacks":3,"code":"BR"}],"generated_at":"2026-10-16T11:58:00Z","hours":24,"ok":true,"stale":true,"total":{"attacks":57}}

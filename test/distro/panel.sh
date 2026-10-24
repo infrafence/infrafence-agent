@@ -4,8 +4,9 @@
 # with "panel": true in the config and checks the
 # socket (root only, 0600 in a 0700 directory), every read command, that an
 # unban from the panel is reported with the panel user and is not reapplied
-# by the next sync or after a restart, allow/disallow, input validation and
-# the answers without a running agent. Sets R_PANEL; appends to EXTRA_RESULT
+# by the next sync or after a restart, allow/disallow, input validation,
+# the map and the score (one request per interval), and the answers without
+# a running agent. Sets R_PANEL; appends to EXTRA_RESULT
 # and sets EXTRA_FAIL=1 on a failure.
 R_PANEL=fail
 API=http://127.0.0.1:8080
@@ -53,6 +54,25 @@ for c in allowlist findings events coexistence sites; do
 done
 grep -q '"mode":"' <<<"$(pcmd coexistence)" || pf coexistence_mode
 
+# ── map and score: from the dashboard, at most one request per 5 (map) or
+# 15 (score) minutes, answered or not ──
+calls() { curl -s "$API/state" | grep -o "\"$1\":[0-9]*" | cut -d: -f2; }
+curl -s "$API/info-down?on=1" >/dev/null
+out=$(pcmd map --hours 168); rc=$?
+{ [ $rc = 1 ] && grep -q '"error":"not_connected"' <<<"$out" && grep -q '"agent_running":true' <<<"$out"; } || pf map_not_connected "rc=$rc $out"
+curl -s "$API/info-down?on=0" >/dev/null
+grep -q '"error":"not_connected"' <<<"$(pcmd map --hours 168)" || pf map_retry "asked again within 5 minutes"
+[ "$(calls 'map:168')" = 1 ] || pf map_calls_168 "$(calls 'map:168')"
+for _ in 1 2 3; do out=$(pcmd map); done
+{ grep -q '"ok":true' <<<"$out" && grep -q '"stale":false' <<<"$out" && grep -q '"hours":24' <<<"$out" &&
+  grep -q '"code":"CN"' <<<"$out" && grep -q '"attacks":123' <<<"$out"; } || pf map "$out"
+[ "$(calls 'map:24')" = 1 ] || pf map_calls_24 "$(calls 'map:24')"
+grep -q '"error":"bad_request"' <<<"$(pcmd map --hours 48)" || pf map_hours
+for _ in 1 2; do out=$(pcmd score); done
+{ grep -q '"ok":true' <<<"$out" && grep -q '"score":72' <<<"$out" && grep -q '"grade":"C"' <<<"$out" &&
+  grep -q '"key":"hardening"' <<<"$out"; } || pf score "$out"
+[ "$(calls score)" = 1 ] || pf score_calls "$(calls score)"
+
 # ── validation: never reaches the agent ──
 out=$(pcmd unban '203.0.113.0/24' --actor root); rc=$?
 { [ $rc = 1 ] && grep -q '"error":"invalid_ip"' <<<"$out"; } || pf invalid_ip "rc=$rc $out"
@@ -94,6 +114,7 @@ out=$(pcmd status); rc=$?
 out=$(pcmd bans); rc=$?
 { [ $rc = 1 ] && grep -q '"error":"agent_not_running"' <<<"$out" && grep -q '"agent_running":false' <<<"$out"; } || pf offline_bans "rc=$rc $out"
 grep -q '"ok":true' <<<"$(pcmd coexistence)" || pf offline_coexistence
+grep -q '"error":"agent_not_running"' <<<"$(pcmd map)" || pf offline_map
 systemctl start infrafence-agent
 for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 [ -S "$sock" ] || pf restart "no socket after restart"

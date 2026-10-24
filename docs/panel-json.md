@@ -635,6 +635,203 @@ security score.
 Errors: `not_a_document_root`, `not_scannable`, `scan_running` (one scan at a time per server),
 `invalid_path`, `invalid_actor`.
 
+### `map`
+
+`infrafence-agent panel map [--hours 24|168] --json` (default 24: the last 24 hours; 168: the last 7 days).
+Where this server's attacks came from, as the dashboard counts them for its maps: inbound attacks only, by
+country and by category, with no addresses. The running agent asks the dashboard
+(`GET /api/v1/agent/map`) **at most once every 5 minutes for each range**, whether it answered or not, and
+gives every request in between the answer it has. Ask as often as you like (on every page view); nothing
+reaches the dashboard more often. Requests arriving while one is in flight wait for it (at most 10 seconds).
+
+<!-- example:map -->
+```json
+{
+  "agent_running": true,
+  "categories": [
+    {
+      "attacks": 30,
+      "cat": "ssh"
+    },
+    {
+      "attacks": 21,
+      "cat": "web"
+    },
+    {
+      "attacks": 6,
+      "cat": "scans"
+    }
+  ],
+  "connected": true,
+  "countries": [
+    {
+      "attacks": 40,
+      "code": "CN"
+    },
+    {
+      "attacks": 12,
+      "code": "US"
+    },
+    {
+      "attacks": 3,
+      "code": "BR"
+    }
+  ],
+  "generated_at": "2026-10-16T11:58:00Z",
+  "hours": 24,
+  "ok": true,
+  "stale": false,
+  "total": {
+    "attacks": 57
+  }
+}
+```
+<!-- /example:map -->
+
+When the dashboard did not answer the latest request (unreachable, or an error), the last answer is given
+again with `stale: true`; show `generated_at` as "last updated". With no answer at all since the agent
+started, the reply is the error `not_connected` (see [Errors](#errors)): show an empty state.
+
+<!-- example:map_stale -->
+```json
+{
+  "agent_running": true,
+  "categories": [
+    {
+      "attacks": 30,
+      "cat": "ssh"
+    },
+    {
+      "attacks": 21,
+      "cat": "web"
+    },
+    {
+      "attacks": 6,
+      "cat": "scans"
+    }
+  ],
+  "connected": true,
+  "countries": [
+    {
+      "attacks": 40,
+      "code": "CN"
+    },
+    {
+      "attacks": 12,
+      "code": "US"
+    },
+    {
+      "attacks": 3,
+      "code": "BR"
+    }
+  ],
+  "generated_at": "2026-10-16T11:58:00Z",
+  "hours": 24,
+  "ok": true,
+  "stale": true,
+  "total": {
+    "attacks": 57
+  }
+}
+```
+<!-- /example:map_stale -->
+
+| Field | Type | Values | Always | Meaning |
+|---|---|---|---|---|
+| `ok` | boolean | `true` | yes | |
+| `agent_running` | boolean | `true` | yes | |
+| `connected` | boolean | | yes | As in `status`: the last heartbeat the dashboard accepted is less than 3 minutes old. |
+| `stale` | boolean | | yes | `true`: the dashboard did not answer the latest request; this is an earlier answer (see `generated_at`). |
+| `hours` | integer | `24`, `168` | yes | The range asked for. |
+| `generated_at` | string | timestamp | yes | When the dashboard computed it. |
+| `total` | object | | yes | |
+| `total.attacks` | integer | | yes | Attacks in the range, including those from an unknown country. No "blocked" figure. |
+| `countries` | array | | yes | Most attacks first, at most 250. Empty array when there are none. |
+| `countries[].code` | string | ISO 3166-1 alpha-2, upper case | yes | Countries the dashboard cannot place are left out (they count in `total`). |
+| `countries[].attacks` | integer | | yes | |
+| `categories` | array | | yes | Most attacks first. Empty array when there are none. |
+| `categories[].cat` | string | `ssh`, `web`, `bots`, `scans`, `other` (open set) | yes | As on the dashboard's maps. Show an unknown category as `other`. |
+| `categories[].attacks` | integer | | yes | |
+
+Errors: `not_connected`, `bad_request` (`--hours` other than 24 or 168).
+
+### `score`
+
+`infrafence-agent panel score --json`. This server's security score as the dashboard computes it, what takes
+points off it, and its daily scores of the last 30 days. Fetched like `map`: the running agent asks the
+dashboard (`GET /api/v1/agent/score`) **at most once every 15 minutes**, with the same `stale` and
+`not_connected` rules.
+
+<!-- example:score -->
+```json
+{
+  "agent_running": true,
+  "connected": true,
+  "generated_at": "2026-10-16T11:58:00Z",
+  "grade": "C",
+  "items": [
+    {
+      "detail": {
+        "ports": [
+          3306,
+          6379
+        ]
+      },
+      "key": "exposed_ports",
+      "points": 16
+    },
+    {
+      "detail": {
+        "failed": 22,
+        "total": 43
+      },
+      "key": "hardening",
+      "points": 12
+    }
+  ],
+  "ok": true,
+  "score": 72,
+  "stale": false,
+  "trend": [
+    {
+      "day": "2026-10-14",
+      "score": 65
+    },
+    {
+      "day": "2026-10-15",
+      "score": 70
+    },
+    {
+      "day": "2026-10-16",
+      "score": 72
+    }
+  ]
+}
+```
+<!-- /example:score -->
+
+| Field | Type | Values | Always | Meaning |
+|---|---|---|---|---|
+| `ok` | boolean | `true` | yes | |
+| `agent_running` | boolean | `true` | yes | |
+| `connected` | boolean | | yes | As for `map`. |
+| `stale` | boolean | | yes | As for `map`. |
+| `generated_at` | string | timestamp | yes | When the dashboard computed it. |
+| `score` | integer | 0–100 | yes | |
+| `grade` | string | `A`–`F` | yes | As the dashboard shows it. |
+| `items` | array | | yes | What takes points off, most points first. Empty array for a perfect score. |
+| `items[].key` | string | open set, e.g. `hardening`, `no_hardening_scan`, `exploited_cves`, `vulnerable_packages`, `no_software_audit`, `exposed_ports`, `malware`, `monitor_mode`, `agent_outdated`, `no_2fa` | yes | Word it by key; show a generic line for an unknown key. |
+| `items[].points` | integer | 0–100 | yes | Points it takes off 100. |
+| `items[].detail` | object | | yes | The counts to word it with, by key (e.g. `hardening`: `failed`, `total`; `exposed_ports`: `ports`; `agent_outdated`: `version`, `latest`). Values are numbers, booleans, `null`, short text or lists of numbers and text; `{}` when there is nothing to add. |
+| `items[].detail.failed` | integer | | no | `hardening`: checks failed. |
+| `items[].detail.total` | integer | | no | `hardening`: checks run. |
+| `items[].detail.ports` | array of integer | | no | `exposed_ports`: the ports open to the internet. |
+| `trend` | array | | yes | Daily scores, oldest first. Empty array when there are none yet. |
+| `trend[].day` | string | `YYYY-MM-DD` (UTC) | yes | |
+| `trend[].score` | integer | 0–100 | yes | |
+
+Errors: `not_connected`.
+
 ## Errors
 
 Every error is `ok: false` with a code and an English message (log it; translate by `error`). The exit
@@ -666,6 +863,21 @@ When the agent is not running, for commands that need it (`agent_running: false`
 ```
 <!-- /example:error_agent_not_running -->
 
+`map` and `score` when the dashboard has not answered since the agent started (unreachable, or a dashboard
+that doesn't offer them yet). An agent older than these commands answers `unknown_command` or
+`bad_request`: treat every error the same way, as "no data".
+
+<!-- example:error_not_connected -->
+```json
+{
+  "agent_running": true,
+  "error": "not_connected",
+  "message": "the InfraFence dashboard has not sent this server's attack map (not reachable, or it does not offer it yet)",
+  "ok": false
+}
+```
+<!-- /example:error_not_connected -->
+
 Arguments the command refuses before asking the agent: no `agent_running` key.
 
 <!-- example:error_invalid_ip -->
@@ -689,8 +901,8 @@ Error codes:
 
 | `error` | When |
 |---|---|
-| `bad_request` | Unknown option, missing or extra argument, invalid `--limit`, `--since` or `--note`, full allow list. |
-| `unknown_command` | Not one of the eleven commands. |
+| `bad_request` | Unknown option, missing or extra argument, invalid `--limit`, `--since`, `--note` or `--hours`, full allow list. |
+| `unknown_command` | Not one of the thirteen commands. |
 | `invalid_ip` | Not exactly one IPv4 or IPv6 address (ranges, ports, zones, `0.0.0.0`, `::`, broadcast and multicast are refused). |
 | `invalid_path` | Not a clean absolute path. |
 | `invalid_actor` | `--actor` missing on a command that changes something, or not 1–64 of `A–Z a–z 0–9 . _ @ - +`. |
@@ -703,4 +915,5 @@ Error codes:
 | `not_a_document_root` | `scan`: missing, or not the document root of any site. |
 | `not_scannable` | `scan`: the site's document root doesn't belong to its account: outside its home, not owned by its uid, a system directory, or the site has no account. |
 | `scan_running` | `scan`: a malware scan is already running. |
+| `not_connected` | `map`, `score`: the dashboard has not answered since the agent started. |
 | `internal_error` | The agent did not answer in time, or could not save the change (nothing was changed). |

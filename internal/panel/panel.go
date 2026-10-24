@@ -38,6 +38,7 @@ const (
 	ErrScanRunning     = "scan_running"
 	ErrInternal        = "internal_error"
 	ErrNotRoot         = "not_root"
+	ErrNotConnected    = "not_connected"
 )
 
 // Request is one command sent to the agent.
@@ -49,6 +50,7 @@ type Request struct {
 	Actor   string `json:"actor,omitempty"`
 	Limit   int    `json:"limit,omitempty"`
 	Since   string `json:"since,omitempty"` // RFC 3339
+	Hours   int    `json:"hours,omitempty"` // map: 24 or 168
 }
 
 // Response is the agent's answer: ok, or an error code with a message, plus
@@ -78,7 +80,7 @@ var Mutating = map[string]bool{"unban": true, "allow": true, "disallow": true, "
 // Commands lists every command and whether it takes an address or a path.
 var Commands = map[string]string{
 	"status": "", "bans": "", "unban": "ip", "allow": "ip", "allowlist": "", "disallow": "ip",
-	"findings": "", "events": "", "coexistence": "", "sites": "", "scan": "path",
+	"findings": "", "events": "", "coexistence": "", "sites": "", "scan": "path", "map": "", "score": "",
 }
 
 const (
@@ -88,6 +90,11 @@ const (
 	maxActor     = 64
 	maxPath      = 1024
 )
+
+// MapHours are the ranges of "map": the last 24 hours (default) or 7 days.
+var MapHours = map[int]bool{24: true, 168: true}
+
+const DefaultMapHours = 24
 
 // ParseIP accepts exactly one IPv4 or IPv6 address (no range, port or zone)
 // and returns its canonical form.
@@ -175,7 +182,8 @@ func ParseSince(s string, now time.Time) (string, bool) {
 }
 
 // ParseArgs turns "infrafence-agent panel" arguments into a request:
-// <command> [ip|path] [--actor X] [--note X] [--limit N] [--since X] [--json].
+// <command> [ip|path] [--actor X] [--note X] [--limit N] [--since X]
+// [--hours N] [--json].
 // Both "--flag value" and "--flag=value" work.
 func ParseArgs(args []string, now time.Time) (Request, bool, Response) {
 	var req Request
@@ -196,7 +204,7 @@ func ParseArgs(args []string, now time.Time) (Request, bool, Response) {
 			}
 			jsonOut = true
 			continue
-		case "actor", "note", "limit", "since":
+		case "actor", "note", "limit", "since", "hours":
 		default:
 			return req, jsonOut, Fail(ErrBadRequest, "unknown option --%s", name)
 		}
@@ -255,6 +263,8 @@ func ParseArgs(args []string, now time.Time) (Request, bool, Response) {
 		allowed["limit"] = true
 	case "events":
 		allowed["limit"], allowed["since"] = true, true
+	case "map":
+		allowed["hours"] = true
 	}
 	for name := range flags {
 		if !allowed[name] {
@@ -287,6 +297,16 @@ func ParseArgs(args []string, now time.Time) (Request, bool, Response) {
 			return req, jsonOut, Fail(ErrBadRequest, "--since must be an RFC 3339 time or a duration such as 24h (at most 90 days)")
 		}
 		req.Since = since
+	}
+	if allowed["hours"] {
+		req.Hours = DefaultMapHours
+		if v, ok := flags["hours"]; ok {
+			n, err := strconv.Atoi(v)
+			if err != nil || !MapHours[n] {
+				return req, jsonOut, Fail(ErrBadRequest, "--hours must be 24 or 168")
+			}
+			req.Hours = n
+		}
 	}
 	return req, jsonOut, nil
 }
@@ -328,6 +348,16 @@ func Validate(req *Request) Response {
 		if _, err := time.Parse(time.RFC3339, req.Since); err != nil {
 			return Fail(ErrBadRequest, "invalid since")
 		}
+	}
+	if req.Command == "map" {
+		if req.Hours == 0 {
+			req.Hours = DefaultMapHours
+		}
+		if !MapHours[req.Hours] {
+			return Fail(ErrBadRequest, "hours must be 24 or 168")
+		}
+	} else if req.Hours != 0 {
+		return Fail(ErrBadRequest, "%s does not take hours", req.Command)
 	}
 	return nil
 }

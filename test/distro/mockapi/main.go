@@ -11,6 +11,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +32,9 @@ type state struct {
 	Denied int               `json:"denied"`
 	Bans   []json.RawMessage `json:"bans"`
 	Events []json.RawMessage `json:"events"`
+	// InfoCalls counts the requests for the attack map ("map:24",
+	// "map:168") and the security score ("score").
+	InfoCalls map[string]int `json:"info_calls"`
 	// extra holds fields set through /set-sync, merged into every sync
 	// reply; version bumps on each change so the agent syncs again.
 	extra   map[string]json.RawMessage
@@ -47,7 +51,7 @@ func main() {
 		log.Fatalf("read binary: %v", err)
 	}
 	sum := sha256.Sum256(bin)
-	st := &state{extra: map[string]json.RawMessage{}}
+	st := &state{extra: map[string]json.RawMessage{}, InfoCalls: map[string]int{}}
 	// offline: the agent API answers 503, as a dashboard that is down.
 	var offline atomic.Bool
 	// deny: the agent API refuses the agent, "suspended" (403
@@ -172,6 +176,47 @@ func main() {
 		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok"})
 	})
+	// The attack map and the security score of "panel map" and "panel
+	// score"; /info-down?on=1 answers 404 (a dashboard without them).
+	var infoDown atomic.Bool
+	mux.HandleFunc("/info-down", func(w http.ResponseWriter, r *http.Request) {
+		infoDown.Store(r.URL.Query().Get("on") == "1")
+		reply(w, map[string]any{"status": "ok"})
+	})
+	info := func(key string, body any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			k := key
+			if key == "map" {
+				k = "map:" + r.URL.Query().Get("hours")
+			}
+			st.mu.Lock()
+			st.InfoCalls[k]++
+			st.mu.Unlock()
+			if infoDown.Load() {
+				http.NotFound(w, r)
+				return
+			}
+			if key == "map" {
+				h := 24
+				if r.URL.Query().Get("hours") == "168" {
+					h = 168
+				}
+				b := maps.Clone(body.(map[string]any))
+				b["hours"] = h
+				reply(w, b)
+				return
+			}
+			reply(w, body)
+		}
+	}
+	mux.HandleFunc("/api/v1/agent/map", info("map", map[string]any{"generated_at": "2026-10-24T10:00:00Z",
+		"total":      map[string]any{"attacks": 123},
+		"countries":  []any{map[string]any{"code": "CN", "attacks": 40}, map[string]any{"code": "US", "attacks": 12}},
+		"categories": []any{map[string]any{"cat": "ssh", "attacks": 30}, map[string]any{"cat": "web", "attacks": 5}}}))
+	mux.HandleFunc("/api/v1/agent/score", info("score", map[string]any{"generated_at": "2026-10-24T10:00:00Z",
+		"score": 72, "grade": "C",
+		"items": []any{map[string]any{"key": "hardening", "points": 12, "detail": map[string]any{"failed": 22, "total": 43}}},
+		"trend": []any{map[string]any{"day": "2026-10-20", "score": 70}, map[string]any{"day": "2026-10-24", "score": 72}}}))
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()

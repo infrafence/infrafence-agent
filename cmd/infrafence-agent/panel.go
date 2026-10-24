@@ -166,6 +166,7 @@ func startPanelSocket(client *api.Client, cfg *config.Config, panelID string, re
 	panelInfo.agentID, panelInfo.serverURL, panelInfo.panelID = cfg.AgentID, cfg.ServerURL, panelID
 	panelInfo.selfIP = detectOutboundIP()
 	panelRequestSync = requestSync
+	panelFetchMap, panelFetchScore = client.AttackMap, client.SecurityScore
 	// The scan slot is already claimed by panelScan.
 	panelStartScan = func(root malware.WebRoot, verify func() error) {
 		defer malwareScanRunning.Store(false)
@@ -217,6 +218,10 @@ func handlePanel(req panel.Request) panel.Response {
 		return panelSitesAnswer(panelInfo.panelID, cachedWebRoots(), enabled)
 	case "scan":
 		return panelScan(req.Path, req.Actor)
+	case "map":
+		return panelMap(req.Hours)
+	case "score":
+		return panelScore()
 	}
 	return panel.Fail(panel.ErrUnknownCommand, "unknown command %q", req.Command)
 }
@@ -294,7 +299,7 @@ func panelStatus() panel.Response {
 		"agent_id":       panelInfo.agentID,
 		"last_heartbeat": rfc3339(hb),
 		"last_sync":      rfc3339(v.at),
-		"connected":      !hb.IsZero() && panelNow().Sub(hb) < 3*time.Minute,
+		"connected":      panelConnected(),
 		"plan":           nil,
 		"automode":       nil,
 		"monitor_mode":   v.monitorMode,

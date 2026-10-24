@@ -1,0 +1,1 @@
+{"agent_running":true,"connected":true,"generated_at":"2026-10-16T11:58:00Z","grade":"C","items":[{"detail":{"ports":[3306,6379]},"key":"exposed_ports","points":16},{"detail":{"failed":22,"total":43},"key":"hardening","points":12}],"ok":true,"score":72,"stale":false,"trend":[{"day":"2026-10-14","score":65},{"day":"2026-10-15","score":70},{"day":"2026-10-16","score":72}]}
