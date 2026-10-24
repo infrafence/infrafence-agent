@@ -1013,6 +1013,9 @@ func runAgent() {
 	// Background security monitors (port scan, flood, file integrity)
 	go runSecurityMonitors(apiClient)
 
+	// PHP configuration files: dangerous values and changed drop-ins.
+	go runPHPWatcher(apiClient)
+
 	// Fallback sync every 5 minutes: the safety net if a push and the
 	// heartbeat's config version are both missed.
 	go func() {

@@ -2,7 +2,8 @@
 // dashboard. Every fix is written so it can't take a production server down:
 //
 //   - nothing edits a main configuration file: each change lives in a file
-//     of its own (sshd_config.d, nginx conf.d, Apache conf-enabled/conf.d),
+//     of its own (sshd_config.d, nginx conf.d, Apache conf-enabled/conf.d,
+//     the PHP scan directory: php.go),
 //     so undoing it means deleting that file;
 //   - the service's own config test must pass (sshd -t, nginx -t,
 //     apachectl configtest) and the new value must actually be in effect,
@@ -35,6 +36,7 @@ const (
 	ReasonManaged      = "managed"       // a hosting panel or config management owns the files
 	ReasonUnsupported  = "unsupported"   // this host's layout isn't one we can change safely
 	ReasonNoAutomation = "no_automation" // there is no automatic fix for this check
+	ReasonManualOnly   = "manual_only"   // set in a file InfraFence doesn't change (a PHP-FPM pool's own file): fix it there by hand
 )
 
 // Host is what the fixes need from the system; tests replace it.
@@ -66,6 +68,7 @@ func (osHost) Chmod(path string, mode os.FileMode) error         { return os.Chm
 func (osHost) Symlink(oldname, newname string) error             { return os.Symlink(oldname, newname) }
 func (osHost) MkdirAll(path string, perm os.FileMode) error      { return os.MkdirAll(path, perm) }
 func (osHost) WriteFile(p string, d []byte, m os.FileMode) error { return os.WriteFile(p, d, m) }
+func (osHost) Rename(oldpath, newpath string) error              { return os.Rename(oldpath, newpath) }
 
 // System is the real host.
 var System Host = osHost{}
@@ -133,6 +136,9 @@ type Policy struct {
 // Availability reports whether checkID has an automatic fix on this host,
 // and if not, why.
 func Availability(checkID string, p Policy) (bool, string) {
+	if IsPHPCheck(checkID) {
+		return phpAvailability(System, checkID, p)
+	}
 	if r, ok := manual[checkID]; ok {
 		return false, r
 	}
@@ -151,6 +157,15 @@ var ErrNotFixable = errors.New("no automatic fix for this check on this server")
 
 // Apply fixes one check. The returned message says what was changed.
 func Apply(h Host, checkID string, p Policy) (string, error) {
+	if IsPHPCheck(checkID) {
+		if reason, err := phpFixable(h, checkID, p); reason != "" {
+			if err != nil {
+				return "", fmt.Errorf("%w: %v", ErrNotFixable, err)
+			}
+			return "", ErrNotFixable
+		}
+		return applyPHP(h, checkID, p, true)
+	}
 	if ok, _ := Availability(checkID, p); !ok {
 		return "", ErrNotFixable
 	}
@@ -172,6 +187,9 @@ func Apply(h Host, checkID string, p Policy) (string, error) {
 // stricter mode never breaks anything and loosening it again would reopen
 // the problem).
 func Revert(h Host, checkID string) (string, error) {
+	if IsPHPCheck(checkID) {
+		return applyPHP(h, checkID, Policy{}, false)
+	}
 	f, ok := fixes[checkID]
 	if !ok {
 		return "", ErrNotFixable
@@ -190,6 +208,9 @@ func Revert(h Host, checkID string) (string, error) {
 // Reversible reports whether Revert really undoes the fix (permission fixes
 // are left as they are).
 func Reversible(checkID string) bool {
+	if IsPHPCheck(checkID) {
+		return true
+	}
 	f, ok := fixes[checkID]
 	return ok && f.kind != kindPerm
 }
@@ -237,6 +258,9 @@ func RemoveAll(h Host) ([]string, error) {
 			}
 		}
 	}
+	phpDone, phpErrs := removePHPDropIns(h)
+	done = append(done, phpDone...)
+	errs = append(errs, phpErrs...)
 	return done, errors.Join(errs...)
 }
 

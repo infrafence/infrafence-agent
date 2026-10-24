@@ -42,6 +42,7 @@ func Run() []Finding {
 	findings = append(findings, checkSecurityUpdates()...)
 	findings = append(findings, checkPHPVersion()...)
 	findings = append(findings, checkPanelPHPHandlers()...)
+	findings = append(findings, checkPHPConfig()...)
 	findings = append(findings, checkMySQLVersion()...)
 	findings = append(findings, checkOpenSSHVersion()...)
 	findings = append(findings, checkWebServerVersion()...)
