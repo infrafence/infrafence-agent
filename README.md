@@ -146,7 +146,7 @@ What InfraFence adds on top of the detectors above, each with its page in the [d
 - **Trust badge** — the “Monitored by InfraFence” badge links to a public trust page with the last check, the attacks blocked in the last 30 days and the protections active. To prove the domain is served by your server, the agent places a verification file, `/.well-known/infrafence-verification.txt`, in the site's document root, and removes it when the badge is turned off. It is not a certificate. [Trust badge](https://infrafence.com/features#trust-badge) · [See an example trust page](https://infrafence.com/trust/demo)
 - **Protection when the dashboard is unreachable** — bans, the allow list and country blocks stay in force, new attacks are still banned, and events wait in a queue. [When the dashboard is unreachable](https://infrafence.com/docs/dashboard-unreachable)
 - **Next to CSF and other tools** — InfraFence keeps to its own chains and never edits CSF's files or another tool's rules; after `csf -r` it puts its own rules back within seconds. [Coexistence with other security tools](https://infrafence.com/docs/coexistence)
-- **cPanel & WHM plugin** (early access) **and Plesk extension** (in development) — protection status, bans, findings, events and per-site scans inside the panel. [cPanel & WHM](https://infrafence.com/integrations/cpanel-whm) · [Hosting panels](https://infrafence.com/docs/hosting-panels)
+- **cPanel & WHM plugin** (available) **and Plesk extension** (in development) — protection status, bans, findings, events and per-site scans inside the panel. [cPanel & WHM](https://infrafence.com/integrations/cpanel-whm) · [Hosting panels](https://infrafence.com/docs/hosting-panels) · [WHM plugin](https://infrafence.com/docs/whm-plugin)
 
 ---
 
