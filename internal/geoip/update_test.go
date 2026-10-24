@@ -195,22 +195,49 @@ func TestUpdaterNeverDownloadsWithoutBlockedCountries(t *testing.T) {
 func TestUpdaterRequestRate(t *testing.T) {
 	f := &fakeDashboard{db: dbWith(t, "XX")}
 	u, _, _, _, c := newTestUpdater(t, f)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go u.Run(ctx)
-
-	// Syncs every few minutes for a day: one download.
-	for i := 0; i < 288; i++ {
-		u.Want(true)
-		waitFor(t, func() bool { return f.count() >= 1 })
+	runCtx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { u.Run(runCtx); close(done) }()
+	start := c.t
+	checkedAt := func(t time.Time) bool {
 		u.mu.Lock()
-		c.t = c.t.Add(5 * time.Minute)
+		defer u.mu.Unlock()
+		return u.lastCheck.Equal(t)
+	}
+
+	// Syncs every 5 minutes for just under a day (the last at 23:55): one
+	// download.
+	u.Want(true)
+	waitFor(t, func() bool { return checkedAt(start) })
+	for i := 1; i < 288; i++ {
+		u.mu.Lock()
+		c.t = start.Add(time.Duration(i) * 5 * time.Minute)
 		u.mu.Unlock()
+		u.Want(true)
 	}
 	time.Sleep(20 * time.Millisecond)
 	if n := f.count(); n != 1 {
-		t.Fatalf("%d requests in a day, want 1", n)
+		t.Fatalf("%d requests in under a day, want 1", n)
 	}
+
+	// 24 hours after the last check (not before) the next one is due.
+	u.mu.Lock()
+	c.t = start.Add(refreshEvery - time.Nanosecond)
+	u.mu.Unlock()
+	if u.due() {
+		t.Fatal("due before 24 hours")
+	}
+	u.mu.Lock()
+	c.t = start.Add(refreshEvery)
+	u.mu.Unlock()
+	u.Want(true)
+	waitFor(t, func() bool { return checkedAt(start.Add(refreshEvery)) })
+	if n := f.count(); n != 2 {
+		t.Fatalf("%d requests a day after the first, want 2", n)
+	}
+	stop()
+	<-done // no check of Run's in flight below
+	ctx := context.Background()
 
 	// Failures back off: 1 h, 2 h, 4 h... never more than a day; a
 	// Retry-After longer than that is honoured.
