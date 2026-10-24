@@ -214,6 +214,23 @@ check_deps() {
         return 0
     fi
 
+    # On Fedora "dnf install iptables" picks iptables-legacy, while the
+    # system's own tools (firewalld, nftables) use nf_tables and CSF's
+    # installer switches iptables to iptables-nft: the agent's rules would
+    # end up in a second backend. Ask for iptables-nft by name first (RHEL
+    # 8 and older have no such package: plain iptables there).
+    if command -v rpm &>/dev/null && [[ " ${missing[*]} " == *" iptables "* ]]; then
+        info "Installing iptables-nft..."
+        if install_packages iptables-nft >/dev/null 2>&1 && command -v iptables &>/dev/null; then
+            local rest=() m
+            for m in "${missing[@]}"; do
+                [[ "$m" == iptables ]] || rest+=("$m")
+            done
+            [[ ${#rest[@]} -eq 0 ]] && return 0
+            missing=("${rest[@]}")
+        fi
+    fi
+
     warn "Installing/updating dependencies: ${missing[*]}"
     install_packages "${missing[@]}" || dep_install_failed "$PKG_ERROR"
 }

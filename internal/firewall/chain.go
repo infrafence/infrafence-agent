@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -118,7 +119,7 @@ func command(stdin, name string, args ...string) (string, error) {
 // failing at once while another tool (csf, fail2ban) holds it. Versions
 // older than 1.6 lack "-w <seconds>", so support is probed once per binary.
 var (
-	waitBins = map[string]bool{"iptables": true, "ip6tables": true, "iptables-restore": true, "ip6tables-restore": true}
+	waitBins = map[string]bool{"iptables": true, "ip6tables": true, "iptables-restore": true, "ip6tables-restore": true, "iptables-legacy": true, "ip6tables-legacy": true}
 	waitOK   sync.Map // binary name -> bool
 )
 
@@ -221,12 +222,26 @@ func subJumps() []string {
 }
 
 // ensureSets (re)creates and repopulates the ipsets the chain references.
+// A set can also survive emptied: "csf -r" with LF_IPSET=1 flushes every
+// set before destroying it, and the destroy fails for a set that a rule
+// still references (in the other iptables backend, say); a set left with
+// fewer entries than it should have is filled again.
 func (s *fwState) ensureSets() (repaired []string) {
 	existing := map[string]bool{}
 	if out, err := run("ipset", "list", "-n"); err == nil {
 		for _, n := range strings.Fields(out) {
 			existing[n] = true
 		}
+	}
+	// Entries per set, from one listing of every set's header, read the
+	// first time a set that exists may need them.
+	var entries map[string]int
+	count := func(name string) (int, bool) {
+		if entries == nil {
+			entries = setEntries()
+		}
+		n, ok := entries[name]
+		return n, ok
 	}
 	if !existing[banSetName] {
 		if err := createIpsetHashIP(banSetName); err == nil {
@@ -237,6 +252,16 @@ func (s *fwState) ensureSets() (repaired []string) {
 			_ = ipsetBatchAdd(banSetName, ips)
 			repaired = append(repaired, "set:"+banSetName)
 		}
+	} else if ips, settled := s.v4Bans(); len(ips) > 0 {
+		if n, ok := count(banSetName); ok && n < len(ips) {
+			if err := refillSet(banSetName, ips); err != nil {
+				log.Printf("[firewall] ban set: %v", err)
+			} else if n < settled {
+				// (A ban just recorded may not be in the set yet: the
+				// ipset add follows, outside the lock. Not a repair.)
+				repaired = append(repaired, "set-contents:"+banSetName)
+			}
+		}
 	}
 	allow := s.allowEntries()
 	if len(allow) > 0 {
@@ -246,16 +271,14 @@ func (s *fwState) ensureSets() (repaired []string) {
 			repaired = append(repaired, "set:"+allowSetName)
 		}
 	}
-	if s.threat != nil && !existing[threatSetName] {
-		if err := replaceNetSet(threatSetName, s.threat); err == nil {
-			repaired = append(repaired, "set:"+threatSetName)
+	if s.threat != nil {
+		if what := netSetRepair(threatSetName, s.threat, existing[threatSetName], count); what != "" {
+			repaired = append(repaired, what)
 		}
 	}
 	for set, cidrs := range s.geo {
-		if !existing[set] {
-			if err := replaceNetSet(set, cidrs); err == nil {
-				repaired = append(repaired, "set:"+set)
-			}
+		if what := netSetRepair(set, cidrs, existing[set], count); what != "" {
+			repaired = append(repaired, what)
 		}
 	}
 	s.egressSetErr = s.ensureEgressSet()
@@ -265,6 +288,77 @@ func (s *fwState) ensureSets() (repaired []string) {
 		repaired = append(repaired, "set:"+egressSetName)
 	}
 	return repaired
+}
+
+// v4Bans are the bans the ban set holds (a hash:ip set of family inet),
+// and how many of them are older than banSettle.
+func (s *fwState) v4Bans() (ips []string, settled int) {
+	cutoff := banNow().Add(-banSettle)
+	for ip, b := range s.bans {
+		if p := net.ParseIP(ip); p != nil && p.To4() != nil {
+			ips = append(ips, ip)
+			if b.added.Before(cutoff) {
+				settled++
+			}
+		}
+	}
+	sort.Strings(ips)
+	return ips, settled
+}
+
+// banSettle is how long a new ban may take to reach the ban set.
+const banSettle = 30 * time.Second
+
+// netSetRepair recreates a missing hash:net set, or refills one that has
+// been emptied, and names the repair ("" for none).
+func netSetRepair(name string, cidrs []string, exists bool, count func(string) (int, bool)) string {
+	if exists {
+		if n, ok := count(name); !ok || n > 0 || len(cidrs) == 0 {
+			return ""
+		}
+	}
+	if err := replaceNetSet(name, cidrs); err != nil {
+		return ""
+	}
+	if exists {
+		return "set-contents:" + name
+	}
+	return "set:" + name
+}
+
+// setEntries reads every set's number of entries from the headers "ipset
+// list -t" prints; a set whose count cannot be read is left out.
+func setEntries() map[string]int {
+	counts := map[string]int{}
+	out, err := run("ipset", "list", "-t")
+	if err != nil {
+		return counts
+	}
+	name := ""
+	for _, l := range strings.Split(out, "\n") {
+		l = strings.TrimSpace(l)
+		if v, found := strings.CutPrefix(l, "Name:"); found {
+			name = strings.TrimSpace(v)
+		} else if v, found := strings.CutPrefix(l, "Number of entries:"); found && name != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				counts[name] = n
+			}
+			name = ""
+		}
+	}
+	return counts
+}
+
+// refillSet adds ips to a set again (those still in it are kept).
+func refillSet(name string, ips []string) error {
+	var b strings.Builder
+	for _, ip := range ips {
+		fmt.Fprintf(&b, "add %s %s -exist\n", name, ip)
+	}
+	if out, err := runStdin(b.String(), "ipset", "restore"); err != nil {
+		return fmt.Errorf("ipset restore %s: %s (%w)", name, out, err)
+	}
+	return nil
 }
 
 // replaceNetSet atomically replaces the contents of a hash:net set.
@@ -656,6 +750,8 @@ func Ensure() (EnsureResult, error) {
 	}
 	res.Repairs = append(res.Repairs, ensureDockerJump()...)
 	res.Repairs = append(res.Repairs, fw.ensurePorts6()...)
+	// Only now, and only what is in force in nf_tables.
+	res.Repairs = append(res.Repairs, removeStaleLegacy(peErr == nil, fw.v6InForce, false)...)
 	fw.initialized = true
 	return res, peErr
 }
@@ -778,33 +874,10 @@ func RestoreAllowList(entries []string) {
 // RemoveAll removes every chain, jump and set InfraFence created. Used by
 // "infrafence-agent uninstall --clean".
 func RemoveAll() []string {
-	var done []string
-	for _, c := range []struct{ chain, comment, target string }{
-		{"INPUT", jumpComment, chainName},
-		{"INPUT", rulesComment, rulesChainName},
-		{dockerChain, jumpComment, chainName},
-		{"OUTPUT", egressComment, egressChainName},
-	} {
-		for {
-			if _, err := run("iptables", append([]string{"-D", c.chain}, jumpArgs(c.comment, c.target)...)...); err != nil {
-				break
-			}
-			done = append(done, "jump:"+c.chain+"->"+c.target)
-		}
-	}
+	done := removeChainsOf("iptables")
 	migrateLegacy()
 	done = append(done, removePorts6()...)
-	// Flush all first: INFRAFENCE jumps to the ports and egress chains.
-	var flushed []string
-	for _, ch := range ourChains {
-		if _, err := run("iptables", "-F", ch); err == nil {
-			flushed = append(flushed, ch)
-		}
-	}
-	for _, ch := range flushed {
-		_, _ = run("iptables", "-X", ch)
-		done = append(done, "chain:"+ch)
-	}
+	done = append(done, removeStaleLegacy(true, true, true)...)
 	if HasIpset() {
 		if out, err := run("ipset", "list", "-n"); err == nil {
 			for _, n := range strings.Fields(out) {
@@ -817,4 +890,119 @@ func RemoveAll() []string {
 		}
 	}
 	return done
+}
+
+// removeChainsOf removes the agent's IPv4 jumps and chains with bin
+// (iptables, or iptables-legacy for a backend the host left).
+func removeChainsOf(bin string) []string {
+	prefix := ""
+	if bin != "iptables" {
+		prefix = bin + ":"
+	}
+	var done []string
+	for _, c := range []struct{ chain, comment, target string }{
+		{"INPUT", jumpComment, chainName},
+		{"INPUT", rulesComment, rulesChainName},
+		{dockerChain, jumpComment, chainName},
+		{"OUTPUT", egressComment, egressChainName},
+	} {
+		for {
+			if _, err := run(bin, append([]string{"-D", c.chain}, jumpArgs(c.comment, c.target)...)...); err != nil {
+				break
+			}
+			done = append(done, "jump:"+prefix+c.chain+"->"+c.target)
+		}
+	}
+	// Flush all first: INFRAFENCE jumps to the ports and egress chains.
+	var flushed []string
+	for _, ch := range ourChains {
+		if _, err := run(bin, "-F", ch); err == nil {
+			flushed = append(flushed, ch)
+		}
+	}
+	for _, ch := range flushed {
+		_, _ = run(bin, "-X", ch)
+		done = append(done, "chain:"+prefix+ch)
+	}
+	return done
+}
+
+// The x_tables (legacy) tables loaded in the kernel, one name a line.
+var (
+	legacyTables4 = "/proc/net/ip_tables_names"
+	legacyTables6 = "/proc/net/ip6_tables_names"
+)
+
+// removeStaleLegacy removes the agent's chains from the legacy backend
+// when iptables (ip6tables for IPv6) is now the nf_tables one: on Fedora
+// "dnf install iptables" gives iptables-legacy, and CSF's installer
+// switches the iptables command to iptables-nft once that is installed.
+// The agent then rebuilds everything in nf_tables, and the legacy copy is
+// stale: it keeps closed ports and dashboard rules that were changed since,
+// and its references keep the sets from being destroyed. Only ever the
+// agent's own jumps and chains, and only where the nf_tables copy is in
+// force (v4, v6: false while its rules were refused there, so the legacy
+// copy stays the one that works). Left alone while Docker's DOCKER-USER
+// chain is only in legacy (Docker still runs on that backend until it
+// restarts): there the legacy jump is what protects published ports;
+// uninstall removes them all the same. Nothing when the legacy filter table is not loaded (listing it would load
+// it).
+func removeStaleLegacy(v4, v6, uninstall bool) []string {
+	v4 = v4 && tableLoaded(legacyTables4, "filter")
+	v6 = v6 && tableLoaded(legacyTables6, "filter")
+	if !v4 && !v6 {
+		return nil
+	}
+	isNft := func(bin string) bool {
+		out, err := run(bin, "-V")
+		return err == nil && strings.Contains(out, "nf_tables")
+	}
+	legacy := func(bin string) string {
+		out, err := run(bin, "-S")
+		if err != nil || !strings.Contains(out, chainName) {
+			return ""
+		}
+		return out
+	}
+	// Docker still on legacy: our jump from its DOCKER-USER is there, and
+	// the nf_tables backend has no DOCKER-USER chain.
+	dockerOnLegacy := func(bin, legacyRules, comment, target string) bool {
+		if uninstall {
+			return false
+		}
+		_, nftDocker := currentRulesOf(bin, dockerChain)
+		return !nftDocker && strings.Contains(legacyRules, jumpLine(dockerChain, comment, target))
+	}
+	var done []string
+	if v4 && isNft("iptables") {
+		if out := legacy("iptables-legacy"); out != "" {
+			if dockerOnLegacy("iptables", out, jumpComment, chainName) {
+				log.Printf("[firewall] the agent's rules are also in the iptables-legacy backend, kept while Docker uses it")
+			} else {
+				done = append(done, removeChainsOf("iptables-legacy")...)
+			}
+		}
+	}
+	if v6 && isNft("ip6tables") {
+		if out := legacy("ip6tables-legacy"); out != "" && !dockerOnLegacy("ip6tables", out, ports6Comment, portsChainName) {
+			done = append(done, removePorts6Of("ip6tables-legacy")...)
+		}
+	}
+	if len(done) > 0 {
+		log.Printf("[firewall] removed the agent's stale rules from the iptables-legacy backend (iptables is nf_tables now): %v", done)
+	}
+	return done
+}
+
+func tableLoaded(file, table string) bool {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return false
+	}
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(l) == table {
+			return true
+		}
+	}
+	return false
 }

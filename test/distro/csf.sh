@@ -11,9 +11,14 @@
 # the ban within RESTORE_MAX seconds (the guard looks for its INPUT jump
 # every 5 s), while SSH answers the client throughout and CSF's own rules
 # stay exactly as CSF wrote them. "panel coexistence" must report CSF with mode
-# coexist. Sets R_CSF (ok|fail|skip: CSF cannot be installed or started in
-# this image, with the reason); appends to EXTRA_RESULT and sets
-# EXTRA_FAIL=1 on a failure.
+# coexist. OpenSSH 9.8+ (Fedora 41/42, Debian 13) refuses a source after
+# repeated connections that never authenticate (PerSourcePenalties): the
+# client's banner probes are exactly that, so the client is exempted for
+# the test, and the exemption removed afterwards. CSF's installer switches
+# iptables to iptables-nft when it is installed ("update-alternatives
+# --set" in its os.pl); the switch is logged. Sets R_CSF (ok|fail|skip: CSF
+# cannot be installed or started in this image, with the reason); appends
+# to EXTRA_RESULT and sets EXTRA_FAIL=1 on a failure.
 R_CSF=fail
 API=http://127.0.0.1:8080
 AGENT=/usr/local/bin/infrafence-agent
@@ -76,6 +81,17 @@ csf_rules() {
 }
 csf_set() { sed -i "s/^$1 = \".*\"/$1 = \"$2\"/" /etc/csf/csf.conf; }
 
+# sshd's per-source penalties would refuse the client's probes on their own.
+SSHD_EXEMPT=/etc/ssh/sshd_config.d/00-infrafence-csf-test.conf
+reload_sshd() { systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true; }
+if [ -d /etc/ssh/sshd_config.d ] && sshd -T -o "PerSourcePenaltyExemptList=$CLIENT" >/dev/null 2>&1; then
+  echo "PerSourcePenaltyExemptList $CLIENT" >"$SSHD_EXEMPT"
+  reload_sshd
+  log "csf: sshd per-source penalties: $CLIENT exempted for the test"
+fi
+backend() { iptables -V 2>/dev/null | grep -o '(.*)' || echo none; }
+backend_before=$(backend)
+
 # ── install CSF ──
 if [ -z "$csf_skip" ]; then
   # (Three tries: a mirror that drops a connection is not the image's fault.)
@@ -104,6 +120,7 @@ if [ -z "$csf_skip" ]; then
        [ ! -x /usr/sbin/csf ]; then
     csf_skip=installer; tail -10 /tmp/csf-install.log
   fi
+  [ "$(backend)" = "$backend_before" ] || log "csf: CSF's install switched iptables from $backend_before to $(backend)"
 fi
 if [ -z "$csf_skip" ]; then
   csf_set TESTING 0
@@ -201,6 +218,7 @@ for c in INPUT OUTPUT FORWARD; do iptables -P $c ACCEPT 2>/dev/null; done
 # (The agent's chains go too; its restart below puts them back.)
 iptables -S 2>/dev/null | grep -q LOCALINPUT && { iptables -F; iptables -X; log "csf: rules left after its uninstall, flushed"; }
 systemctl restart infrafence-agent
+if [ -e "$SSHD_EXEMPT" ]; then rm -f "$SSHD_EXEMPT"; reload_sshd; fi
 ip netns pids c5 2>/dev/null | xargs -r kill 2>/dev/null
 ip netns pids c6 2>/dev/null | xargs -r kill 2>/dev/null
 EXTRA_RESULT="${EXTRA_RESULT:-} csf=${R_CSF}${csf_skip:+ csf_skip=$csf_skip}${csf_times:+ csf_restore_s=$csf_times}"

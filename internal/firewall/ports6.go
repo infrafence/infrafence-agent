@@ -121,17 +121,23 @@ func removePorts6() (done []string) {
 	if !hasIp6tables() {
 		return nil
 	}
+	return removePorts6Of("ip6tables")
+}
+
+// removePorts6Of removes the IPv6 closed-port jumps and chain with bin
+// (ip6tables, or ip6tables-legacy for a backend the host left).
+func removePorts6Of(bin string) (done []string) {
 	for _, chain := range []string{"INPUT", dockerChain} {
 		for {
-			if _, err := run("ip6tables", append([]string{"-D", chain}, jumpArgs(ports6Comment, portsChainName)...)...); err != nil {
+			if _, err := run(bin, append([]string{"-D", chain}, jumpArgs(ports6Comment, portsChainName)...)...); err != nil {
 				break
 			}
-			done = append(done, "jump:ip6tables:"+chain+"->"+portsChainName)
+			done = append(done, "jump:"+bin+":"+chain+"->"+portsChainName)
 		}
 	}
-	if _, err := run("ip6tables", "-F", portsChainName); err == nil {
-		_, _ = run("ip6tables", "-X", portsChainName)
-		done = append(done, "chain:ip6tables:"+portsChainName)
+	if _, err := run(bin, "-F", portsChainName); err == nil {
+		_, _ = run(bin, "-X", portsChainName)
+		done = append(done, "chain:"+bin+":"+portsChainName)
 	}
 	return done
 }
