@@ -661,6 +661,7 @@ func urgentEvent(e EventRequest) bool {
 		strings.HasPrefix(t, "quarantine_"),
 		strings.HasPrefix(t, "firewall_"),
 		strings.HasPrefix(t, "virtual_patch_"),
+		strings.HasPrefix(t, "trust_token_"),
 		strings.HasPrefix(t, "update_"),
 		strings.HasSuffix(t, "_after_update"):
 		return true
