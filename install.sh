@@ -72,6 +72,7 @@ parse_args() {
     FORCE_REGISTER=false
     DRY_RUN=false
     NO_IPSET=false
+    SKIP_CHECKSUM=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --token)
@@ -93,6 +94,11 @@ parse_args() {
                 ;;
             --no-ipset)
                 NO_IPSET=true
+                shift
+                ;;
+            --skip-checksum)
+                # Unsafe: installs a binary that was not verified.
+                SKIP_CHECKSUM=true
                 shift
                 ;;
             --uninstall)
@@ -502,15 +508,29 @@ download_binary() {
         exit 1
     fi
 
-    # Verify checksum if available
+    # The checksum is required: without it nothing is installed (unless
+    # --skip-checksum, which is unsafe). On any failure both files go.
     local checksum_url="${RELEASE_BASE}/${BINARY_NAME}-linux-${arch}.sha256"
-    if curl -fsSL -o "${tmp}.sha256" "$checksum_url" 2>/dev/null; then
-        local expected actual
-        expected="$(awk '{print $1}' "${tmp}.sha256")"
-        actual="$(sha256sum "$tmp" | awk '{print $1}')"
-        [[ "$expected" == "$actual" ]] || error "Checksum mismatch. Binary may be corrupted."
-        success "Checksum verified."
+    if [[ "$SKIP_CHECKSUM" == true ]]; then
+        warn "--skip-checksum: the downloaded binary is NOT verified. Use this only if you know why the checksum can't be fetched."
+    else
+        local expected="" actual=""
+        if ! curl -fsSL --max-time 30 -o "${tmp}.sha256" "$checksum_url" 2>/dev/null; then
+            rm -f "$tmp" "${tmp}.sha256"
+            report_status "download_failed" "Checksum not available from ${checksum_url}"
+            error "Could not download the checksum from ${checksum_url}, so the agent can't be verified and was not installed.
+  See https://infrafence.com/docs/troubleshooting or write to info@infrafence.com."
+        fi
+        expected="$(awk '{print $1}' "${tmp}.sha256" 2>/dev/null)"
+        actual="$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')"
         rm -f "${tmp}.sha256"
+        if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]] || [[ "$expected" != "$actual" ]]; then
+            rm -f "$tmp"
+            report_status "download_failed" "Checksum mismatch"
+            error "Checksum mismatch: the downloaded agent is not the published release and was not installed.
+  See https://infrafence.com/docs/troubleshooting or write to info@infrafence.com."
+        fi
+        success "Checksum verified."
     fi
 
     chmod +x "$tmp"

@@ -64,10 +64,26 @@ func main() {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 
+	// Test control: /checksum?mode=missing (404) or mode=bad (another
+	// file's) for the release checksum; mode=ok: the right one.
+	var checksum atomic.Value
+	checksum.Store("ok")
 	mux := http.NewServeMux()
+	mux.HandleFunc("/checksum", func(w http.ResponseWriter, r *http.Request) {
+		checksum.Store(r.URL.Query().Get("mode"))
+		reply(w, map[string]any{"status": "ok"})
+	})
 	mux.HandleFunc("/releases/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, ".sha256") {
-			_, _ = io.WriteString(w, hex.EncodeToString(sum[:])+"  infrafence-agent\n")
+			switch checksum.Load() {
+			case "missing":
+				http.NotFound(w, r)
+			case "bad":
+				other := sha256.Sum256([]byte("not the agent"))
+				_, _ = io.WriteString(w, hex.EncodeToString(other[:])+"  infrafence-agent\n")
+			default:
+				_, _ = io.WriteString(w, hex.EncodeToString(sum[:])+"  infrafence-agent\n")
+			}
 			return
 		}
 		_, _ = w.Write(bin)

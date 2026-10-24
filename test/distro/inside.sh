@@ -78,6 +78,23 @@ if [ $rc -ne 1 ] || ! grep -q "infrafence.com/docs/troubleshooting" /tmp/dryrun-
    || grep -q "infrafence.com/downloads" /tmp/dryrun-fail.log; then
   R_DRYRUN=fail; log "failed download: rc=$rc"; tail -20 /tmp/dryrun-fail.log
 fi
+# The checksum is required: missing or wrong, nothing is kept; only
+# --skip-checksum (unsafe) goes on without it.
+tmps=$(ls /tmp | wc -l)
+for mode in missing bad; do
+  curl -s "http://127.0.0.1:8080/checksum?mode=$mode" >/dev/null
+  RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run >/tmp/dryrun-sum.log 2>&1
+  rc=$?
+  want="Could not download the checksum"; [ $mode = bad ] && want="Checksum mismatch"
+  if [ $rc -ne 1 ] || ! grep -q "$want" /tmp/dryrun-sum.log || ! grep -q "docs/troubleshooting" /tmp/dryrun-sum.log \
+     || [ "$(ls /tmp | wc -l)" -ne $((tmps + 1)) ]; then
+    R_DRYRUN=fail; log "checksum $mode: rc=$rc"; tail -10 /tmp/dryrun-sum.log; ls -la /tmp
+  fi
+  rm -f /tmp/dryrun-sum.log
+done
+RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run --skip-checksum >/tmp/dryrun-skip.log 2>&1 \
+  && grep -q "NOT verified" /tmp/dryrun-skip.log || { R_DRYRUN=fail; log "--skip-checksum:"; tail -10 /tmp/dryrun-skip.log; }
+curl -s "http://127.0.0.1:8080/checksum?mode=ok" >/dev/null
 EXTRA_RESULT="${EXTRA_RESULT:-} dryrun=${R_DRYRUN}"
 [ "$R_DRYRUN" = ok ] || EXTRA_FAIL=1
 
