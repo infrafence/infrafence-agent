@@ -49,6 +49,13 @@ if bash /distro/install.sh --dry-run >/tmp/dryrun.log 2>&1 \
 else
   log "dry run failed:"; tail -20 /tmp/dryrun.log; ls -d /tmp/infrafence-* 2>/dev/null
 fi
+# A failed download stops with the troubleshooting link and tries no mirror.
+RELEASE_BASE=http://127.0.0.1:9/releases bash /distro/install.sh --dry-run >/tmp/dryrun-fail.log 2>&1
+rc=$?
+if [ $rc -ne 1 ] || ! grep -q "infrafence.com/docs/troubleshooting" /tmp/dryrun-fail.log \
+   || grep -q "infrafence.com/downloads" /tmp/dryrun-fail.log; then
+  R_DRYRUN=fail; log "failed download: rc=$rc"; tail -20 /tmp/dryrun-fail.log
+fi
 EXTRA_RESULT="${EXTRA_RESULT:-} dryrun=${R_DRYRUN}"
 [ "$R_DRYRUN" = ok ] || EXTRA_FAIL=1
 

@@ -427,42 +427,35 @@ download_binary() {
     info "Downloading ${BINARY_NAME} (${arch}) from ${url}..."
 
     if ! curl -fsSL --progress-bar -o "$tmp" "$url"; then
-        # Fallback: try downloading from infrafence.com mirror
-        local fallback_url="https://infrafence.com/downloads/${BINARY_NAME}-linux-${arch}"
-        warn "GitHub download failed — trying infrafence.com mirror..."
-        if ! curl -fsSL --progress-bar -o "$tmp" "$fallback_url"; then
-            rm -f "$tmp"
-            local os_info
-            os_info="$(collect_system_info)"
-            echo ""
-            echo -e "${RED}${BOLD}  ✗ Download failed${NC}"
-            echo -e "  ──────────────────"
-            echo ""
-            echo -e "  Could not download the agent binary from:"
-            echo -e "  ${url}"
-            echo -e "  ${fallback_url}"
-            echo ""
-            echo -e "  This may be caused by:"
-            echo -e "  • No internet connectivity"
-            echo -e "  • Outdated CA certificates (try: apt-get install -y ca-certificates)"
-            echo -e "  • Firewall blocking github.com and infrafence.com"
-            echo ""
-            echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
-            echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
-            echo ""
-            echo -e "  Please include this info:"
-            echo -e "  ┌──────────────────────────────────────"
-            echo -e "  │ OS:   ${os_info}"
-            echo -e "  │ Arch: $(uname -m)"
-            echo -e "  │ Kernel: $(uname -r)"
-            echo -e "  │ Error: Download failed from both GitHub and mirror"
-            echo -e "  └──────────────────────────────────────"
-            echo ""
-            report_status "download_failed" "Download failed from ${url} and mirror"
-            exit 1
-        fi
-        # Use mirror for checksum too
-        RELEASE_BASE="https://infrafence.com/downloads"
+        rm -f "$tmp"
+        local os_info
+        os_info="$(collect_system_info)"
+        echo ""
+        echo -e "${RED}${BOLD}  ✗ Download failed${NC}"
+        echo -e "  ──────────────────"
+        echo ""
+        echo -e "  Could not download the agent binary from:"
+        echo -e "  ${url}"
+        echo ""
+        echo -e "  This may be caused by:"
+        echo -e "  • No internet connectivity"
+        echo -e "  • Outdated CA certificates (try: apt-get install -y ca-certificates)"
+        echo -e "  • Firewall blocking github.com (the release download is served from"
+        echo -e "    github.com and release-assets.githubusercontent.com)"
+        echo ""
+        echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+        echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
+        echo ""
+        echo -e "  Please include this info:"
+        echo -e "  ┌──────────────────────────────────────"
+        echo -e "  │ OS:   ${os_info}"
+        echo -e "  │ Arch: $(uname -m)"
+        echo -e "  │ Kernel: $(uname -r)"
+        echo -e "  │ Error: Download failed from ${url}"
+        echo -e "  └──────────────────────────────────────"
+        echo ""
+        report_status "download_failed" "Download failed from ${url}"
+        exit 1
     fi
 
     # Verify checksum if available
