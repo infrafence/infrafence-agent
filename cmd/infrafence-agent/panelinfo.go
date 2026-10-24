@@ -143,6 +143,9 @@ func fetchInfo(fetch func(context.Context) (any, error)) (fields map[string]any,
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, err
 	}
+	if fields == nil {
+		return nil, errors.New("empty answer")
+	}
 	return fields, nil
 }
 
