@@ -146,7 +146,7 @@ Ce qu'InfraFence ajoute aux détecteurs ci-dessus, chacun avec sa page dans la [
 - **Badge de surveillance** — le badge « Surveillé par InfraFence » renvoie vers une page de transparence publique avec l'heure de la dernière vérification, les attaques bloquées ces 30 derniers jours et les protections actives. Ce n'est pas un certificat. [Badge de surveillance](https://infrafence.com/fr/features#trust-badge) · [Voir un exemple de page de transparence](https://infrafence.com/fr/trust/demo)
 - **Protection même quand le tableau de bord est injoignable** — les bannissements, la liste blanche et les blocages par pays restent en vigueur, les nouvelles attaques sont toujours bannies et les événements attendent dans une file. [Quand le tableau de bord est injoignable](https://infrafence.com/fr/documentation/tableau-de-bord-injoignable)
 - **À côté de CSF et des autres outils** — InfraFence s'en tient à ses propres chaînes et ne modifie jamais les fichiers de CSF ni les règles d'un autre outil. [Coexistence avec d'autres outils de sécurité](https://infrafence.com/fr/documentation/coexistence)
-- **Plugins pour cPanel & WHM et Plesk** (accès anticipé) — état de la protection, bannissements, détections, événements et analyses par site dans le panneau. [cPanel & WHM](https://infrafence.com/fr/integrations/cpanel-whm) · [Panneaux d'hébergement](https://infrafence.com/fr/documentation/panneaux-d-hebergement)
+- **Plugin pour cPanel & WHM** (accès anticipé) **et extension pour Plesk** (en développement) — état de la protection, bannissements, détections, événements et analyses par site dans le panneau. [cPanel & WHM](https://infrafence.com/fr/integrations/cpanel-whm) · [Panneaux d'hébergement](https://infrafence.com/fr/documentation/panneaux-d-hebergement)
 
 ---
 

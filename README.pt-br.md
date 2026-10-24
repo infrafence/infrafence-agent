@@ -146,7 +146,7 @@ O que o InfraFence acrescenta aos detectores acima, cada um com sua página na [
 - **Selo de monitoramento** — o selo “Monitorado pelo InfraFence” leva a uma página de transparência pública com o horário da última verificação, os ataques bloqueados nos últimos 30 dias e as proteções ativas. Não é um certificado. [Selo de monitoramento](https://infrafence.com/pt-br/features#trust-badge) · [Ver um exemplo de página de transparência](https://infrafence.com/pt-br/trust/demo)
 - **Proteção mesmo com o painel inacessível** — bans, whitelist e bloqueios por país continuam valendo, novos ataques continuam sendo banidos e os eventos esperam numa fila. [Quando o painel está inacessível](https://infrafence.com/pt-br/documentacao/painel-inacessivel)
 - **Ao lado do CSF e de outras ferramentas** — o InfraFence fica nas próprias chains e nunca altera os arquivos do CSF nem as regras de outra ferramenta. [Coexistência com outras ferramentas de segurança](https://infrafence.com/pt-br/documentacao/coexistencia)
-- **Plugins para cPanel & WHM e Plesk** (acesso antecipado) — status da proteção, bans, achados, eventos e varreduras por site dentro do painel de hospedagem. [cPanel & WHM](https://infrafence.com/pt-br/integracoes/cpanel-whm) · [Painéis de hospedagem](https://infrafence.com/pt-br/documentacao/paineis-de-hospedagem)
+- **Plugin para cPanel & WHM** (acesso antecipado) **e extensão para Plesk** (em desenvolvimento) — status da proteção, bans, achados, eventos e varreduras por site dentro do painel de hospedagem. [cPanel & WHM](https://infrafence.com/pt-br/integracoes/cpanel-whm) · [Painéis de hospedagem](https://infrafence.com/pt-br/documentacao/paineis-de-hospedagem)
 
 ---
 

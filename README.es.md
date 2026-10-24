@@ -146,7 +146,7 @@ Lo que InfraFence añade a los detectores anteriores, cada uno con su página en
 - **Distintivo de monitorización** — el distintivo «Monitorizado por InfraFence» enlaza a una página de transparencia pública con la hora de la última comprobación, los ataques bloqueados en los últimos 30 días y las protecciones activas. No es un certificado. [Distintivo de monitorización](https://infrafence.com/es/features#trust-badge) · [Ver un ejemplo de página de transparencia](https://infrafence.com/es/trust/demo)
 - **Protección aunque el panel no esté disponible** — los baneos, la lista blanca y los bloqueos por país siguen vigentes, los nuevos ataques se siguen baneando y los eventos esperan en una cola. [Cuando el panel no está disponible](https://infrafence.com/es/documentacion/panel-no-disponible)
 - **Junto a CSF y otras herramientas** — InfraFence se limita a sus propias cadenas y nunca modifica los archivos de CSF ni las reglas de otras herramientas. [Coexistencia con otras herramientas de seguridad](https://infrafence.com/es/documentacion/coexistencia)
-- **Plugins para cPanel & WHM y Plesk** (acceso anticipado) — estado de la protección, baneos, hallazgos, eventos y escaneos por sitio dentro del panel de hosting. [cPanel & WHM](https://infrafence.com/es/integraciones/cpanel-whm) · [Paneles de hosting](https://infrafence.com/es/documentacion/paneles-de-hosting)
+- **Plugin para cPanel & WHM** (acceso anticipado) **y extensión para Plesk** (en desarrollo) — estado de la protección, baneos, hallazgos, eventos y escaneos por sitio dentro del panel de hosting. [cPanel & WHM](https://infrafence.com/es/integraciones/cpanel-whm) · [Paneles de hosting](https://infrafence.com/es/documentacion/paneles-de-hosting)
 
 ---
 

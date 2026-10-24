@@ -146,7 +146,7 @@ Cosa aggiunge InfraFence ai rilevatori qui sopra, ognuno con la sua pagina nella
 - **Badge di monitoraggio** — il badge «Monitorato da InfraFence» rimanda a una pagina di trasparenza pubblica con l'ora dell'ultimo controllo, gli attacchi bloccati negli ultimi 30 giorni e le protezioni attive. Non è un certificato. [Badge di monitoraggio](https://infrafence.com/it/funzionalita#trust-badge) · [Guarda un esempio di pagina di trasparenza](https://infrafence.com/it/trust/demo)
 - **Protezione anche quando la dashboard non risponde** — ban, whitelist e blocchi per paese restano attivi, i nuovi attacchi vengono comunque bannati e gli eventi aspettano in coda. [Quando la dashboard non è raggiungibile](https://infrafence.com/it/documentazione/dashboard-non-raggiungibile)
 - **Accanto a CSF e agli altri strumenti** — InfraFence usa solo le proprie catene e non modifica mai i file di CSF né le regole di altri strumenti. [Coesistenza con altri strumenti di sicurezza](https://infrafence.com/it/documentazione/coesistenza)
-- **Plugin per cPanel & WHM e Plesk** (accesso anticipato) — stato della protezione, ban, rilevamenti, eventi e scansioni per sito dentro il pannello. [cPanel & WHM](https://infrafence.com/it/integrazioni/cpanel-whm) · [Pannelli di hosting](https://infrafence.com/it/documentazione/pannelli-di-hosting)
+- **Plugin per cPanel & WHM** (accesso anticipato) **ed estensione per Plesk** (in sviluppo) — stato della protezione, ban, rilevamenti, eventi e scansioni per sito dentro il pannello. [cPanel & WHM](https://infrafence.com/it/integrazioni/cpanel-whm) · [Pannelli di hosting](https://infrafence.com/it/documentazione/pannelli-di-hosting)
 
 ---
 

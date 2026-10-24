@@ -146,7 +146,7 @@ Was InfraFence zu den Erkennungen oben hinzufügt, jeweils mit einer Seite in de
 - **Monitoring-Badge** — das Badge „Überwacht von InfraFence“ verlinkt auf eine öffentliche Transparenzseite mit dem Zeitpunkt der letzten Prüfung, den blockierten Angriffen der letzten 30 Tage und den aktiven Schutzfunktionen. Es ist kein Zertifikat. [Monitoring-Badge](https://infrafence.com/de/features#trust-badge) · [Beispiel einer Transparenzseite ansehen](https://infrafence.com/de/trust/demo)
 - **Schutz auch ohne erreichbares Dashboard** — Sperren, Whitelist und Ländersperren bleiben in Kraft, neue Angriffe werden weiter gesperrt, und Ereignisse warten in einer Warteschlange. [Wenn das Dashboard nicht erreichbar ist](https://infrafence.com/de/dokumentation/dashboard-nicht-erreichbar)
 - **Neben CSF und anderen Tools** — InfraFence bleibt in seinen eigenen Chains und ändert nie die Dateien von CSF oder die Regeln anderer Tools. [Koexistenz mit anderen Sicherheitstools](https://infrafence.com/de/dokumentation/koexistenz)
-- **Plugins für cPanel & WHM und Plesk** (Early Access) — Schutzstatus, Sperren, Funde, Ereignisse und Scans pro Website direkt im Panel. [cPanel & WHM](https://infrafence.com/de/integrationen/cpanel-whm) · [Hosting-Panels](https://infrafence.com/de/dokumentation/hosting-panels)
+- **Plugin für cPanel & WHM** (Early Access) **und Erweiterung für Plesk** (in Entwicklung) — Schutzstatus, Sperren, Funde, Ereignisse und Scans pro Website direkt im Panel. [cPanel & WHM](https://infrafence.com/de/integrationen/cpanel-whm) · [Hosting-Panels](https://infrafence.com/de/dokumentation/hosting-panels)
 
 ---
 
