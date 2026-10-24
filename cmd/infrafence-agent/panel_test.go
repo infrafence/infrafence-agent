@@ -105,6 +105,8 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	webRootsCache.roots = nil
 	sitesCache.sites = nil
 	panelOn.Store(true)
+	resetPanelInfoCache()
+	panelFetchMap, panelFetchScore = nil, nil
 	t.Cleanup(func() {
 		panelOn.Store(false)
 		panelStatePath = saved[0].(string)
@@ -136,6 +138,8 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 		resetPanelState()
 		webRootsCache.roots = nil
 		panelLastHeartbeat.Store(0)
+		resetPanelInfoCache()
+		panelFetchMap, panelFetchScore = nil, nil
 	})
 	return f
 }

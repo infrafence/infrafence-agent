@@ -96,6 +96,15 @@ func TestParseArgs(t *testing.T) {
 		{args: []string{"--json", "allow", "--actor=admin", "--note", "office", "2001:db8::1"}, want: Request{Command: "allow", IP: "2001:db8::1", Actor: "admin", Note: "office"}, json: true},
 		{args: []string{"events", "--since", "1h", "--limit", "5"}, want: Request{Command: "events", Limit: 5, Since: "2026-10-16T11:00:00Z"}},
 		{args: []string{"scan", "/home/alice/public_html", "--actor", "root"}, want: Request{Command: "scan", Path: "/home/alice/public_html", Actor: "root"}},
+		{args: []string{"map", "--json"}, want: Request{Command: "map", Hours: 24}, json: true},
+		{args: []string{"map", "--hours", "168", "--json"}, want: Request{Command: "map", Hours: 168}, json: true},
+		{args: []string{"map", "--hours=24"}, want: Request{Command: "map", Hours: 24}},
+		{args: []string{"score", "--json"}, want: Request{Command: "score"}, json: true},
+		{args: []string{"map", "--hours", "48"}, errCode: ErrBadRequest, errMatch: "24 or 168"},
+		{args: []string{"map", "--hours", "abc"}, errCode: ErrBadRequest},
+		{args: []string{"map", "--limit", "5"}, errCode: ErrBadRequest},
+		{args: []string{"score", "--hours", "24"}, errCode: ErrBadRequest},
+		{args: []string{"bans", "--hours", "24"}, errCode: ErrBadRequest},
 		{args: nil, errCode: ErrBadRequest},
 		{args: []string{"reboot"}, errCode: ErrUnknownCommand},
 		{args: []string{"unban", "203.0.113.7"}, errCode: ErrInvalidActor},
@@ -144,6 +153,10 @@ func TestValidateOnTheAgentSide(t *testing.T) {
 		{Request{Command: "bans", Limit: 100000}, ErrBadRequest},
 		{Request{Command: "events", Since: "yesterday"}, ErrBadRequest},
 		{Request{Command: "allow", IP: "203.0.113.7", Actor: "root", Note: "a\x00b"}, ErrBadRequest},
+		{Request{Command: "map", Hours: 168}, ""},
+		{Request{Command: "map", Hours: 48}, ErrBadRequest},
+		{Request{Command: "score", Hours: 24}, ErrBadRequest},
+		{Request{Command: "status", Hours: 24}, ErrBadRequest},
 	} {
 		req := c.req
 		resp := Validate(&req)
@@ -154,6 +167,10 @@ func TestValidateOnTheAgentSide(t *testing.T) {
 		if got != c.code {
 			t.Errorf("%+v: got %q, want %q", c.req, got, c.code)
 		}
+	}
+	m := Request{Command: "map"}
+	if Validate(&m) != nil || m.Hours != DefaultMapHours {
+		t.Errorf("map hours not defaulted: %+v", m)
 	}
 	req := Request{Command: "unban", IP: "::ffff:203.0.113.7", Actor: "root"}
 	if Validate(&req) != nil || req.IP != "203.0.113.7" || req.Limit != DefaultLimit {

@@ -34,6 +34,72 @@ fi
 /distro/mockapi -binary /distro/agent >/tmp/mockapi.log 2>&1 &
 sleep 1
 
+# ── dry run: no token needed, nothing changed, and the release download from
+# GitHub works (on RHEL-family hosts the dry run once replaced curl's CAs
+# with ISRG Root X1 alone, and github.com failed) ──
+R_DRYRUN=fail
+anchors=$(ls /etc/pki/ca-trust/source/anchors 2>/dev/null)
+if bash /distro/install.sh --dry-run >/tmp/dryrun.log 2>&1 \
+   && grep -q "Dry run — nothing was installed or changed" /tmp/dryrun.log \
+   && grep -q "needs --token" /tmp/dryrun.log \
+   && [ ! -e /usr/local/bin/infrafence-agent ] && [ ! -e /etc/infrafence ] \
+   && [ "$(ls /etc/pki/ca-trust/source/anchors 2>/dev/null)" = "$anchors" ] \
+   && ! ls /tmp/infrafence-ca-* /tmp/infrafence-isrg-* >/dev/null 2>&1; then
+  R_DRYRUN=ok
+else
+  log "dry run failed:"; tail -20 /tmp/dryrun.log; ls -d /tmp/infrafence-* 2>/dev/null
+fi
+# The Let's Encrypt root is embedded in install.sh (never downloaded): its
+# fingerprint is pinned, and a copy that doesn't match is not trusted.
+isrg_fp=96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6
+if command -v openssl >/dev/null; then
+  got=$(awk '/<<.ISRGEOF/{f=1;next} /^ISRGEOF$/{f=0} f' /distro/install.sh | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2)
+  [ "$got" = "$isrg_fp" ] || { R_DRYRUN=fail; log "embedded ISRG root: fingerprint $got"; }
+  [ "$(grep -v '^ *#' /distro/install.sh | grep -c 'letsencrypt.org/certs')" = 0 ] \
+    || { R_DRYRUN=fail; log "install.sh still downloads the root"; }
+  if command -v update-ca-trust >/dev/null; then
+    # One character of the certificate changed: refused, and the dry run
+    # goes on without it (RHEL's curl keeps its own CAs).
+    awk '/<<.ISRGEOF/{f=1;print;next} /^ISRGEOF$/{f=0} f&&!done&&/^MII/{sub(/^MII../,"MIIAA");done=1} {print}' \
+      /distro/install.sh >/tmp/install-badroot.sh
+    if ! bash /tmp/install-badroot.sh --dry-run >/tmp/dryrun-badroot.log 2>&1 \
+       || ! grep -q "does not match its fingerprint" /tmp/dryrun-badroot.log \
+       || grep -q "Let's Encrypt root CA bundle" /tmp/dryrun-badroot.log \
+       || ls /tmp/infrafence-ca-* >/dev/null 2>&1; then
+      R_DRYRUN=fail; log "dry run with a bad root:"; tail -20 /tmp/dryrun-badroot.log
+    fi
+    rm -f /tmp/install-badroot.sh
+  fi
+fi
+# A failed download stops with the troubleshooting link and tries no mirror.
+RELEASE_BASE=http://127.0.0.1:9/releases bash /distro/install.sh --dry-run >/tmp/dryrun-fail.log 2>&1
+rc=$?
+if [ $rc -ne 1 ] || ! grep -q "infrafence.com/docs/troubleshooting" /tmp/dryrun-fail.log \
+   || grep -q "infrafence.com/downloads" /tmp/dryrun-fail.log; then
+  R_DRYRUN=fail; log "failed download: rc=$rc"; tail -20 /tmp/dryrun-fail.log
+fi
+# The checksum is required: missing or wrong, nothing is kept; only
+# --skip-checksum (unsafe) goes on without it.
+tmps=$(find /tmp -mindepth 1 -maxdepth 1 | wc -l)
+for mode in missing bad; do
+  curl -s "http://127.0.0.1:8080/checksum?mode=$mode" >/dev/null
+  RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run >/tmp/dryrun-sum.log 2>&1
+  rc=$?
+  want="Could not download the checksum"; [ $mode = bad ] && want="Checksum mismatch"
+  if [ $rc -ne 1 ] || ! grep -q "$want" /tmp/dryrun-sum.log || ! grep -q "docs/troubleshooting" /tmp/dryrun-sum.log \
+     || [ "$(find /tmp -mindepth 1 -maxdepth 1 | wc -l)" -ne $((tmps + 1)) ]; then
+    R_DRYRUN=fail; log "checksum $mode: rc=$rc"; tail -10 /tmp/dryrun-sum.log; ls -la /tmp
+  fi
+  rm -f /tmp/dryrun-sum.log
+done
+if ! RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run --skip-checksum >/tmp/dryrun-skip.log 2>&1 \
+   || ! grep -q "NOT verified" /tmp/dryrun-skip.log; then
+  R_DRYRUN=fail; log "--skip-checksum:"; tail -10 /tmp/dryrun-skip.log
+fi
+curl -s "http://127.0.0.1:8080/checksum?mode=ok" >/dev/null
+EXTRA_RESULT="${EXTRA_RESULT:-} dryrun=${R_DRYRUN}"
+[ "$R_DRYRUN" = ok ] || EXTRA_FAIL=1
+
 # ── install with the real installer ──
 if INFRAFENCE_SERVER_URL=http://127.0.0.1:8080 RELEASE_BASE=http://127.0.0.1:8080/releases \
    INFRAFENCE_AGENT_NAME=distro-test bash /distro/install.sh --token distro-test >/tmp/install.log 2>&1; then

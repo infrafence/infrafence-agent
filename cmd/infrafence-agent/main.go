@@ -123,7 +123,8 @@ func printUsage() {
 	fmt.Println("  infrafence-agent uninstall --clean    remove every change InfraFence made to this host")
 	fmt.Println("  infrafence-agent panel <command> [args] --json   for the WHM and Plesk plugins (root only):")
 	fmt.Println("      status | bans | unban <ip> | allow <ip> | allowlist | disallow <ip> | findings | events |")
-	fmt.Println("      coexistence | sites | scan <path>   (changes need --actor <panel user>)")
+	fmt.Println("      coexistence | sites | scan <path> | map [--hours 24|168] | score")
+	fmt.Println("      (changes need --actor <panel user>)")
 }
 
 // runRegister performs first-boot registration and saves the config.

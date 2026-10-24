@@ -197,6 +197,7 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 |---|---|
 | `--dry-run` | Vérifie le serveur et affiche le plan ; ne modifie rien |
 | `--no-ipset` | N'installe pas `ipset` (les bannissements fonctionnent toujours, jusqu'à 500 ; le blocage par pays et par listes de menaces en a besoin) |
+| `--skip-checksum` | **Dangereux.** Installe même quand la somme de contrôle de la release ne peut pas être téléchargée (le binaire n'est pas vérifié). Uniquement pour un réseau qui bloque le fichier `.sha256` et rien d'autre |
 | `--uninstall` | Supprime l'agent et tout ce qu'il a ajouté |
 
 **Prérequis :** x86-64 ou ARM64, accès root, `iptables` ; systemd, upstart ou sysvinit. L'installateur utilise `apt`, `dnf` ou `yum` pour les dépendances manquantes et n'installe `ipset` que lorsque la vérification du serveur indique que c'est sans risque.
