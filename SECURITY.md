@@ -187,7 +187,7 @@ helm verify infrafence-agent-<version>.tgz
 Complete removal:
 
 ```bash
-curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --uninstall
+curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --uninstall
 ```
 
 Or manually:

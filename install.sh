@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # InfraFence Agent Installer
-# Usage: curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <INSTALL_TOKEN>
+# Usage: curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --token <INSTALL_TOKEN>
 #   (registers against https://infrafence.com by default)
 # Custom/self-hosted server: INFRAFENCE_SERVER_URL=https://... INFRAFENCE_AGENT_NAME=web-01 curl -fsSL ... | sudo bash -s -- --token <TOKEN>
 # Install only (no registration): curl -fsSL ... | sudo bash -s -- --install-only
@@ -13,7 +13,7 @@
 #   One-time fix — run these THREE commands, then retry the install:
 #     curl -sk https://letsencrypt.org/certs/isrgrootx1.pem -o /tmp/isrg.pem
 #     export CURL_CA_BUNDLE=/tmp/isrg.pem
-#     curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <TOKEN>
+#     curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --token <TOKEN>
 
 set -euo pipefail
 
@@ -174,8 +174,8 @@ dep_install_failed() {
     echo -e "    apt-get update --fix-missing && apt-get install -y ca-certificates curl iptables"
     echo -e "    ${CYAN}# Then re-run the installer${NC}"
     echo ""
-    echo -e "  ${BOLD}If the problem persists, open a support ticket at:${NC}"
-    echo -e "  ${CYAN}https://infrafence.com/tickets/create${NC}"
+    echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+    echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
     echo ""
     echo -e "  Please include this info:"
     echo -e "  ┌──────────────────────────────────────"
@@ -432,8 +432,8 @@ download_binary() {
             echo -e "  • Outdated CA certificates (try: apt-get install -y ca-certificates)"
             echo -e "  • Firewall blocking github.com and infrafence.com"
             echo ""
-            echo -e "  ${BOLD}If the problem persists, open a support ticket at:${NC}"
-            echo -e "  ${CYAN}https://infrafence.com/tickets/create${NC}"
+            echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+            echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
             echo ""
             echo -e "  Please include this info:"
             echo -e "  ┌──────────────────────────────────────"
@@ -539,8 +539,8 @@ register_agent() {
         echo -e "  • Server URL is unreachable"
         echo -e "  • Server limit reached for your plan"
         echo ""
-        echo -e "  ${BOLD}If the problem persists, open a support ticket at:${NC}"
-        echo -e "  ${CYAN}https://infrafence.com/tickets/create${NC}"
+        echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+        echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
         echo ""
         echo -e "  Please include this info:"
         echo -e "  ┌──────────────────────────────────────"
@@ -739,7 +739,7 @@ install_service_systemd() {
     cat > "$service_file" <<EOF
 [Unit]
 Description=InfraFence Security Agent
-Documentation=https://infrafence.com/docs/agent
+Documentation=https://infrafence.com/docs
 After=network-online.target
 Wants=network-online.target
 
@@ -1057,7 +1057,7 @@ main() {
             sysvinit) echo "    /etc/init.d/${SERVICE_NAME} start" ;;
         esac
         echo ""
-        echo "  Get your token at: https://infrafence.com/dashboard"
+        echo "  Get your token at: https://infrafence.com/add-server"
         echo ""
         exit 0
     fi

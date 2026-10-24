@@ -14,7 +14,7 @@
 <h3 align="center">Pare o ataque. Corrija o que o deixou entrar.</h3>
 
 <p align="center">
-  Agente Go leve para servidores Linux que detecta ataques em tempo real e os bloqueia automaticamente — na entrada e na saída.<br>
+  O InfraFence bloqueia ataques aos seus servidores Linux na hora, na entrada e na saída. Depois reforça a configuração, aplica os patches e confere o resultado, e desfaz qualquer correção que quebre algo.<br>
   Força bruta SSH, ataques web, bots, malware, ameaças DNS e de saída, integridade de arquivos, Docker — com padrões seguros, gerenciado a partir de um único painel.
 </p>
 
@@ -27,8 +27,9 @@
 </p>
 
 <p align="center">
-  <a href="https://infrafence.com">Site</a> ·
-  <a href="https://infrafence.com/pricing">Preços</a> ·
+  <a href="https://infrafence.com/pt-br/">Site</a> ·
+  <a href="https://infrafence.com/pt-br/pricing">Preços</a> ·
+  <a href="https://infrafence.com/pt-br/documentacao">Documentação</a> ·
   <a href="CHANGELOG.md">Changelog</a> ·
   <a href="https://github.com/infrafence/infrafence-agent/issues">Issues</a>
 </p>
@@ -42,7 +43,7 @@
 - **Correções que não derrubam a produção.** Depois de cada mudança (fechar uma porta, bloquear tráfego de saída, uma correção de hardening, um patch virtual), ele verifica o SSH e os sites monitorados e desfaz a mudança se eles pararem de responder.
 - **Uma IA que age só dentro de limites fixos.** O AutoMode escolhe de um catálogo fixo de ações, nunca executa comandos próprios e nunca bloqueia seus próprios endereços nem seus logins SSH.
 
-Grátis para um servidor, planos pagos a partir de 8,90 € por servidor por mês: [ver preços](https://infrafence.com/pricing).
+O Starter é grátis para um servidor, planos pagos a partir de €8,90 por servidor por mês: [ver preços](https://infrafence.com/pt-br/pricing).
 
 ## Início rápido
 
@@ -54,7 +55,7 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 Quer ver antes o que ele faria? Adicione `--dry-run`: ele baixa o agente, verifica o servidor em modo somente leitura, mostra o plano e não altera nada.
 
-> **[Obtenha seu token em infrafence.com](https://infrafence.com)** — o plano gratuito inclui 1 servidor com proteção completa.
+> **[Obtenha seu token em infrafence.com](https://infrafence.com/add-server)** — o plano Starter é grátis e inclui 1 servidor com proteção completa.
 
 ---
 
@@ -130,10 +131,29 @@ Acompanha cada sessão SSH do início ao fim — método de autenticação, repu
 
 ---
 
+## Além da detecção
+
+O que o InfraFence acrescenta aos detectores acima, cada um com sua página na [documentação](https://infrafence.com/pt-br/documentacao):
+
+- **Hardening, vulnerabilidades e pontuação de segurança** — cerca de 40 verificações de hardening, com correção em um clique para as seguras; as vulnerabilidades conhecidas (CVE) dos pacotes instalados por risco real: primeiro as já exploradas por atacantes (CISA KEV), depois pela probabilidade de exploração (EPSS); uma pontuação de segurança de 0 a 100. [Hardening e vulnerabilidades](https://infrafence.com/pt-br/documentacao/hardening-e-vulnerabilidades)
+- **Hardening do PHP** — encontra configurações arriscadas do PHP em cada runtime e pool, e corrige as seguras. É hardening e vigilância da configuração: nada é carregado no PHP, e não é uma proteção que roda dentro das suas aplicações. [Hardening do PHP](https://infrafence.com/pt-br/documentacao/hardening-e-vulnerabilidades#php-hardening)
+- **Feche portas expostas, bloqueie destinos perigosos** (Pro · AutoMode) — cada mudança é verificada e desfeita se quebrar algo. [Portas e bloqueio de saída](https://infrafence.com/pt-br/documentacao/portas-e-bloqueio-de-saida)
+- **Patches virtuais para vulnerabilidades exploradas** (Pro · AutoMode) — uma regra ModSecurity específica protege o software vulnerável até você instalar a atualização; Apache com ModSecurity. [Patches virtuais](https://infrafence.com/pt-br/documentacao/patches-virtuais)
+- **Modo de emergência** — um botão vermelho: por 24 horas o InfraFence responde sozinho ao ataque, com o mesmo catálogo seguro e os mesmos limites do AutoMode (a partir do Basic). [Modo de emergência](https://infrafence.com/pt-br/documentacao/modo-de-emergencia)
+- **Alertas** por e-mail, Slack, Discord, Telegram ou webhook, mais um resumo semanal por e-mail. [Alertas](https://infrafence.com/pt-br/documentacao/alertas)
+- **Análise com IA** — uma análise instantânea de cada incidente em todos os planos, calculada no painel; uma análise com IA e correções seguras em um clique a partir do Pro. [Eventos e atividade](https://infrafence.com/pt-br/documentacao/eventos-e-atividade)
+- **Rede InfraFence e mapa de ataques** — compartilhar é opcional: endereços que atacam vários clientes são sinalizados, e os números da rede só aparecem onde 3 ou mais organizações contribuíram. [A rede InfraFence](https://infrafence.com/pt-br/documentacao/rede-infrafence) · [Mapa de ataques](https://infrafence.com/pt-br/documentacao/mapa-de-ataques)
+- **Selo de monitoramento** — o selo “Monitorado pelo InfraFence” leva a uma página de transparência pública com o horário da última verificação, os ataques bloqueados nos últimos 30 dias e as proteções ativas. Não é um certificado. [Selo de monitoramento](https://infrafence.com/pt-br/features#trust-badge) · [Ver um exemplo de página de transparência](https://infrafence.com/pt-br/trust/demo)
+- **Proteção mesmo com o painel inacessível** — bans, whitelist e bloqueios por país continuam valendo, novos ataques continuam sendo banidos e os eventos esperam numa fila. [Quando o painel está inacessível](https://infrafence.com/pt-br/documentacao/painel-inacessivel)
+- **Ao lado do CSF e de outras ferramentas** — o InfraFence fica nas próprias chains e nunca altera os arquivos do CSF nem as regras de outra ferramenta. [Coexistência com outras ferramentas de segurança](https://infrafence.com/pt-br/documentacao/coexistencia)
+- **Plugin para cPanel & WHM** (acesso antecipado) **e extensão para Plesk** (em desenvolvimento) — status da proteção, bans, achados, eventos e varreduras por site dentro do painel de hospedagem. [cPanel & WHM](https://infrafence.com/pt-br/integracoes/cpanel-whm) · [Painéis de hospedagem](https://infrafence.com/pt-br/documentacao/paineis-de-hospedagem)
+
+---
+
 ## Seguro em servidores de produção
 
 - **Verifica antes de alterar** — `infrafence-agent preflight` é uma verificação somente leitura do servidor (firewall e outras ferramentas de segurança, servidores web, painéis de hospedagem, gerência de configuração, operações de pacotes, recursos). O instalador a executa antes de alterar qualquer coisa; o agente, ao iniciar e diariamente.
-- **Padrões conservadores** — alterações no servidor web e bloqueio de entrada por listas de ameaças ficam desligados até você ativá-los; as atualizações automáticas podem ser configuradas para apenas notificar.
+- **Padrões conservadores** — alterações no servidor web e bloqueio de entrada por listas de ameaças ficam desligados até você ativá-los; as atualizações do agente ficam em “Apenas notificar” até você escolher a instalação automática, e só são instaladas versões assinadas com cosign.
 - **Chains de firewall próprias** — cada regra fica nas chains `INFRAFENCE` do agente, chamadas a partir de `INPUT` (e `DOCKER-USER`), reconstruídas de forma atômica e restauradas automaticamente em poucos segundos se outra ferramenta (ufw, firewalld, CSF) as remover. Suas regras existentes nunca são alteradas. IPs na whitelist são isentos, nunca liberados.
 - **Desinstalação limpa** — remove o agente e tudo o que ele adicionou: chains de firewall, alterações no servidor web, o serviço.
 
@@ -181,7 +201,7 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 **Requisitos:** x86-64 ou ARM64, acesso root, `iptables`; systemd, upstart ou sysvinit. O instalador usa `apt`, `dnf` ou `yum` para dependências ausentes e instala o `ipset` apenas quando a verificação do servidor diz que é seguro.
 
-**Testado até agora:** Ubuntu 24.04 (em produção) e Debian 12 (instalador e firewall, nos dois backends do iptables, com e sem ipset). Outras distribuições das famílias RHEL e Debian devem funcionar, mas ainda não foram verificadas — veja [Ainda não disponível](#ainda-não-disponível).
+**Testado antes de cada versão** em 14 distribuições: Ubuntu 20.04, 22.04 e 24.04, Debian 12 e 13, Rocky Linux 8 e 9, AlmaLinux 8 e 9, CentOS Stream 9, Oracle Linux 9, Fedora 41 e 42, Amazon Linux 2023. Em cada uma roda o instalador real, detecta um ataque de força bruta SSH, bane o endereço no firewall e desinstala sem deixar rastros. Outras distribuições das famílias Debian e RHEL costumam funcionar: rode antes o instalador com `--dry-run`. Veja [Distribuições suportadas](https://infrafence.com/pt-br/documentacao/distribuicoes-suportadas).
 
 ### Docker
 
@@ -207,7 +227,7 @@ helm install infrafence-agent oci://ghcr.io/infrafence/charts/infrafence-agent \
   --set apiKey="IFK-..." --set clusterName="production"
 ```
 
-Cada nó se registra como um servidor. As opções estão no [README do chart](charts/infrafence-agent/README.md).
+Cada nó se registra como um servidor. Todos os valores, atualizações e GitOps: [Kubernetes](https://infrafence.com/pt-br/documentacao/kubernetes) na documentação, e o [README do chart](charts/infrafence-agent/README.md).
 
 ### Desinstalação
 
@@ -219,13 +239,13 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 ## Configuração
 
-Quase tudo é configurado no painel e chega aos servidores em cerca de um segundo: limites de força bruta, duração dos bans, modo monitor, regras do WAF, escolhas de bots, whitelist, países bloqueados, agenda das varreduras de malware, inspeção DNS, alterações no servidor web, bloqueio por listas de ameaças, atualizações automáticas.
+Quase tudo é configurado no painel e chega aos servidores em cerca de um segundo: limites de força bruta, duração dos bans, modo monitor, regras do WAF, escolhas de bots, whitelist, países bloqueados, agenda das varreduras de malware, inspeção DNS, alterações no servidor web, bloqueio por listas de ameaças, atualizações automáticas. Referência completa: [Configuração](https://infrafence.com/pt-br/documentacao/configuracao).
 
 No servidor:
 
 | Variável de ambiente | Efeito |
 |---|---|
-| `AUTH_LOG_PATH` | Log do SSH a ser lido (padrão: `/var/log/auth.log` ou `/var/log/secure`) |
+| `AUTH_LOG_PATH` | Arquivo de log do SSH lido no lugar do journal do systemd (padrão: o journal em sistemas com systemd; senão, `/var/log/auth.log` ou `/var/log/secure`) |
 | `WEB_LOG_PATH` | Logs de acesso web, separados por vírgula (padrão: detectados a partir de nginx, Apache, LiteSpeed, painéis, Docker) |
 | `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Substituem os logs de e-mail, banco de dados e FTP detectados |
 | `MODSEC_AUDIT_LOG` | Log de auditoria do ModSecurity |
@@ -236,7 +256,9 @@ Defina-as com `sudo systemctl edit infrafence-agent` (`[Service]` → `Environme
 
 **Labels do Docker** nos seus containers: `infrafence.monitor` (`true`/`false`), `infrafence.log-path` (caminhos no host), `infrafence.domain` (domínios).
 
-**Comandos:** `infrafence-agent preflight [--json]` (verificação do servidor somente leitura), `infrafence-agent check`, `infrafence-agent uninstall --clean`.
+**Comandos:** `infrafence-agent preflight [--json]` (verificação do servidor somente leitura), `infrafence-agent check`, `infrafence-agent uninstall --clean`. Todos os comandos: [Referência de comandos](https://infrafence.com/pt-br/documentacao/referencia-de-comandos).
+
+**Painéis de hospedagem (cPanel/WHM, Plesk):** os plugins dos painéis executam `infrafence-agent panel <command> --json` como root e leem um objeto JSON do stdout (`{"ok": true, ...}` ou `{"ok": false, "error": "<code>", "message": "..."}`, código de saída 0 só quando ok). Comandos: `status`, `bans [--limit N]`, `unban <ip>`, `allow <ip> [--note ...]`, `allowlist`, `disallow <ip>`, `findings [--limit N]`, `events [--limit N] [--since 24h]`, `coexistence`, `sites`, `scan <document root>`; os que alteram algo exigem `--actor <usuário do painel>` e são informados ao painel do InfraFence como eventos com origem `panel`. O comando fala com o agente em execução por `/run/infrafence/panel.sock` (só root, modo 0600, nenhuma porta de rede); sem o agente em execução ele responde mesmo assim, com `"agent_running": false`. Todos os campos de cada resposta: [docs/panel-json.md](docs/panel-json.md) (em inglês).
 
 ---
 
@@ -245,9 +267,6 @@ Defina-as com `sudo systemctl edit infrafence-agent` (`[Service]` → `Environme
 Lista honesta do que ainda não existe:
 
 - **Padrões de detecção SSH por servidor** a partir do painel
-- **Bans de IP no ModSecurity** sincronizados a partir do painel
-- **Logs apenas no journald** — a detecção de SSH requer `/var/log/auth.log` ou `/var/log/secure`; servidores sem rsyslog (Debian 12+ minimal, Fedora) ainda não são cobertos
-- **Mais distribuições verificadas** (Rocky, AlmaLinux, CentOS Stream, Fedora, Amazon Linux)
 
 Estamos trabalhando nisso; o [changelog](CHANGELOG.md) informa quando chegam.
 

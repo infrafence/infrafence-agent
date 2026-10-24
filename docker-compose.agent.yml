@@ -2,7 +2,7 @@
 # Add this to your existing docker-compose.yml or run standalone:
 #   INFRAFENCE_TOKEN=<your-token> docker compose -f docker-compose.agent.yml up -d
 #
-# Get your token at: https://infrafence.com/dashboard → Add Server
+# Get your token at: https://infrafence.com/add-server
 
 services:
   infrafence-agent:
