@@ -1082,6 +1082,10 @@ func (c *Client) postLong(path, token string, body, out any) error {
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
+	// Read what is left so the connection goes back to the pool: closing an
+	// unread body makes the transport drop it and redial (and re-handshake)
+	// for the next request.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 
 	return nil
 }
