@@ -257,3 +257,30 @@ func TestFindUsage(t *testing.T) {
 		t.Fatalf("usage = %v", got)
 	}
 }
+
+// A pool that sets a directive in its own file gets a manual fix, never an
+// automatic one: InfraFence writes nothing in PHP-FPM's pool configuration.
+func TestPoolSettingIsManualFix(t *testing.T) {
+	files := debianHost()
+	files["/etc/php/8.2/fpm/pool.d/shop.conf"] = "[shop]\nuser = shop\nlisten = 127.0.0.1:9001\nphp_admin_flag[display_errors] = on\n"
+	got := byID(Check(Discover(RootedEnv(writeTree(t, files))), Options{}))
+
+	f := got["PHP_DISPLAY_ERRORS@debian-8.2-fpm/shop"]
+	if f.Passed || f.Details["fix"] != FixNone || f.Details["scope"] != "pool" || f.Details["automode_safe"] != "false" {
+		t.Fatalf("details = %+v", f.Details)
+	}
+	for _, want := range []string{"shop.conf:4", "[shop]", "php_admin_flag[display_errors] = Off and php_admin_flag[log_errors] = On", "reload php8.2-fpm"} {
+		if !strings.Contains(f.Details["manual_fix"], want) || f.Recommendation != f.Details["manual_fix"] {
+			t.Errorf("manual_fix %q lacks %q", f.Details["manual_fix"], want)
+		}
+	}
+	// The www pool inherits php.ini: its fix stays automatic.
+	if f := got["PHP_DISPLAY_ERRORS@debian-8.2-fpm/www"]; f.Details["fix"] != FixAuto || f.Details["manual_fix"] != "" {
+		t.Errorf("www details = %+v", f.Details)
+	}
+	f = got["PHP_OPEN_BASEDIR@debian-8.2-fpm/www"]
+	if f.Details["fix"] != FixNone || !strings.Contains(f.Details["manual_fix"], "php_admin_value[open_basedir] = /var/www/a:/var/www/b:/tmp") ||
+		!strings.Contains(f.Details["manual_fix"], "/etc/php/8.2/fpm/pool.d/www.conf") {
+		t.Errorf("open_basedir details = %+v", f.Details)
+	}
+}

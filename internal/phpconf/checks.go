@@ -2,6 +2,7 @@ package phpconf
 
 import (
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -27,15 +28,49 @@ const (
 	FixNone     = "none"     // no automatic fix
 )
 
-// FixClass says how the fix of a check (base ID) may be applied.
+// FixClass says how the fix of a check (base ID) may be applied. Every fix
+// goes in the runtime's .ini drop-in; a pool that sets the directive in its
+// own file only gets a manual fix (see Finding.Details["manual_fix"]), and
+// so does open_basedir, which is only right per pool.
 func FixClass(base string) string {
 	switch base {
 	case CheckAllowURLInclude, CheckDisplayErrors, CheckExposePHP:
 		return FixAuto
-	case CheckFixPathinfo, CheckDisableFunctions, CheckOpenBasedir:
+	case CheckFixPathinfo, CheckDisableFunctions:
 		return FixApproval
 	}
 	return FixNone
+}
+
+// Setting is one value a fix sets.
+type Setting struct{ Key, Value string }
+
+// FixSettings returns the values the fix of base sets; cur is the
+// directive's current value (disable_functions keeps it and adds the
+// missing functions).
+func FixSettings(base, cur string) []Setting {
+	switch base {
+	case CheckAllowURLInclude:
+		return []Setting{{"allow_url_include", "Off"}}
+	case CheckDisplayErrors:
+		return []Setting{{"display_errors", "Off"}, {"log_errors", "On"}}
+	case CheckExposePHP:
+		return []Setting{{"expose_php", "Off"}}
+	case CheckFixPathinfo:
+		return []Setting{{"cgi.fix_pathinfo", "0"}}
+	case CheckDisableFunctions:
+		return []Setting{{"disable_functions", MergeFunctions(cur, MissingFunctions(cur))}}
+	}
+	return nil
+}
+
+// IsBool reports whether key is an on/off directive (php_admin_flag).
+func IsBool(key string) bool {
+	switch key {
+	case "allow_url_include", "display_errors", "log_errors", "expose_php":
+		return true
+	}
+	return false
 }
 
 // Dangerous are the functions a web pool should not let scripts call.
@@ -88,14 +123,33 @@ func (t target) get(key string) Directive {
 	return t.rt.Get(key)
 }
 
-// overrides reports whether the pool's own files set key.
-func (t target) overrides(key string) bool {
-	for _, d := range t.pool.Overrides {
-		if d.Key == key && (d.Admin || !systemOnly[key]) {
-			return true
+// override returns the pool's own setting of key, if it has one that
+// takes effect.
+func (t target) override(key string) (Directive, bool) {
+	var out Directive
+	found := false
+	if t.pool != nil {
+		for _, d := range t.pool.Overrides {
+			if d.Key == key && (d.Admin || !systemOnly[key]) {
+				out, found = d, true
+			}
 		}
 	}
-	return false
+	return out, found
+}
+
+// PoolSets returns the first setting of a fix that the pool sets in its own
+// file: an .ini drop-in can't change it, and InfraFence writes nothing in
+// PHP-FPM's pool configuration (a section left behind for a pool someone
+// deleted would stop PHP-FPM from starting).
+func PoolSets(rt Runtime, p *Pool, base string) (Directive, bool) {
+	t := target{rt: rt, pool: p}
+	for _, s := range FixSettings(base, "") {
+		if d, ok := t.override(s.Key); ok {
+			return d, true
+		}
+	}
+	return Directive{}, false
 }
 
 func (t target) label() string {
@@ -261,12 +315,25 @@ func finding(t target, base, sev, title string, d Directive, passed bool, desc, 
 	if t.pool != nil {
 		det["pool"] = t.pool.Name
 	}
-	// scope: where the fix goes. "runtime": the runtime's .ini drop-in, so
-	// it (and its revert) applies to every pool that doesn't set the
-	// directive itself; "pool": this pool's section only.
+	// scope: where the setting has to change. "runtime": the runtime's .ini
+	// drop-in, so the fix (and its revert) applies to every pool that
+	// doesn't set the directive itself; "pool": the pool's own file, which
+	// only a person changes (manual_fix says how).
 	det["scope"] = "runtime"
-	if t.pool != nil && (base == CheckOpenBasedir || t.overrides(d.Key)) {
-		det["scope"] = "pool"
+	manual := ""
+	if po, ok := PoolSets(t.rt, t.pool, base); ok && FixClass(base) != FixNone {
+		det["scope"], det["fix"] = "pool", FixNone
+		manual = fmt.Sprintf("The pool sets %s in its own file (%s:%d), which InfraFence does not change. In the [%s] section there, set %s, then run php-fpm -t and reload %s.",
+			po.Key, po.File, po.Line, t.pool.Name, poolLines(FixSettings(base, d.Value)), t.service())
+	} else if base == CheckOpenBasedir {
+		manual = manualOpenBasedir(t)
+		if t.pool != nil {
+			det["scope"] = "pool"
+		}
+	}
+	if manual != "" && !passed {
+		det["manual_fix"] = manual
+		rec = manual
 	}
 	src := ""
 	if d.Default {
@@ -278,7 +345,7 @@ func finding(t target, base, sev, title string, d Directive, passed bool, desc, 
 		det["line"] = fmt.Sprint(d.Line)
 		src = fmt.Sprintf("%s = %q in %s:%d", d.Key, d.Value, d.File, d.Line)
 	}
-	det["automode_safe"] = fmt.Sprint(FixClass(base) == FixAuto && t.rt.Panel == "")
+	det["automode_safe"] = fmt.Sprint(det["fix"] == FixAuto && t.rt.Panel == "")
 	if sites := Roots(t.sites); len(sites) > 0 {
 		det["sites"] = strings.Join(sites, ",")
 	}
@@ -296,6 +363,72 @@ func finding(t target, base, sev, title string, d Directive, passed bool, desc, 
 		CheckID: t.id(base), Severity: sev, Title: title + " (" + t.rt.ID + poolSuffix(t) + ")",
 		Description: desc, Recommendation: rec, Details: det, Passed: passed,
 	}
+}
+
+func (t target) service() string {
+	if t.rt.Service != "" {
+		return t.rt.Service
+	}
+	return "PHP-FPM"
+}
+
+// poolLines writes settings as pool directives (php_admin_*: scripts can't
+// change them back).
+func poolLines(set []Setting) string {
+	var parts []string
+	for _, s := range set {
+		kind := "php_admin_value"
+		if IsBool(s.Key) {
+			kind = "php_admin_flag"
+		}
+		parts = append(parts, kind+"["+s.Key+"] = "+s.Value)
+	}
+	return strings.Join(parts, " and ")
+}
+
+// manualOpenBasedir suggests open_basedir for a shared runtime or pool: the
+// site roots (the parent of a framework's public/ directory, which loads
+// code from there) plus the directories PHP itself needs.
+func manualOpenBasedir(t target) string {
+	var dirs []string
+	for _, r := range Roots(t.sites) {
+		if strings.ContainsAny(r, "$;:*\"\n\r") || r == "/" {
+			dirs = nil
+			break
+		}
+		if b := path.Base(r); b == "public" || b == "web" || b == "pub" || b == "webroot" {
+			r = path.Dir(r)
+		}
+		dirs = append(dirs, r)
+	}
+	value := "<the sites' roots>:/tmp:/var/tmp"
+	if len(dirs) > 0 {
+		for _, k := range []string{"session.save_path", "upload_tmp_dir", "sys_temp_dir"} {
+			v := t.get(k).Value
+			if i := strings.LastIndexByte(v, ';'); i >= 0 { // "N;MODE;/path"
+				v = v[i+1:]
+			}
+			if strings.HasPrefix(v, "/") && !strings.ContainsAny(v, "$;:*\"\n\r ") {
+				dirs = append(dirs, v)
+			}
+		}
+		dirs = append(dirs, "/tmp", "/var/tmp", "/usr/share/php", "/usr/share/pear")
+		seen := map[string]bool{}
+		var out []string
+		for _, d := range dirs {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+		value = strings.Join(out, ":")
+	}
+	const better = " Better: give each site its own pool and user."
+	if t.pool == nil {
+		return "Set php_admin_value open_basedir " + value + " in each site's VirtualHost, then apachectl configtest and a graceful reload." + better
+	}
+	return fmt.Sprintf("In the [%s] section of %s, set %s, then run php-fpm -t and reload %s.%s",
+		t.pool.Name, t.pool.File, poolLines([]Setting{{"open_basedir", value}}), t.service(), better)
 }
 
 func poolSuffix(t target) string {

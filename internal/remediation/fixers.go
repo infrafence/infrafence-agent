@@ -3,7 +3,7 @@
 //
 //   - nothing edits a main configuration file: each change lives in a file
 //     of its own (sshd_config.d, nginx conf.d, Apache conf-enabled/conf.d,
-//     the PHP scan directory or pool directory: php.go),
+//     the PHP scan directory: php.go),
 //     so undoing it means deleting that file;
 //   - the service's own config test must pass (sshd -t, nginx -t,
 //     apachectl configtest) and the new value must actually be in effect,
@@ -36,6 +36,7 @@ const (
 	ReasonManaged      = "managed"       // a hosting panel or config management owns the files
 	ReasonUnsupported  = "unsupported"   // this host's layout isn't one we can change safely
 	ReasonNoAutomation = "no_automation" // there is no automatic fix for this check
+	ReasonManualOnly   = "manual_only"   // set in a file InfraFence doesn't change (a PHP-FPM pool's own file): fix it there by hand
 )
 
 // Host is what the fixes need from the system; tests replace it.
@@ -157,7 +158,10 @@ var ErrNotFixable = errors.New("no automatic fix for this check on this server")
 // Apply fixes one check. The returned message says what was changed.
 func Apply(h Host, checkID string, p Policy) (string, error) {
 	if IsPHPCheck(checkID) {
-		if ok, _ := phpAvailability(h, checkID, p); !ok {
+		if reason, err := phpFixable(h, checkID, p); reason != "" {
+			if err != nil {
+				return "", fmt.Errorf("%w: %v", ErrNotFixable, err)
+			}
 			return "", ErrNotFixable
 		}
 		return applyPHP(h, checkID, p, true)

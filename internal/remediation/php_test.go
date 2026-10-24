@@ -26,7 +26,6 @@ func (h *fakeHost) Glob(pattern string) []string {
 
 const (
 	debIni     = "/etc/php/8.2/fpm/conf.d/" + PHPIniDropIn
-	debPool    = "/etc/php/8.2/fpm/pool.d/" + PHPPoolDropIn
 	debRuntime = "debian-8.2-fpm"
 )
 
@@ -113,25 +112,68 @@ func TestPHPApplyAndRevertIniDropIn(t *testing.T) {
 	}
 }
 
-func TestPHPDisplayErrorsPoolOverride(t *testing.T) {
+// onlyPoolFiles fails if anything but the fixture's own pool files is in
+// the pool directory: InfraFence never writes PHP-FPM pool configuration.
+func onlyPoolFiles(t *testing.T, h *fakeHost, want ...string) {
+	t.Helper()
+	var got []string
+	for p := range h.files {
+		if path.Dir(p) == "/etc/php/8.2/fpm/pool.d" {
+			got = append(got, path.Base(p))
+		}
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("pool directory = %v, want %v", got, want)
+	}
+}
+
+func TestPHPPoolSetsItIsManualOnly(t *testing.T) {
 	h := phpHost(t)
-	// The shop pool sets it itself: only a pool setting can win.
-	if _, err := Apply(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/shop", safe); err != nil {
+	// The shop pool sets display_errors itself: no .ini file can win, and
+	// InfraFence doesn't touch the pool's configuration.
+	id := "PHP_DISPLAY_ERRORS@" + debRuntime + "/shop"
+	if ok, why := phpAvailability(h, id, safe); ok || why != ReasonManualOnly {
+		t.Fatalf("availability = %v %q", ok, why)
+	}
+	_, err := Apply(h, id, safe)
+	if !errors.Is(err, ErrNotFixable) || !strings.Contains(err.Error(), "shop.conf:3") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok := h.files[debIni]; ok || len(h.calls) != 0 {
+		t.Fatalf("changed something: %q %v", h.files[debIni], h.calls)
+	}
+	onlyPoolFiles(t, h, "www.conf", "shop.conf")
+
+	// The second setting of a fix counts too: log_errors set off by the pool.
+	h.files["/etc/php/8.2/fpm/pool.d/www.conf"] += "php_admin_flag[log_errors] = off\n"
+	phpCacheHost = nil
+	if ok, why := phpAvailability(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/www", safe); ok || why != ReasonManualOnly {
+		t.Fatalf("log_errors in the pool: %v %q", ok, why)
+	}
+}
+
+// Whatever happens to the pools afterwards, a fix leaves only the .ini
+// drop-in, which can't stop PHP-FPM from starting; the revert still works
+// once the pool it was asked for is gone.
+func TestPHPFixesNeverWritePoolConfig(t *testing.T) {
+	h := phpHost(t)
+	for _, base := range []string{"PHP_ALLOW_URL_INCLUDE", "PHP_DISPLAY_ERRORS", "PHP_EXPOSE_PHP", "PHP_CGI_FIX_PATHINFO", "PHP_DISABLE_FUNCTIONS", "PHP_OPEN_BASEDIR"} {
+		for _, pool := range []string{"www", "shop"} {
+			_, _ = Apply(h, base+"@"+debRuntime+"/"+pool, safe)
+		}
+	}
+	onlyPoolFiles(t, h, "www.conf", "shop.conf")
+	if !strings.Contains(h.files[debIni], "allow_url_include = Off") {
+		t.Fatalf("drop-in = %q", h.files[debIni])
+	}
+	delete(h.files, "/etc/php/8.2/fpm/pool.d/www.conf")
+	if _, err := Revert(h, "PHP_ALLOW_URL_INCLUDE@"+debRuntime+"/www"); err != nil {
 		t.Fatal(err)
 	}
-	want := "\n[shop]\nphp_admin_flag[display_errors] = Off\n"
-	if !strings.Contains(h.files[debPool], want) {
-		t.Fatalf("pool drop-in = %q", h.files[debPool])
-	}
-	// log_errors isn't overridden by the pool: it goes in the .ini drop-in.
-	if !strings.Contains(h.files[debIni], "log_errors = On") || strings.Contains(h.files[debIni], "display_errors") {
-		t.Fatalf("ini drop-in = %q", h.files[debIni])
-	}
-	if _, err := Revert(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/shop"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := h.files[debPool]; ok {
-		t.Fatalf("pool drop-in left: %q", h.files[debPool])
+	if strings.Contains(h.files[debIni], "allow_url_include") {
+		t.Fatalf("not reverted: %q", h.files[debIni])
 	}
 }
 
@@ -195,7 +237,8 @@ func TestPHPAvailability(t *testing.T) {
 		"PHP_DISPLAY_ERRORS@site:a.example":                ReasonManaged,
 		"PHP_SESSION_COOKIE_SECURE@" + debRuntime + "/www": ReasonSiteRisk,
 		"PHP_ALLOW_URL_INCLUDE@nope-8.0-fpm":               ReasonUnsupported,
-		"PHP_OPEN_BASEDIR@" + debRuntime + "/www":          ReasonUnsupported, // no nginx sites known
+		"PHP_OPEN_BASEDIR@" + debRuntime + "/www":          ReasonNoAutomation, // manual: per pool only
+		"PHP_EXPOSE_PHP@" + debRuntime + "/shop":           "",
 		"PHP_DISABLE_FUNCTIONS@" + debRuntime + "/www":     "",
 		"PHP_CGI_FIX_PATHINFO@" + debRuntime + "/www":      "",
 	}
@@ -231,9 +274,9 @@ func TestPHPDisableFunctionsMerges(t *testing.T) {
 	}
 }
 
-func TestPHPDropInChangedAndPruned(t *testing.T) {
+func TestPHPDropInChanged(t *testing.T) {
 	h := phpHost(t)
-	if _, err := Apply(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/shop", safe); err != nil {
+	if _, err := Apply(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/www", safe); err != nil {
 		t.Fatal(err)
 	}
 	if got := CheckPHPDropIns(h); len(got) != 0 {
@@ -247,29 +290,9 @@ func TestPHPDropInChangedAndPruned(t *testing.T) {
 	if got := CheckPHPDropIns(h); len(got) != 0 {
 		t.Fatalf("reported twice: %+v", got)
 	}
-	// The shop pool's own file is deleted: its section would be a pool
-	// without a listen address, so it goes.
-	delete(h.files, "/etc/php/8.2/fpm/pool.d/shop.conf")
-	CheckPHPDropIns(h)
-	if _, ok := h.files[debPool]; ok {
-		t.Fatalf("orphan pool section kept: %q", h.files[debPool])
-	}
-}
-
-// A pool whose file sorts after our drop-in is still defined elsewhere:
-// its section stays. (A setting in that later file beats ours, so a fix
-// for it is refused as overridden.)
-func TestPHPPruneKeepsLaterPoolFile(t *testing.T) {
-	h := phpHost(t)
-	h.files["/etc/php/8.2/fpm/pool.d/zzz-late.conf"] = "[late]\nlisten = 127.0.0.1:9009\nphp_admin_flag[display_errors] = on\n"
-	if _, err := Apply(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/late", safe); err == nil || !strings.Contains(err.Error(), "zzz-late.conf:3") {
-		t.Fatalf("err = %v", err)
-	}
-	h.files[debPool] = phpHeader + "\n[late]\nphp_admin_value[open_basedir] = /srv\n"
-	recordPHPDropIns(h)
-	CheckPHPDropIns(h)
-	if !strings.Contains(h.files[debPool], "[late]") {
-		t.Fatalf("section of a live pool pruned: %q", h.files[debPool])
+	delete(h.files, debIni)
+	if got := CheckPHPDropIns(h); len(got) != 1 || got[0].Change != "removed" {
+		t.Fatalf("removal = %+v", got)
 	}
 }
 
@@ -287,17 +310,43 @@ func TestPHPNoChangeMessage(t *testing.T) {
 
 func TestPHPRemoveAll(t *testing.T) {
 	h := phpHost(t)
-	if _, err := Apply(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/shop", safe); err != nil {
+	if _, err := Apply(h, "PHP_DISPLAY_ERRORS@"+debRuntime+"/www", safe); err != nil {
 		t.Fatal(err)
 	}
 	done, err := RemoveAll(h)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(done, ",") != debIni+","+debPool {
+	if strings.Join(done, ",") != debIni {
 		t.Fatalf("removed %v", done)
 	}
 	if _, ok := h.files[debIni]; ok {
 		t.Fatal("ini drop-in left")
+	}
+}
+
+// A pool's php_admin_value of a system directive blocks the fix; its
+// php_value doesn't (PHP ignores it), so the .ini fix still applies.
+func TestPHPPoolSetsSystemDirectives(t *testing.T) {
+	h := phpHost(t)
+	h.files["/etc/php/8.2/fpm/pool.d/shop.conf"] += "php_admin_value[disable_functions] = exec\nphp_value[allow_url_include] = On\n"
+	if ok, why := phpAvailability(h, "PHP_DISABLE_FUNCTIONS@"+debRuntime+"/shop", safe); ok || why != ReasonManualOnly {
+		t.Errorf("php_admin_value: %v %q", ok, why)
+	}
+	if ok, why := phpAvailability(h, "PHP_ALLOW_URL_INCLUDE@"+debRuntime+"/shop", safe); !ok {
+		t.Errorf("php_value of a system directive blocked the fix: %q", why)
+	}
+}
+
+// The current disable_functions list is copied into our file only when it
+// is plain function names: a \r would start a new directive there.
+func TestPHPDisableFunctionsRefusesOddValue(t *testing.T) {
+	h := phpHost(t)
+	h.files["/etc/php/8.2/fpm/php.ini"] += "disable_functions = \"exec\rextension=evil.so\"\n"
+	if _, err := Apply(h, "PHP_DISABLE_FUNCTIONS@"+debRuntime+"/www", safe); err == nil || !strings.Contains(err.Error(), "other than function names") {
+		t.Fatalf("err = %v, drop-in %q", err, h.files[debIni])
+	}
+	if _, ok := h.files[debIni]; ok {
+		t.Fatalf("drop-in written: %q", h.files[debIni])
 	}
 }
