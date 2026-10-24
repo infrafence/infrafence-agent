@@ -55,8 +55,8 @@ isrg_fp=96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:
 if command -v openssl >/dev/null; then
   got=$(awk '/<<.ISRGEOF/{f=1;next} /^ISRGEOF$/{f=0} f' /distro/install.sh | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2)
   [ "$got" = "$isrg_fp" ] || { R_DRYRUN=fail; log "embedded ISRG root: fingerprint $got"; }
-  grep -v '^ *#' /distro/install.sh | grep -q 'letsencrypt.org/certs' \
-    && { R_DRYRUN=fail; log "install.sh still downloads the root"; }
+  [ "$(grep -v '^ *#' /distro/install.sh | grep -c 'letsencrypt.org/certs')" = 0 ] \
+    || { R_DRYRUN=fail; log "install.sh still downloads the root"; }
   if command -v update-ca-trust >/dev/null; then
     # One character of the certificate changed: refused, and the dry run
     # goes on without it (RHEL's curl keeps its own CAs).
@@ -80,20 +80,22 @@ if [ $rc -ne 1 ] || ! grep -q "infrafence.com/docs/troubleshooting" /tmp/dryrun-
 fi
 # The checksum is required: missing or wrong, nothing is kept; only
 # --skip-checksum (unsafe) goes on without it.
-tmps=$(ls /tmp | wc -l)
+tmps=$(find /tmp -mindepth 1 -maxdepth 1 | wc -l)
 for mode in missing bad; do
   curl -s "http://127.0.0.1:8080/checksum?mode=$mode" >/dev/null
   RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run >/tmp/dryrun-sum.log 2>&1
   rc=$?
   want="Could not download the checksum"; [ $mode = bad ] && want="Checksum mismatch"
   if [ $rc -ne 1 ] || ! grep -q "$want" /tmp/dryrun-sum.log || ! grep -q "docs/troubleshooting" /tmp/dryrun-sum.log \
-     || [ "$(ls /tmp | wc -l)" -ne $((tmps + 1)) ]; then
+     || [ "$(find /tmp -mindepth 1 -maxdepth 1 | wc -l)" -ne $((tmps + 1)) ]; then
     R_DRYRUN=fail; log "checksum $mode: rc=$rc"; tail -10 /tmp/dryrun-sum.log; ls -la /tmp
   fi
   rm -f /tmp/dryrun-sum.log
 done
-RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run --skip-checksum >/tmp/dryrun-skip.log 2>&1 \
-  && grep -q "NOT verified" /tmp/dryrun-skip.log || { R_DRYRUN=fail; log "--skip-checksum:"; tail -10 /tmp/dryrun-skip.log; }
+if ! RELEASE_BASE=http://127.0.0.1:8080/releases bash /distro/install.sh --dry-run --skip-checksum >/tmp/dryrun-skip.log 2>&1 \
+   || ! grep -q "NOT verified" /tmp/dryrun-skip.log; then
+  R_DRYRUN=fail; log "--skip-checksum:"; tail -10 /tmp/dryrun-skip.log
+fi
 curl -s "http://127.0.0.1:8080/checksum?mode=ok" >/dev/null
 EXTRA_RESULT="${EXTRA_RESULT:-} dryrun=${R_DRYRUN}"
 [ "$R_DRYRUN" = ok ] || EXTRA_FAIL=1
