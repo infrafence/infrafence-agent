@@ -187,3 +187,23 @@ func TestPanelInfoErrorsAreShort(t *testing.T) {
 		t.Errorf("refused value: %d bytes: %.300v", len(err.Error()), err)
 	}
 }
+
+func TestPanelInfoFromTheFuture(t *testing.T) {
+	saved := infoNow
+	infoNow = func() time.Time { return time.Date(2026, 10, 24, 10, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { infoNow = saved })
+	var status atomic.Int32
+	var body atomic.Value
+	status.Store(http.StatusOK)
+	c := New(infoServer(t, &status, &body, nil).URL, "tok")
+	for at, ok := range map[string]bool{"2026-10-24T10:04:59Z": true, "2026-10-24T12:04:00+02:00": true, "2026-10-24T10:05:01Z": false, "2027-01-01T00:00:00Z": false} {
+		body.Store(`{"hours":24,"generated_at":"` + at + `","total":{"attacks":0}}`)
+		if _, err := c.AttackMap(context.Background(), 24); (err == nil) != ok {
+			t.Errorf("map at %s: %v", at, err)
+		}
+		body.Store(`{"generated_at":"` + at + `","score":90,"grade":"A"}`)
+		if _, err := c.SecurityScore(context.Background()); (err == nil) != ok {
+			t.Errorf("score at %s: %v", at, err)
+		}
+	}
+}

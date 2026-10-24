@@ -22,7 +22,8 @@ import (
 // The request runs in the socket handler, never in a protection loop, and
 // is bounded by panelInfoTimeout and the client's size limit. When the
 // dashboard does not answer, the last answer is given again with "stale":
-// true; with nothing to give, the error is not_connected.
+// true (also when the answer was computed more than an hour ago); with
+// nothing to give, the error is not_connected.
 
 var (
 	panelMapEvery    = 5 * time.Minute
@@ -154,9 +155,19 @@ func infoAnswerLocked(e *infoEntry, what string) panel.Response {
 		return panel.Fail(panel.ErrNotConnected, "the InfraFence dashboard has not sent this server's %s (not reachable, or it does not offer it yet)", what)
 	}
 	r := panel.OK(e.fields)
-	r["stale"] = e.failed
+	r["stale"] = e.failed || infoTooOld(e.fields)
 	r["connected"] = panelConnected()
 	return r
+}
+
+// panelInfoMaxAge: an answer the dashboard computed longer ago than this is
+// stale even when it was just received (a dashboard serving old data).
+const panelInfoMaxAge = time.Hour
+
+func infoTooOld(fields map[string]any) bool {
+	s, _ := fields["generated_at"].(string)
+	t, err := time.Parse(time.RFC3339, s)
+	return err != nil || panelNow().Sub(t) > panelInfoMaxAge
 }
 
 // panelConnected: the last heartbeat the dashboard accepted is less than 3

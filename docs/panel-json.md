@@ -689,7 +689,9 @@ reaches the dashboard more often. Requests arriving while one is in flight wait 
 <!-- /example:map -->
 
 When the dashboard did not answer the latest request (unreachable, or an error), the last answer is given
-again with `stale: true`; show `generated_at` as "last updated". With no answer at all since the agent
+again with `stale: true`; show `generated_at` as "last updated". An answer the dashboard computed more than an
+hour ago is `stale` too, even when it was just received. The agent refuses an answer whose `generated_at` is
+more than 5 minutes in the future. With no answer at all since the agent
 started, the reply is the error `not_connected` (see [Errors](#errors)): show an empty state.
 
 <!-- example:map_stale -->
@@ -741,7 +743,7 @@ started, the reply is the error `not_connected` (see [Errors](#errors)): show an
 | `ok` | boolean | `true` | yes | |
 | `agent_running` | boolean | `true` | yes | |
 | `connected` | boolean | | yes | As in `status`: the last heartbeat the dashboard accepted is less than 3 minutes old. |
-| `stale` | boolean | | yes | `true`: the dashboard did not answer the latest request; this is an earlier answer (see `generated_at`). |
+| `stale` | boolean | | yes | `true`: the dashboard did not answer the latest request, so this is an earlier answer, or `generated_at` is more than an hour old. |
 | `hours` | integer | `24`, `168` | yes | The range asked for. |
 | `generated_at` | string | timestamp | yes | When the dashboard computed it. |
 | `total` | object | | yes | |

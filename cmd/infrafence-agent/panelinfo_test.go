@@ -183,3 +183,31 @@ func TestPanelScoreCachedFifteenMinutes(t *testing.T) {
 		t.Fatalf("stale: %v, %d", r, calls.Load())
 	}
 }
+
+// An answer computed more than an hour ago is stale even when it was just
+// received.
+func TestPanelInfoOldAnswerIsStale(t *testing.T) {
+	f := withFakePanel(t)
+	panelFetchMap = func(_ context.Context, hours int) (*api.AttackMap, error) {
+		m := testMap(hours, 1)
+		m.GeneratedAt = f.now.Add(-61 * time.Minute).Format(time.RFC3339)
+		return m, nil
+	}
+	if r := panelMap(24); !r.Succeeded() || r["stale"] != true {
+		t.Fatalf("old answer: %v", r)
+	}
+	panelFetchMap = func(_ context.Context, hours int) (*api.AttackMap, error) {
+		m := testMap(hours, 1)
+		m.GeneratedAt = f.now.Add(-59 * time.Minute).Format(time.RFC3339)
+		return m, nil
+	}
+	if r := panelMap(168); r["stale"] != false {
+		t.Fatalf("recent answer: %v", r)
+	}
+	// A fresh map that ages in the cache while the dashboard is down.
+	f.now = f.now.Add(2 * time.Minute)
+	panelFetchMap = func(context.Context, int) (*api.AttackMap, error) { return nil, errors.New("down") }
+	if r := panelMap(168); r["stale"] != true {
+		t.Fatalf("aged answer: %v", r)
+	}
+}

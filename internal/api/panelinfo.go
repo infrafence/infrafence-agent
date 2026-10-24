@@ -110,11 +110,11 @@ func (m *AttackMap) check(hours int) error {
 	if m.Hours != hours {
 		return fmt.Errorf("%w: hours %d, asked for %d", errInfoInvalid, m.Hours, hours)
 	}
-	t, err := time.Parse(time.RFC3339Nano, m.GeneratedAt)
+	at, err := generatedAt(m.GeneratedAt)
 	if err != nil {
-		return fmt.Errorf("%w: generated_at", errInfoInvalid)
+		return err
 	}
-	m.GeneratedAt = t.UTC().Format(time.RFC3339)
+	m.GeneratedAt = at
 	if m.Total.Attacks < 0 || len(m.Countries) > maxMapCountries || len(m.Categories) > maxMapCategories {
 		return fmt.Errorf("%w: total or list sizes", errInfoInvalid)
 	}
@@ -193,11 +193,11 @@ func (c *Client) SecurityScore(ctx context.Context) (*SecurityScore, error) {
 // generated_at in UTC, items by points (most first), trend oldest first,
 // details reduced to short text, numbers and lists of them.
 func (s *SecurityScore) check() error {
-	t, err := time.Parse(time.RFC3339Nano, s.GeneratedAt)
+	at, err := generatedAt(s.GeneratedAt)
 	if err != nil {
-		return fmt.Errorf("%w: generated_at", errInfoInvalid)
+		return err
 	}
-	s.GeneratedAt = t.UTC().Format(time.RFC3339)
+	s.GeneratedAt = at
 	if s.Score < 0 || s.Score > 100 || len(s.Grade) != 1 || !strings.Contains(scoreGradeList, s.Grade) {
 		return fmt.Errorf("%w: score %d, grade %s", errInfoInvalid, s.Score, shortQ(s.Grade))
 	}
@@ -297,4 +297,24 @@ func shortQ(v string) string {
 		v = v[:40]
 	}
 	return strconv.Quote(v)
+}
+
+// infoNow is the clock generated_at is checked against; replaced in tests.
+var infoNow = time.Now
+
+// maxInfoAhead: a dashboard clock a little ahead is fine, an answer from
+// the future is not (it would never look stale).
+const maxInfoAhead = 5 * time.Minute
+
+// generatedAt checks the time the dashboard computed an answer and
+// returns it in UTC, to the second.
+func generatedAt(v string) (string, error) {
+	t, err := time.Parse(time.RFC3339Nano, v)
+	if err != nil {
+		return "", fmt.Errorf("%w: generated_at", errInfoInvalid)
+	}
+	if t.After(infoNow().Add(maxInfoAhead)) {
+		return "", fmt.Errorf("%w: generated_at %s is in the future", errInfoInvalid, shortQ(v))
+	}
+	return t.UTC().Format(time.RFC3339), nil
 }
