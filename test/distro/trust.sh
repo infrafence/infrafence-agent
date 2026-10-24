@@ -1,4 +1,5 @@
-# Sourced by inside.sh: the trust badge verification file. nginx with one
+# Sourced by inside.sh: the trust badge verification file. Requests go to 127.0.0.1: "localhost"
+# can resolve to ::1 first, where the distribution's default site answers instead of ours. nginx with one
 # site (server_name trust.example.test) and one wildcard site; the mock
 # dashboard lists both domains in trust_tokens. The file must be served for
 # the exact name with the site's owner and mode 0644, the wildcard must be
@@ -20,7 +21,7 @@ twait() {
   done
   return 1
 }
-tget() { curl -s -o /dev/null -w '%{http_code}' -H 'Host: trust.example.test' http://localhost/.well-known/infrafence-verification.txt; }
+tget() { curl -s -o /dev/null -w '%{http_code}' -H 'Host: trust.example.test' http://127.0.0.1/.well-known/infrafence-verification.txt; }
 
 if command -v apt-get >/dev/null; then
   { export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; apt-get install -y -qq --no-install-recommends nginx </dev/null; } >/tmp/trust-pkg.log 2>&1
@@ -44,13 +45,13 @@ server {
 }
 EOF
   systemctl restart nginx >/dev/null 2>&1 || systemctl enable --now nginx >/dev/null 2>&1
-  curl -s -H 'Host: trust.example.test' http://localhost/ | grep -qx ok || tlog "nginx does not serve the test site"
+  curl -s -H 'Host: trust.example.test' http://127.0.0.1/ | grep -qx ok || tlog "nginx does not serve the test site"
 
   curl -s -X POST "$tapi/set-sync" -d "{\"trust_tokens\":[{\"domain\":\"trust.example.test\",\"token\":\"$ttoken\"},{\"domain\":\"x.wild.example.test\",\"token\":\"$ttoken\"}]}" >/dev/null
   placed=no served=no owner=none wild=no removed=no
   if twait trust_token_placed domain trust.example.test 120; then
     placed=yes
-    body=$(curl -s -H 'Host: trust.example.test' http://localhost/.well-known/infrafence-verification.txt)
+    body=$(curl -s -H 'Host: trust.example.test' http://127.0.0.1/.well-known/infrafence-verification.txt)
     grep -qxF "$ttoken" <<<"$body" && head -1 <<<"$body" | grep -qx '# infrafence-verification' && served=yes
     owner="$(stat -c '%u:%g %a' "$tfile" 2>/dev/null) / $(stat -c '%u:%g %a' /var/www/trust/.well-known 2>/dev/null)"
   fi
