@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type state struct {
@@ -199,7 +200,7 @@ func main() {
 		infoDown.Store(r.URL.Query().Get("on") == "1")
 		reply(w, map[string]any{"status": "ok"})
 	})
-	info := func(key string, body any) http.HandlerFunc {
+	info := func(key string, body map[string]any) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			k := key
 			if key == "map" {
@@ -212,24 +213,23 @@ func main() {
 				http.NotFound(w, r)
 				return
 			}
+			// Computed now: an answer older than an hour is stale.
+			b := maps.Clone(body)
+			b["generated_at"] = time.Now().UTC().Format(time.RFC3339)
 			if key == "map" {
-				h := 24
+				b["hours"] = 24
 				if r.URL.Query().Get("hours") == "168" {
-					h = 168
+					b["hours"] = 168
 				}
-				b := maps.Clone(body.(map[string]any))
-				b["hours"] = h
-				reply(w, b)
-				return
 			}
-			reply(w, body)
+			reply(w, b)
 		}
 	}
-	mux.HandleFunc("/api/v1/agent/map", info("map", map[string]any{"generated_at": "2026-10-24T10:00:00Z",
+	mux.HandleFunc("/api/v1/agent/map", info("map", map[string]any{
 		"total":      map[string]any{"attacks": 123},
 		"countries":  []any{map[string]any{"code": "CN", "attacks": 40}, map[string]any{"code": "US", "attacks": 12}},
 		"categories": []any{map[string]any{"cat": "ssh", "attacks": 30}, map[string]any{"cat": "web", "attacks": 5}}}))
-	mux.HandleFunc("/api/v1/agent/score", info("score", map[string]any{"generated_at": "2026-10-24T10:00:00Z",
+	mux.HandleFunc("/api/v1/agent/score", info("score", map[string]any{
 		"score": 72, "grade": "C",
 		"items": []any{map[string]any{"key": "hardening", "points": 12, "detail": map[string]any{"failed": 22, "total": 43}}},
 		"trend": []any{map[string]any{"day": "2026-10-20", "score": 70}, map[string]any{"day": "2026-10-24", "score": 72}}}))
