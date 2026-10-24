@@ -10,8 +10,11 @@
 # SSL Error fix (old servers — "Peer's Certificate issuer is not recognized"):
 #   This happens on CentOS 7 / RHEL 7 and systems with ca-certificates older than 2024.
 #   curl on CentOS 7 links against NSS (not OpenSSL), so update-ca-trust has no effect on it.
-#   One-time fix — run these THREE commands, then retry the install:
+#   One-time fix — run these commands, then retry the install:
 #     curl -sk https://letsencrypt.org/certs/isrgrootx1.pem -o /tmp/isrg.pem
+#     openssl x509 -in /tmp/isrg.pem -noout -fingerprint -sha256
+#       (must print 96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6;
+#        anything else: stop, the download was tampered with)
 #     export CURL_CA_BUNDLE=/tmp/isrg.pem
 #     curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/download/install.sh | sudo bash -s -- --token <TOKEN>
 
@@ -336,6 +339,9 @@ bootstrap_ssl() {
 
     warn "Bootstrapping Let's Encrypt root CA (Go agent needs ISRG Root X1 in OpenSSL bundle)..."
 
+    # The root comes from this script (write_isrg_root), never from the
+    # network: a download would have to skip certificate checks, since
+    # the root is what is missing to verify it.
     if [[ "$DRY_RUN" == true ]]; then
         # Session only: trust the root for this run's downloads, change
         # nothing. curl gets the system CAs plus ISRG Root X1 in one temp
@@ -347,18 +353,16 @@ bootstrap_ssl() {
         dry_dir="$(mktemp -d /tmp/infrafence-ca-XXXXXX 2>/dev/null)" || return 0
         # shellcheck disable=SC2064
         trap "rm -rf '$dry_dir'" EXIT
-        if curl -fsSk --max-time 15 "https://letsencrypt.org/certs/isrgrootx1.pem" -o "${dry_dir}/isrg.pem" 2>/dev/null \
-            && grep -q "BEGIN CERTIFICATE" "${dry_dir}/isrg.pem" 2>/dev/null; then
-            for f in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem; do
-                [[ -f "$f" ]] && dry_sys="$f" && break
-            done
-            if [[ -n "$dry_sys" ]] && cat "$dry_sys" "${dry_dir}/isrg.pem" > "${dry_dir}/bundle.pem" 2>/dev/null; then
-                export CURL_CA_BUNDLE="${dry_dir}/bundle.pem"
-            elif [[ "$is_rhel" == false ]]; then
-                export CURL_CA_BUNDLE="${dry_dir}/isrg.pem"
-            fi
-            DRY_MISSING="${DRY_MISSING:+$DRY_MISSING, }Let's Encrypt root CA bundle for the agent"
+        write_isrg_root "${dry_dir}/isrg.pem" || return 0
+        for f in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem; do
+            [[ -f "$f" ]] && dry_sys="$f" && break
+        done
+        if [[ -n "$dry_sys" ]] && cat "$dry_sys" "${dry_dir}/isrg.pem" > "${dry_dir}/bundle.pem" 2>/dev/null; then
+            export CURL_CA_BUNDLE="${dry_dir}/bundle.pem"
+        elif [[ "$is_rhel" == false ]]; then
+            export CURL_CA_BUNDLE="${dry_dir}/isrg.pem"
         fi
+        DRY_MISSING="${DRY_MISSING:+$DRY_MISSING, }Let's Encrypt root CA bundle for the agent"
         return 0
     fi
 
@@ -367,18 +371,9 @@ bootstrap_ssl() {
         warn "Could not create temp file — install may fail if SSL issues persist."
         return 0
     }
-
-    # Download ISRG Root X1 using -k (we can't verify LE yet, this is the bootstrap)
-    if ! curl -fsSk --max-time 15 \
-            "https://letsencrypt.org/certs/isrgrootx1.pem" \
-            -o "$ca_tmp" 2>/dev/null \
-        || ! grep -q "BEGIN CERTIFICATE" "$ca_tmp" 2>/dev/null; then
-        warn "Could not download Let's Encrypt root CA — install may fail. Manual fix:"
-        warn "  curl -sk https://letsencrypt.org/certs/isrgrootx1.pem -o /tmp/isrg.pem"
-        warn "  export CURL_CA_BUNDLE=/tmp/isrg.pem && re-run installer"
-        rm -f "$ca_tmp"
-        return 0
-    fi
+    # shellcheck disable=SC2064
+    trap "rm -f '$ca_tmp'" EXIT
+    write_isrg_root "$ca_tmp" || { rm -f "$ca_tmp"; return 0; }
 
     # Build a permanent merged bundle (system CAs + ISRG Root X1).
     # We save it to CONFIG_DIR so the systemd service can reference it via Environment=SSL_CERT_FILE.
@@ -411,10 +406,59 @@ bootstrap_ssl() {
             || export CURL_CA_BUNDLE="$ca_tmp"
     fi
 
-    # shellcheck disable=SC2064
-    trap "rm -f '$ca_tmp'" EXIT
-
     success "Let's Encrypt root CA bootstrapped — HTTPS verification active for this session."
+}
+
+# ISRG Root X1 (Let's Encrypt), valid until 2035-06-04. SHA-256 fingerprint
+# 96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6
+ISRG_ROOT_X1_SHA256="96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6"
+
+# write_isrg_root writes the root above to $1. Where openssl is present
+# its fingerprint is checked once more (a damaged copy of this script).
+write_isrg_root() {
+    cat > "$1" <<'ISRGEOF' || return 1
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+ISRGEOF
+    if command -v openssl &>/dev/null; then
+        local fp
+        fp="$(openssl x509 -in "$1" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+        if [[ "$fp" != "$ISRG_ROOT_X1_SHA256" ]]; then
+            warn "The Let's Encrypt root CA in this script does not match its fingerprint; not using it."
+            rm -f "$1"
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # ─── Download ──────────────────────────────────────────────────────────────────
