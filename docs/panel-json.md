@@ -340,8 +340,12 @@ findings since the agent started (kept in memory, at most 1,000), newest first b
       "last_seen": "2026-10-16T11:30:00Z",
       "name": "Obfuscated eval",
       "path": "/home/bob/public_html/wp-includes/class-wp-cache.php",
+      "resolved_at": null,
+      "resolved_how": null,
       "severity": "high",
-      "status": "detected"
+      "state": "open",
+      "status": "detected",
+      "subject": "malware:/home/bob/public_html/wp-includes/class-wp-cache.php"
     },
     {
       "detected": "2026-10-16T11:00:00Z",
@@ -349,8 +353,12 @@ findings since the agent started (kept in memory, at most 1,000), newest first b
       "last_seen": "2026-10-16T11:00:00Z",
       "name": "PHP webshell (generic)",
       "path": "/home/alice/public_html/wp-content/uploads/x.php",
+      "resolved_at": "2026-10-16T11:10:00Z",
+      "resolved_how": "quarantined",
       "severity": "critical",
-      "status": "quarantined"
+      "state": "resolved",
+      "status": "quarantined",
+      "subject": "malware:/home/alice/public_html/wp-content/uploads/x.php"
     },
     {
       "detected": "2026-10-16T10:30:00Z",
@@ -358,8 +366,12 @@ findings since the agent started (kept in memory, at most 1,000), newest first b
       "last_seen": "2026-10-16T10:30:00Z",
       "name": null,
       "path": "/etc/passwd",
+      "resolved_at": "2026-10-16T11:40:00Z",
+      "resolved_how": "marked_expected",
       "severity": "warning",
-      "status": "detected"
+      "state": "resolved",
+      "status": "detected",
+      "subject": "file:/etc/passwd"
     }
   ],
   "ok": true,
@@ -380,6 +392,10 @@ findings since the agent started (kept in memory, at most 1,000), newest first b
 | `findings[].status` | string | `detected`, `quarantined` | yes | `quarantined`: the file was moved to quarantine (on request from the dashboard). |
 | `findings[].detected` | string | timestamp | yes | First seen. |
 | `findings[].last_seen` | string | timestamp | yes | Last seen by a scan or the real-time watcher. |
+| `findings[].subject` | string | `malware:<path>`, `file:<path>` | yes | What the finding is about (see [Problems and resolution](#problems-and-resolution)). |
+| `findings[].state` | string | `open`, `resolved` | yes | `resolved`: resolved after `last_seen` (quarantined, marked as resolved in the dashboard...). |
+| `findings[].resolved_at` | string \| null | timestamp | yes | When it was resolved; `null` while open. |
+| `findings[].resolved_how` | string \| null | see [Problems and resolution](#problems-and-resolution) | yes | How it was resolved; `null` while open. |
 | `total` | integer | | yes | Number of findings before `--limit`. |
 
 ### `events`
@@ -394,37 +410,90 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
   "agent_running": true,
   "events": [
     {
+      "resolved_at": null,
+      "resolved_how": null,
+      "severity": "warning",
+      "source": null,
+      "source_ip": null,
+      "state": "open",
+      "subject": "php:PHP_DISPLAY_ERRORS@ea-php82",
+      "time": "2026-10-16T11:50:00Z",
+      "type": "php_config_risk"
+    },
+    {
+      "resolved_at": null,
+      "resolved_how": null,
       "severity": "info",
       "source": null,
       "source_ip": null,
+      "state": null,
+      "subject": "malware:/home/alice/public_html/wp-content/uploads/x.php",
       "time": "2026-10-16T11:10:00Z",
       "type": "quarantine_completed"
     },
     {
+      "resolved_at": "2026-10-16T11:10:00Z",
+      "resolved_how": "quarantined",
       "severity": "critical",
       "source": null,
       "source_ip": null,
+      "state": "resolved",
+      "subject": "malware:/home/alice/public_html/wp-content/uploads/x.php",
       "time": "2026-10-16T11:00:00Z",
       "type": "malware_realtime"
     },
     {
+      "resolved_at": null,
+      "resolved_how": null,
+      "severity": "info",
+      "source": null,
+      "source_ip": null,
+      "state": null,
+      "subject": "port:tcp/3306",
+      "time": "2026-10-16T10:50:00Z",
+      "type": "firewall_action_done"
+    },
+    {
+      "resolved_at": "2026-10-16T10:50:00Z",
+      "resolved_how": "port_closed",
+      "severity": "critical",
+      "source": null,
+      "source_ip": null,
+      "state": "resolved",
+      "subject": "port:tcp/3306",
+      "time": "2026-10-16T10:40:00Z",
+      "type": "db_exposed"
+    },
+    {
+      "resolved_at": "2026-10-16T11:40:00Z",
+      "resolved_how": "marked_expected",
       "severity": "warning",
       "source": null,
       "source_ip": null,
+      "state": "resolved",
+      "subject": "file:/etc/passwd",
       "time": "2026-10-16T10:30:00Z",
       "type": "integrity_change"
     },
     {
+      "resolved_at": null,
+      "resolved_how": null,
       "severity": "critical",
       "source": "modsecurity",
       "source_ip": "198.51.100.23",
+      "state": null,
+      "subject": null,
       "time": "2026-10-16T10:00:00Z",
       "type": "sql_injection"
     },
     {
+      "resolved_at": null,
+      "resolved_how": null,
       "severity": "warning",
       "source": "watcher",
       "source_ip": "203.0.113.7",
+      "state": null,
+      "subject": null,
       "time": "2026-10-16T09:00:00Z",
       "type": "ssh_brute_force"
     }
@@ -444,6 +513,45 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
 | `events[].source_ip` | string \| null | | yes | The remote address, when the event has one. |
 | `events[].source` | string \| null | e.g. `watcher`, `webwatcher`, `modsecurity`, `panel` | yes | Which part of the agent reported it, when known. |
 | `events[].time` | string | timestamp | yes | |
+| `events[].subject` | string \| null | e.g. `port:tcp/3306`, `file:/etc/passwd` | yes | What the event is about (see [Problems and resolution](#problems-and-resolution)): problem events, and the results of the actions taken on them (`firewall_action_done`, `quarantine_completed`...). `null` for the others (attacks, scans, progress). |
+| `events[].state` | string \| null | `open`, `resolved` | yes | Problem events only (`null` for every other event, and for a problem event without a subject). `resolved`: its subject was resolved at or after `time`. Count and highlight only `open` ones. Agents before 1.0.34 don't send `state`: treat every event as open. |
+| `events[].resolved_at` | string \| null | timestamp | yes | When it was resolved; `null` unless `state` is `resolved`. |
+| `events[].resolved_how` | string \| null | see [Problems and resolution](#problems-and-resolution) | yes | How it was resolved; `null` unless `state` is `resolved`. |
+
+#### Problems and resolution
+
+A **problem event** reports a condition that can still be true on the server; once it is dealt with, it is
+**resolved**. Each one has a `subject`, a stable key of what it is about, the same in the agent's events
+(`details.subject`) and in the dashboard:
+
+| Event type | Subject | Problem (has a `state`) |
+|---|---|---|
+| `db_exposed` | `port:tcp/<port>` | yes |
+| `integrity_change`, `php_dropin_changed` | `file:<path>` | yes |
+| `php_config_risk` | `php:<check_id>` (e.g. `php:PHP_DISPLAY_ERRORS@ea-php82`) | yes |
+| `malware_realtime` | `malware:<path>` | yes |
+| `virtual_patch_failed` | `cve:<id>` | yes (when applying) |
+| `hardening_fix_failed`, `hardening_fix_rolled_back` | `php:<check_id>` for PHP checks, `hardening:<check_id>` otherwise | yes (unless reverting) |
+| `package_update_failed` | `package:<name>` (one package per request only) | yes |
+| `firewall_action_done`, `firewall_action_failed`, `firewall_action_rolled_back` (`close_port`, `open_port`) | `port:<proto>/<port>` | no: the result of an action |
+| `quarantine_completed`, `quarantine_failed`, `quarantine_restored`, `quarantine_restore_failed` | `malware:<path>` | no |
+| `hardening_fix_applied` | `php:<check_id>` or `hardening:<check_id>` | no |
+| `virtual_patch_done` | `cve:<id>` | no |
+| `package_update_started`, `package_update_done` | `package:<name>` (one package per request only) | no |
+
+Findings are all problems: `malware:<path>` for `malware`, `file:<path>` for `integrity`.
+
+A subject is resolved from a point in time on. The dashboard sends what it resolved (a port closed, a fix
+applied, a file quarantined, a package updated, "Mark as resolved" or "Mark as expected"), and the agent records
+what it fixed itself: a port its firewall closed (not when it is still reachable over IPv6), a fix applied and
+verified, a file quarantined, a package updated. The agent keeps its own resolutions for 30 days across
+restarts. An event or finding at or before the resolution is `resolved`; a newer one is `open` again (the
+problem came back). `resolved_how`: `port_closed`, `fix_applied`, `rescan_clean`, `quarantined`,
+`marked_expected`, `marked_resolved`, `package_updated`, `superseded`, or another word from a newer
+dashboard (show it as it is).
+
+A database port the agent's firewall closes is no longer reported as `db_exposed` when the agent starts,
+even though the database still listens on all addresses.
 
 ### `coexistence`
 

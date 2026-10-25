@@ -598,6 +598,22 @@ type SyncConfig struct {
 	// send them.
 	Plan     string          `json:"plan,omitempty"`
 	AutoMode json.RawMessage `json:"automode,omitempty"`
+	// Problem events resolved in the dashboard (port closed, fix applied,
+	// marked as resolved...), this agent's subjects only; shown by
+	// "infrafence-agent panel events/findings". Absent from dashboards that
+	// don't send them.
+	Resolutions []Resolution `json:"resolutions,omitempty"`
+}
+
+// Resolution says a problem event's subject ("port:tcp/3306",
+// "file:/etc/passwd"...) was resolved: when, how (port_closed, fix_applied,
+// quarantined, marked_resolved...) and by whom ("user", "AutoMode",
+// "agent"; never an email address).
+type Resolution struct {
+	Subject    string `json:"subject"`
+	ResolvedAt string `json:"resolved_at"`
+	How        string `json:"how"`
+	By         string `json:"by,omitempty"`
 }
 
 // MonitorConfig holds monitoring settings synced from the panel.

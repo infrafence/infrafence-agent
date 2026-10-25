@@ -604,15 +604,22 @@ func runAgent() {
 		log.Printf("[ftpwatcher] no FTP service found — FTP brute force detection disabled")
 	}
 
-	// Check for exposed database ports (runs once at startup)
+	// Check for exposed database ports (runs once at startup). A port the
+	// agent's firewall closes to the public is not exposed: reporting it
+	// again would reopen the problem it resolved (resolution.go).
 	go func() {
-		warnings := watcher.ExposedDBPorts()
-		for _, warn := range warnings {
-			log.Printf("[dbwatcher] WARNING: %s", warn)
+		for _, x := range watcher.ExposedDBPortList() {
+			if portClosedByAgent(x.Port) {
+				log.Printf("[dbwatcher] %s listens on all addresses on port %d; the firewall closes it to the public", x.Service, x.Port)
+				continue
+			}
+			log.Printf("[dbwatcher] WARNING: %s", x.Warning)
 			apiClient.ReportEvents([]api.EventRequest{{
-				Type:       "db_exposed",
-				Severity:   "critical",
-				Details:    map[string]string{"warning": warn},
+				Type:     "db_exposed",
+				Severity: "critical",
+				Details: map[string]string{
+					"warning": x.Warning, "port": strconv.Itoa(x.Port), "proto": "tcp", "service": x.Service,
+				},
 				OccurredAt: time.Now().UTC().Format(time.RFC3339),
 			}})
 		}
@@ -1511,6 +1518,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		go applyPackageUpdates(client, sync.PackageUpdates)
 	}
 	// Ports closed and egress blocked from the dashboard (fwactions.go).
+	// Problems the dashboard resolved, for the panel plugins (resolution.go).
+	panelNoteResolutions(sync.Config.Resolutions)
 	applyFirewallState(sync.FirewallState, sync.FirewallActions, sync.Config.MonitorMode)
 	if len(sync.FirewallActions) > 0 {
 		go applyFirewallActions(client, sync.FirewallActions)

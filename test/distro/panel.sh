@@ -5,8 +5,9 @@
 # socket (root only, 0600 in a 0700 directory), every read command, that an
 # unban from the panel is reported with the panel user and is not reapplied
 # by the next sync or after a restart, allow/disallow, input validation,
-# the map and the score (one request per interval), and the answers without
-# a running agent. Sets R_PANEL; appends to EXTRA_RESULT
+# the map and the score (one request per interval), the answers without
+# a running agent, and a db_exposed event resolved by a port closed from
+# the dashboard. Sets R_PANEL; appends to EXTRA_RESULT
 # and sets EXTRA_FAIL=1 on a failure.
 R_PANEL=fail
 API=http://127.0.0.1:8080
@@ -121,8 +122,36 @@ for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 sleep 5
 banned 203.0.113.2 && pf restart_reapplied "lifted ban reapplied after restart"
 
-# Back to the default sync for the following checks.
+# ── problem events resolved: a database port open to all (6379), closed
+# from the dashboard; the db_exposed event shows resolved, and is not
+# reported again after a restart ──
 curl -s -X POST "$API/set-sync" -d '{"bans": null, "whitelists": null}' >/dev/null
+curl -s "$API/listen?addr=0.0.0.0:6379" >/dev/null
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+dbx() { pcmd events --limit 500 | grep -o '{[^{}]*"type":"db_exposed"[^{}]*}' | head -1; }
+for _ in $(seq 1 30); do [ -n "$(dbx)" ] && break; sleep 1; done
+e=$(dbx)
+{ grep -q '"subject":"port:tcp/6379"' <<<"$e" && grep -q '"state":"open"' <<<"$e" &&
+  grep -q '"resolved_how":null' <<<"$e"; } || pf db_exposed_open "${e:-no db_exposed event}"
+curl -s "$API/state" | grep -o '"type":"db_exposed"[^}]*}' | grep -q '"subject":"port:tcp/6379"' || pf db_exposed_subject "not sent to the dashboard"
+wait_sync '{"firewall_actions": [{"id": 151, "kind": "close_port", "port": 6379, "proto": "tcp"}]}' || pf sync "no sync for close_port"
+for _ in $(seq 1 60); do grep -q '"state":"resolved"' <<<"$(dbx)" && break; sleep 1; done
+e=$(dbx)
+{ grep -q '"state":"resolved"' <<<"$e" && grep -q '"resolved_how":"port_closed"' <<<"$e" &&
+  grep -q '"resolved_at":"20' <<<"$e"; } || pf db_exposed_resolved "$e $(curl -s "$API/state" | grep -o '"type":"firewall_action_[a-z_]*"[^}]*"action_id":"151"[^}]*')"
+grep -q '"subject":"port:tcp/6379"' /var/lib/infrafence/panel-state.json 2>/dev/null || pf resolution_saved "$(cat /var/lib/infrafence/panel-state.json 2>&1)"
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+sleep 10
+[ -z "$(dbx)" ] || pf db_exposed_again "reported again after a restart with the port closed: $(dbx)"
+# Open again for the following checks (firewall.sh).
+wait_sync '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync to reopen 6379"
+for _ in $(seq 1 30); do iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport 6379 " || break; sleep 1; done
+iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport 6379 " && pf reopen_6379 "still closed"
+
+# Back to the default sync for the following checks.
+curl -s -X POST "$API/set-sync" -d '{"bans": null, "whitelists": null, "firewall_state": null}' >/dev/null
 
 [ -z "$pfail" ] && R_PANEL=ok
 EXTRA_RESULT="${EXTRA_RESULT:-} panel=${R_PANEL}"

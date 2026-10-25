@@ -7,11 +7,13 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/netstate"
 )
 
-// enrichEvent completes an event before it is sent: SSH logins carry their
+// enrichEvent completes an event before it is sent: a problem event gets
+// its subject (resolution.go), SSH logins carry their
 // address only in details.ip, so it becomes the source address too, and an
 // event from a public address gets its country (ISO-2) when the country
 // database knows it. country may be nil (no database).
 func enrichEvent(e *api.EventRequest, country func(string) string) {
+	addEventSubject(e)
 	if e.SourceIP == "" && e.Details["ip"] != "" &&
 		(e.Type == "ssh_session" || e.Type == "system_audit" && e.Details["operation"] == "ssh_login") {
 		if ip := net.ParseIP(e.Details["ip"]); ip != nil {
