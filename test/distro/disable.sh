@@ -73,7 +73,10 @@ else
 fi
 grep -q 'WARNING: InfraFence no longer protects this server' <<<"$(agent_log)" || R_MOTD=fail
 st=$(/usr/local/bin/infrafence-agent panel status --json 2>/dev/null)
-grep -q '"protection":"disabled"' <<<"$st" && grep -q '"disabled_at":"20' <<<"$st" || { log "panel status: $st"; R_OFF=fail; }
+grep -q '"protection":"disabled"' <<<"$st" && grep -q '"disabled_at":"20' <<<"$st" && grep -q '"entitlement":"unpaid"' <<<"$st" || { log "panel status: $st"; R_OFF=fail; }
+# Switched off: the panel plugins get no data.
+st=$(/usr/local/bin/infrafence-agent panel bans --json 2>/dev/null)
+grep -q '"error":"unpaid"' <<<"$st" || { log "panel bans: $st"; R_OFF=fail; }
 
 # ── accepted again (a restart skips the 30-minute idle wait) ──
 curl -s "$API/deny?mode=off" >/dev/null

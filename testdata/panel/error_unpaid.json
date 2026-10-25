@@ -1,0 +1,1 @@
+{"agent_running":true,"error":"unpaid","message":"InfraFence protection is switched off for this server (the dashboard has refused it for 24 hours, e.g. the subscription is not active): the plugin shows no data until it is accepted again","ok":false}

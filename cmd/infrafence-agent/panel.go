@@ -33,6 +33,13 @@ import (
 // "panel" and the panel user. They act on this server only: an unban is a
 // local lift (scope "server") and never removes the ban in the dashboard or
 // on the organization's other servers.
+//
+// The plugins are for the paid plans (panel.Entitlement): "status" always
+// answers and says whether the organization is entitled; every other
+// command answers only the entitlement error, with no data, and changes
+// nothing. The plan is the last successful sync's, kept across restarts
+// (protstate.go), so a dashboard outage doesn't blank the plugins. The gate
+// is on the socket's replies only: it never touches protection.
 
 var panelSocketPath = panel.SocketPath
 
@@ -110,10 +117,15 @@ func runPanelCommand(req panel.Request) panel.Response {
 	switch req.Command {
 	case "status":
 		resp = offlineStatus()
-	case "coexistence":
-		resp = panelCoexistenceAnswer()
-	case "sites":
-		resp = panelSitesAnswer(panelDetectPanelID(), panelDetectRoots(), nil)
+	case "coexistence", "sites":
+		// Gated by what the agent saved (its plan, the switch-off).
+		if e := offlineEntitlement(loadProtectionStateQuiet()); e != panel.EntitlementOK {
+			resp = notEntitled(e)
+		} else if req.Command == "coexistence" {
+			resp = panelCoexistenceAnswer()
+		} else {
+			resp = panelSitesAnswer(panelDetectPanelID(), panelDetectRoots(), nil)
+		}
 	default:
 		resp = panel.Fail(panel.ErrAgentNotRunning, "the InfraFence agent is not running")
 	}
@@ -132,7 +144,10 @@ func offlineStatus() panel.Response {
 	})
 	// The switch-off outlives the agent (the firewall stays without
 	// InfraFence's chains): said even when it is not running.
-	if st := loadProtectionStateQuiet(); st != nil {
+	st := loadProtectionStateQuiet()
+	setEntitlement(r, offlineEntitlement(st))
+	if st != nil {
+		r["plan"] = orNull(st.Plan)
 		if st.RefusedSince > 0 {
 			r["refused_since"] = rfc3339(time.Unix(st.RefusedSince, 0))
 		}
@@ -148,6 +163,41 @@ func offlineStatus() panel.Response {
 		}
 	}
 	return r
+}
+
+// offlineEntitlement is the entitlement from the saved state, without a
+// running agent.
+func offlineEntitlement(st *protPersisted) string {
+	if st == nil {
+		return panel.Entitlement("", "")
+	}
+	prot := ""
+	if st.DisabledAt > 0 {
+		prot = "disabled"
+	}
+	return panel.Entitlement(st.Plan, prot)
+}
+
+// entitlement is the running agent's: the known plan and the protection
+// state.
+func entitlement() string {
+	prot, _, _ := protectionStatus()
+	return panel.Entitlement(knownPlan(), prot)
+}
+
+func setEntitlement(r panel.Response, e string) {
+	r["entitled"], r["entitlement"] = e == panel.EntitlementOK, e
+}
+
+// notEntitled is the reply to a gated command: the code and nothing else.
+func notEntitled(e string) panel.Response {
+	switch e {
+	case panel.ErrUnpaid:
+		return panel.Fail(e, "InfraFence protection is switched off for this server (the dashboard has refused it for 24 hours, e.g. the subscription is not active): the plugin shows no data until it is accepted again")
+	case panel.ErrUnknownPlan:
+		return panel.Fail(e, "waiting for the InfraFence dashboard: this server's plan is not known yet")
+	}
+	return panel.Fail(panel.ErrPlanRequired, "the InfraFence plugin is included in the Basic, Pro and AutoMode plans")
 }
 
 // dashboardURL is this server's page on the dashboard ("Open in
@@ -192,6 +242,11 @@ func startPanelSocket(client *api.Client, cfg *config.Config, panelID string, re
 
 // handlePanel answers one validated request on the socket.
 func handlePanel(req panel.Request) panel.Response {
+	if panel.Gated(req.Command) {
+		if e := entitlement(); e != panel.EntitlementOK {
+			return notEntitled(e)
+		}
+	}
 	switch req.Command {
 	case "status":
 		return panelStatus()
@@ -300,7 +355,6 @@ func panelStatus() panel.Response {
 		"last_heartbeat": rfc3339(hb),
 		"last_sync":      rfc3339(v.at),
 		"connected":      panelConnected(),
-		"plan":           nil,
 		"automode":       nil,
 		"monitor_mode":   v.monitorMode,
 		"suspended":      v.suspended,
@@ -309,9 +363,9 @@ func panelStatus() panel.Response {
 	})
 	prot, refusedSince, disabledAt := protectionStatus()
 	r["protection"], r["refused_since"], r["disabled_at"] = prot, rfc3339(refusedSince), rfc3339(disabledAt)
-	if v.plan != "" {
-		r["plan"] = v.plan
-	}
+	plan := knownPlan()
+	r["plan"] = orNull(plan)
+	setEntitlement(r, panel.Entitlement(plan, prot))
 	if len(v.autoMode) > 0 && json.Valid(v.autoMode) && string(v.autoMode) != "null" {
 		r["automode"] = v.autoMode
 	}

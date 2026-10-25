@@ -107,7 +107,6 @@ type panelSyncView struct {
 	whitelists  []api.WhitelistEntry
 	monitorMode bool
 	suspended   bool
-	plan        string
 	autoMode    json.RawMessage
 	malwareScan *bool // scheduled malware scanning on; nil: not sent
 }
@@ -256,7 +255,6 @@ func panelNoteSync(s *api.SyncResponse) {
 		whitelists:  append([]api.WhitelistEntry(nil), s.Whitelists...),
 		monitorMode: s.Config.MonitorMode,
 		suspended:   s.Config.Suspended,
-		plan:        s.Config.Plan,
 		autoMode:    s.Config.AutoMode,
 	}
 	if s.Config.MalwareScanConfig != nil {

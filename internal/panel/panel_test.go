@@ -196,3 +196,29 @@ func TestParseIPRejectsSpecialAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestEntitlement(t *testing.T) {
+	for _, c := range []struct{ plan, protection, want string }{
+		{"basic", "active", EntitlementOK},
+		{"pro", "refused", EntitlementOK}, // refused, not yet switched off
+		{"automode", "", EntitlementOK},
+		{" Pro ", "active", EntitlementOK},
+		{"starter", "active", ErrPlanRequired},
+		{"free", "active", ErrPlanRequired},
+		{"enterprise", "active", ErrPlanRequired},
+		{"", "active", ErrUnknownPlan},
+		{"", "", ErrUnknownPlan},
+		{"pro", "disabled", ErrUnpaid},
+		{"starter", "disabled", ErrUnpaid},
+		{"", "disabled", ErrUnpaid},
+	} {
+		if got := Entitlement(c.plan, c.protection); got != c.want {
+			t.Errorf("Entitlement(%q, %q) = %q, want %q", c.plan, c.protection, got, c.want)
+		}
+	}
+	for cmd := range Commands {
+		if Gated(cmd) == (cmd == "status") {
+			t.Errorf("Gated(%q) = %v", cmd, Gated(cmd))
+		}
+	}
+}
