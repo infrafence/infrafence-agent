@@ -177,6 +177,7 @@ func loadPanelState() {
 		log.Printf("[panel] state: %v (ignored)", err)
 		return
 	}
+	p.Resolved = boundResolutions(p.Resolved, panelNow())
 	panelState.p = p
 }
 

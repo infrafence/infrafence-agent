@@ -268,3 +268,60 @@ func TestLocalResolutionsBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestResolutionsNotInTheFuture(t *testing.T) {
+	f := withFakePanel(t)
+	t.Cleanup(func() { syncedResolutions.Store(nil) })
+	panelNoteResolutions([]api.Resolution{{Subject: "port:tcp/3306", ResolvedAt: f.now.Add(24 * time.Hour).Format(time.RFC3339), How: "port_closed"}})
+	if p := syncedResolutions.Load(); len(*p) != 0 {
+		t.Fatalf("future resolution kept: %+v", *p)
+	}
+	// The agent's own: a future event time counts as now.
+	panelNoteEvent(api.EventRequest{Type: "quarantine_completed", Severity: "info", OccurredAt: f.now.Add(time.Hour).Format(time.RFC3339),
+		Details: map[string]string{"file": "/home/a/x.php"}})
+	panelState.Lock()
+	at := panelState.p.Resolved[0].At
+	panelState.Unlock()
+	if at != f.now.Unix() {
+		t.Fatalf("at %d, want %d", at, f.now.Unix())
+	}
+}
+
+func TestLoadPanelStateBoundsResolutions(t *testing.T) {
+	f := withFakePanel(t)
+	p := panelPersisted{Resolved: []resolution{
+		{Subject: "port:tcp/3306", At: f.now.Add(-time.Hour).Unix(), How: "port_closed"},
+		{Subject: "port:tcp/5432", At: f.now.Add(48 * time.Hour).Unix(), How: "port_closed"},
+		{Subject: "nonsense", At: f.now.Unix(), How: "port_closed"},
+		{Subject: "file:/a", At: f.now.Unix(), How: "<b>"},
+		{Subject: "file:/old", At: f.now.Add(-resolutionMaxAge - time.Hour).Unix(), How: "quarantined"},
+	}}
+	if err := writeFileAtomic(panelStatePath, p); err != nil {
+		t.Fatal(err)
+	}
+	loadPanelState()
+	panelState.Lock()
+	defer panelState.Unlock()
+	if rs := panelState.p.Resolved; len(rs) != 1 || rs[0].Subject != "port:tcp/3306" {
+		t.Fatalf("kept %+v", rs)
+	}
+}
+
+func TestPortClosedByAgentNeedsRulesInForce(t *testing.T) {
+	savedInForce, savedPorts6, savedListens6 := fwInForce, fwPorts6, fwListens6
+	t.Cleanup(func() { fwInForce, fwPorts6, fwListens6 = savedInForce, savedPorts6, savedListens6 })
+	fwPorts6 = func() ([]int, bool) { return nil, false }
+	fwListens6 = func(int) bool { return false }
+	fwInForce = func() ([]int, []string) { return nil, nil } // rules not loaded
+	if portClosedByAgent(3306) {
+		t.Fatal("closed without rules in force")
+	}
+	fwInForce = func() ([]int, []string) { return []int{3306}, nil }
+	if !portClosedByAgent(3306) {
+		t.Fatal("not closed with the rule in force")
+	}
+	fwListens6 = func(int) bool { return true }
+	if portClosedByAgent(3306) {
+		t.Fatal("closed while still reachable over IPv6")
+	}
+}

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -42,6 +44,10 @@ const (
 	maxResolutions       = 500 // the agent's own, kept in the panel state
 	maxSyncedResolutions = 500 // the dashboard sends at most 200
 	maxSubject           = 1100
+	maxFixedSubjects     = 100 // packages of one update
+	// A resolution later than this (clock skew, a bad value) would hide new
+	// occurrences until then: it is dropped.
+	resolutionMaxSkew = 5 * time.Minute
 )
 
 // resolution is one resolved subject.
@@ -193,7 +199,9 @@ func fixedByAgent(e api.EventRequest) (subjects []string, how string) {
 		}
 	case "package_update_done":
 		for _, p := range strings.Fields(d["packages"]) {
-			subjects = append(subjects, "package:"+p)
+			if s := "package:" + p; validSubject(s) && len(subjects) < maxFixedSubjects {
+				subjects = append(subjects, s)
+			}
 		}
 		return subjects, "package_updated"
 	}
@@ -207,25 +215,44 @@ func noteFixedLocked(e api.EventRequest) {
 	if len(subjects) == 0 {
 		return
 	}
-	at := panelNow()
-	if t, ok := parseEventTime(e.OccurredAt); ok {
+	now := panelNow()
+	at := now
+	if t, ok := parseEventTime(e.OccurredAt); ok && !t.After(now) {
 		at = t
 	}
-	now := panelNow()
+	fixed := make(map[string]bool, len(subjects))
+	for _, s := range subjects {
+		fixed[cleanText(s, maxSubject)] = true
+	}
 	kept := panelState.p.Resolved[:0]
 	for _, r := range panelState.p.Resolved {
-		if now.Sub(time.Unix(r.At, 0)) <= resolutionMaxAge && !containsStr(subjects, r.Subject) {
+		if !fixed[r.Subject] {
 			kept = append(kept, r)
 		}
 	}
-	for _, s := range subjects {
-		kept = append(kept, resolution{Subject: cleanText(s, maxSubject), At: at.Unix(), How: how, By: "agent"})
+	for s := range fixed {
+		kept = append(kept, resolution{Subject: s, At: at.Unix(), How: how, By: "agent"})
 	}
+	panelState.p.Resolved = boundResolutions(kept, now)
+	savePanelStateLocked()
+}
+
+// boundResolutions keeps the agent's own resolutions that are valid, at
+// most 30 days old and not in the future: the newest maxResolutions, in
+// time order (also for a state file written by an older or damaged agent).
+func boundResolutions(rs []resolution, now time.Time) []resolution {
+	kept := rs[:0]
+	for _, r := range rs {
+		t := time.Unix(r.At, 0)
+		if validSubject(r.Subject) && resolutionWord.MatchString(r.How) && now.Sub(t) <= resolutionMaxAge && !t.After(now.Add(resolutionMaxSkew)) {
+			kept = append(kept, r)
+		}
+	}
+	slices.SortStableFunc(kept, func(a, b resolution) int { return cmp.Compare(a.At, b.At) })
 	if n := len(kept) - maxResolutions; n > 0 {
 		kept = kept[n:]
 	}
-	panelState.p.Resolved = kept
-	savePanelStateLocked()
+	return kept
 }
 
 // panelNoteResolutions keeps the resolutions of a sync.
@@ -239,7 +266,7 @@ func panelNoteResolutions(rs []api.Resolution) {
 			break
 		}
 		t, ok := parseEventTime(r.ResolvedAt)
-		if !ok || !validSubject(r.Subject) || !resolutionWord.MatchString(r.How) {
+		if !ok || t.After(panelNow().Add(resolutionMaxSkew)) || !validSubject(r.Subject) || !resolutionWord.MatchString(r.How) {
 			continue
 		}
 		by := r.By
@@ -313,11 +340,10 @@ func resolveFindingLocked(f *panelFinding) {
 	f.ResolvedAt, f.ResolvedHow = at, how
 }
 
-// portClosedByAgent: the agent's firewall closes port to the public (over
-// IPv6 too), so a database listening on all addresses there is not exposed.
+// portClosedByAgent: the agent's firewall rules closing port to the public
+// are in force (over IPv6 too), so a database listening on all addresses
+// there is not exposed. Saved or requested state is not enough: when the
+// rules could not be loaded, the port is reported as exposed.
 func portClosedByAgent(port int) bool {
-	appliedMu.Lock()
-	closed := fwAppliedPorts[port]
-	appliedMu.Unlock()
-	return closed && !ipv6Exposed(port)
+	return firewallHasPort(port) && !ipv6Exposed(port)
 }
