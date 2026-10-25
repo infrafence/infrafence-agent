@@ -39,7 +39,39 @@ const (
 	ErrInternal        = "internal_error"
 	ErrNotRoot         = "not_root"
 	ErrNotConnected    = "not_connected"
+	// Not entitled to the plugins (Entitlement): the reply carries no data.
+	ErrPlanRequired = "plan_required"
+	ErrUnpaid       = "unpaid"
+	ErrUnknownPlan  = "unknown"
 )
+
+// EntitlementOK: the organization's plan includes the panel plugins.
+const EntitlementOK = "ok"
+
+// PaidPlans are the plans that include the panel plugins (a comped plan is
+// sent as its plan).
+var PaidPlans = map[string]bool{"basic": true, "pro": true, "automode": true}
+
+// Entitlement says whether the plugins may show this server's data, from
+// the plan of the last successful sync and the agent's protection state:
+// EntitlementOK, ErrUnpaid (protection switched off: the dashboard has
+// refused the agent for 24 hours, e.g. an unpaid subscription),
+// ErrUnknownPlan (no plan known yet, or a dashboard that doesn't send it)
+// or ErrPlanRequired (a plan without the plugins, such as Starter).
+func Entitlement(plan, protection string) string {
+	switch plan = strings.ToLower(strings.TrimSpace(plan)); {
+	case protection == "disabled":
+		return ErrUnpaid
+	case plan == "":
+		return ErrUnknownPlan
+	case PaidPlans[plan]:
+		return EntitlementOK
+	}
+	return ErrPlanRequired
+}
+
+// Gated: every command but status needs the entitlement.
+func Gated(command string) bool { return command != "status" }
 
 // Request is one command sent to the agent.
 type Request struct {

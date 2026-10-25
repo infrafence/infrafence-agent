@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -107,6 +108,9 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	panelOn.Store(true)
 	resetPanelInfoCache()
 	panelFetchMap, panelFetchScore = nil, nil
+	// A paid plan: the commands answer (TestPanelEntitlementGate).
+	withProtState(t)
+	setKnownPlan("pro")
 	t.Cleanup(func() {
 		panelOn.Store(false)
 		panelStatePath = saved[0].(string)
@@ -142,6 +146,27 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 		panelFetchMap, panelFetchScore = nil, nil
 	})
 	return f
+}
+
+func setKnownPlan(plan string) {
+	prot.Lock()
+	prot.settings.Plan = plan
+	prot.Unlock()
+}
+
+// setProtectionDisabled switches protection off (refusal.go) for the
+// test's duration.
+func setProtectionDisabled(t *testing.T, at time.Time) {
+	t.Helper()
+	protCtl.Lock()
+	saved := protCtl.disabledAt
+	protCtl.disabledAt = at
+	protCtl.Unlock()
+	t.Cleanup(func() {
+		protCtl.Lock()
+		protCtl.disabledAt = saved
+		protCtl.Unlock()
+	})
 }
 
 func resetPanelState() {
@@ -194,9 +219,11 @@ func TestDashboardURL(t *testing.T) {
 func TestPanelStatus(t *testing.T) {
 	f := withFakePanel(t)
 	panelNoteSync(&api.SyncResponse{Config: api.SyncConfig{Plan: "pro", AutoMode: json.RawMessage(`{"enabled":true}`)}})
+	noteSyncedPlan("pro")
 	panelLastHeartbeat.Store(f.now.Add(-time.Minute).Unix())
 	r := handlePanel(panel.Request{Command: "status"})
 	if !r.Succeeded() || r["agent_id"] != int64(42) || r["plan"] != "pro" || r["connected"] != true ||
+		r["entitled"] != true || r["entitlement"] != "ok" ||
 		r["dashboard_url"] != "https://app.infrafence.com/servers/42" || r["version"] != version {
 		t.Errorf("status: %v", r)
 	}
@@ -209,8 +236,127 @@ func TestPanelStatus(t *testing.T) {
 	}
 	// An older dashboard sends neither plan nor AutoMode.
 	panelNoteSync(&api.SyncResponse{})
-	if r := handlePanel(panel.Request{Command: "status"}); r["plan"] != nil || r["automode"] != nil {
+	noteSyncedPlan("")
+	if r := handlePanel(panel.Request{Command: "status"}); r["plan"] != nil || r["automode"] != nil ||
+		r["entitled"] != false || r["entitlement"] != "unknown" {
 		t.Errorf("missing plan/automode: %v", r)
+	}
+}
+
+// Only the paid plans get the plugins' data: status always answers and
+// says why not; every other command answers the code alone and changes
+// nothing.
+func TestPanelEntitlementGate(t *testing.T) {
+	f := withFakePanel(t)
+	f.banned["203.0.113.7"] = true
+	panelNoteLocalBan("203.0.113.7", "SSH brute force")
+	syncWith([]api.Ban{{ID: 1, IPAddress: "203.0.113.7"}})
+	panelState.Lock()
+	panelState.p.Allowed = []panelAllowEntry{{IP: "198.51.100.4", Actor: "root", AddedAt: f.now.Unix()}}
+	panelState.Unlock()
+	f.sites = []preflight.Site{{Account: "alice", Domain: "alice.example", Kind: "main"}}
+	scoreCalls := 0
+	panelFetchScore = func(context.Context) (*api.SecurityScore, error) {
+		scoreCalls++
+		return &api.SecurityScore{Score: 70, Grade: "C"}, nil
+	}
+	gated := []panel.Request{
+		{Command: "bans", Limit: 50}, {Command: "unban", IP: "203.0.113.7", Actor: "root"},
+		{Command: "allow", IP: "192.0.2.9", Actor: "root"}, {Command: "allowlist"},
+		{Command: "disallow", IP: "198.51.100.4", Actor: "root"}, {Command: "findings", Limit: 50},
+		{Command: "events", Limit: 50}, {Command: "coexistence"}, {Command: "sites"},
+		{Command: "scan", Path: "/home/alice/public_html", Actor: "root"}, {Command: "map", Hours: 24}, {Command: "score"},
+	}
+	if len(gated) != len(panel.Commands)-1 {
+		t.Fatalf("%d gated commands checked, %d exist", len(gated), len(panel.Commands)-1)
+	}
+	for _, c := range []struct {
+		plan     string
+		disabled bool
+		want     string
+	}{
+		{"starter", false, "plan_required"},
+		{"free", false, "plan_required"},
+		{"", false, "unknown"},
+		{"basic", true, "unpaid"},
+		{"", true, "unpaid"},
+	} {
+		setKnownPlan(c.plan)
+		protCtl.Lock()
+		protCtl.disabledAt = time.Time{}
+		if c.disabled {
+			protCtl.disabledAt = f.now
+		}
+		protCtl.Unlock()
+		st := handlePanel(panel.Request{Command: "status"})
+		if !st.Succeeded() || st["entitled"] != false || st["entitlement"] != c.want {
+			t.Errorf("%+v: status %v", c, st)
+		}
+		for _, req := range gated {
+			r := handlePanel(req)
+			if r.Succeeded() || r["error"] != c.want || len(r) != 3 || r["message"] == "" {
+				t.Errorf("%+v %s: %v", c, req.Command, r)
+			}
+		}
+	}
+	protCtl.Lock()
+	protCtl.disabledAt = time.Time{}
+	protCtl.Unlock()
+	// Nothing was changed, reported or fetched.
+	if len(f.unbanned) != 0 || len(f.reported) != 0 || len(f.syncs) != 0 || len(f.scans()) != 0 || scoreCalls != 0 || !f.banned["203.0.113.7"] {
+		t.Errorf("changed while not entitled: unbanned %v reported %v syncs %v scans %v score %d", f.unbanned, f.reported, f.syncs, f.scans(), scoreCalls)
+	}
+	panelState.Lock()
+	allowed, lifted := len(panelState.p.Allowed), len(panelState.p.Lifted)
+	panelState.Unlock()
+	if allowed != 1 || lifted != 0 {
+		t.Errorf("panel state changed: %d allowed, %d lifted", allowed, lifted)
+	}
+
+	// Paid plans (as sent, any case): everything answers again.
+	for _, plan := range []string{"basic", "pro", "automode", "Pro"} {
+		setKnownPlan(plan)
+		if st := handlePanel(panel.Request{Command: "status"}); st["entitled"] != true || st["entitlement"] != "ok" || st["plan"] != plan {
+			t.Errorf("%s: status %v", plan, st)
+		}
+		if r := handlePanel(panel.Request{Command: "bans", Limit: 50}); !r.Succeeded() || r["total"] != 1 {
+			t.Errorf("%s: bans %v", plan, r)
+		}
+	}
+	if r := handlePanel(panel.Request{Command: "score"}); !r.Succeeded() || scoreCalls != 1 {
+		t.Errorf("score: %v (%d calls)", r, scoreCalls)
+	}
+}
+
+// The plan of the last successful sync survives a restart; a sync without
+// one (an older dashboard) forgets it.
+func TestPanelPlanKeptAcrossRestart(t *testing.T) {
+	withProtState(t)
+	noteSyncedPlan(" basic ")
+	noteSyncedSettings(nil, nil, nil, false, 5, 60)
+	if got := knownPlan(); got != "basic" {
+		t.Fatalf("plan after the settings: %q", got)
+	}
+	saveProtectionState()
+	st := loadProtectionState()
+	if st == nil || st.Plan != "basic" {
+		t.Fatalf("saved: %+v", st)
+	}
+	// A restart with the dashboard unreachable: the saved plan is used.
+	setKnownPlan("")
+	restoreBeforeFirewall(st)
+	if got := knownPlan(); got != "basic" || entitlement() != "ok" {
+		t.Fatalf("restored: %q %s", got, entitlement())
+	}
+	// Saved by an agent that had not synced the settings yet.
+	setKnownPlan("")
+	restoreBeforeFirewall(&protPersisted{Plan: "pro"})
+	if got := knownPlan(); got != "pro" {
+		t.Fatalf("restored without settings: %q", got)
+	}
+	noteSyncedPlan("")
+	if got := knownPlan(); got != "" || entitlement() != "unknown" {
+		t.Fatalf("older dashboard: %q %s", got, entitlement())
 	}
 }
 
@@ -683,7 +829,40 @@ func TestPanelScanRootSwappedAfterTheCheck(t *testing.T) {
 
 func TestPanelCommandWithoutAgent(t *testing.T) {
 	withFakePanel(t)
-	if r := runPanelCommand(panel.Request{Command: "status"}); !r.Succeeded() || r["agent_running"] != false || r["version"] != version {
+	// Never synced (no saved state): status answers, the rest waits.
+	if r := runPanelCommand(panel.Request{Command: "status"}); !r.Succeeded() || r["agent_running"] != false || r["version"] != version ||
+		r["plan"] != nil || r["entitled"] != false || r["entitlement"] != "unknown" {
+		t.Errorf("status: %v", r)
+	}
+	for _, cmd := range []string{"coexistence", "sites"} {
+		if r := runPanelCommand(panel.Request{Command: cmd}); r["error"] != "unknown" || r["agent_running"] != false || r["mode"] != nil || r["sites"] != nil {
+			t.Errorf("%s never synced: %v", cmd, r)
+		}
+	}
+	// What the agent saved decides.
+	for _, c := range []struct {
+		st   protPersisted
+		want string
+	}{
+		{protPersisted{Plan: "starter"}, "plan_required"},
+		{protPersisted{Plan: "pro", DisabledAt: 1}, "unpaid"},
+	} {
+		if err := writeFileAtomic(protStatePath, c.st); err != nil {
+			t.Fatal(err)
+		}
+		if r := runPanelCommand(panel.Request{Command: "status"}); r["entitlement"] != c.want || r["entitled"] != false || r["plan"] != c.st.Plan {
+			t.Errorf("%s: status %v", c.want, r)
+		}
+		for _, cmd := range []string{"coexistence", "sites"} {
+			if r := runPanelCommand(panel.Request{Command: cmd}); r["error"] != c.want || len(r) != 4 {
+				t.Errorf("%s: %s %v", c.want, cmd, r)
+			}
+		}
+	}
+	if err := writeFileAtomic(protStatePath, protPersisted{Plan: "basic"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := runPanelCommand(panel.Request{Command: "status"}); r["entitled"] != true || r["plan"] != "basic" {
 		t.Errorf("status: %v", r)
 	}
 	if r := runPanelCommand(panel.Request{Command: "coexistence"}); !r.Succeeded() || r["agent_running"] != false || r["mode"] != preflight.ModeCoexist {

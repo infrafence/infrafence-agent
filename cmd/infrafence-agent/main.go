@@ -1073,6 +1073,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Handle suspension: when suspended, stop all active protection but keep heartbeat alive.
 	// The agent stays installed — upgrading the plan automatically lifts the suspension.
 	panelNoteSync(sync)
+	// The panel plugins' entitlement; kept for a restart while the
+	// dashboard can't be reached (protstate.go).
+	noteSyncedPlan(sync.Config.Plan)
 	if sync.Config.Suspended {
 		log.Printf("[sync] agent is SUSPENDED (plan server limit exceeded) — disabling all watchers")
 		w.SetMonitorMode(true)

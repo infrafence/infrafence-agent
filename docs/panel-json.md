@@ -27,6 +27,27 @@ allow list. The agent has no notion of resellers or account owners. Restricting 
 account sees is the plugin's job. In v1 the plugins are for root/administrators only (WHM `acls=all`, the
 Plesk administrator), and must not expose any of this to resellers or customers.
 
+## Paid plans only
+
+The plugins are included in the **Basic, Pro and AutoMode** plans (a comped plan counts as its plan). `status`
+always answers and says whether the organization is entitled (`entitled`, `entitlement`). Every other command
+answers only an error when it is not, with no data at all, and changes nothing (an unban, allow, disallow or scan
+is refused):
+
+| `entitlement` | When | Error of the other commands |
+|---|---|---|
+| `ok` | The plan is `basic`, `pro` or `automode`, and protection is not switched off. | (none: they answer) |
+| `plan_required` | Another plan, such as Starter. Show "included in Basic, Pro and AutoMode" and a link to upgrade. | `plan_required` |
+| `unpaid` | Protection is switched off (`protection: disabled`): the dashboard has refused the agent for 24 hours, e.g. the subscription is not active. Show the billing message. | `unpaid` |
+| `unknown` | No plan known yet: the agent has never synced since it was installed or upgraded, or the dashboard doesn't send the plan. Show "waiting for the InfraFence dashboard", not "upgrade". | `unknown` |
+
+The plan is the one of the last successful sync. The agent keeps it in
+`/var/lib/infrafence/protection-state.json` across restarts and uses it while the dashboard is unreachable, so an
+outage doesn't blank the plugin; a refusal (`protection: refused`) keeps it too, until protection is switched off.
+Without a running agent, `status`, `coexistence` and `sites` use the same saved state. The gate is on the replies
+only: it never changes the server's protection. Agents up to 1.0.33 don't gate: there the plugin decides from
+`plan` and `protection` (entitled = plan `basic`, `pro` or `automode`, and protection not `disabled`).
+
 ## Rules for every reply
 
 - stdout carries exactly one JSON object followed by a newline. Nothing else is printed on stdout or
@@ -42,7 +63,8 @@ Plesk administrator), and must not expose any of this to resellers or customers.
   cleaned of control characters and length-capped by the agent. It is still untrusted text: **HTML-escape
   everything you display.**
 - `agent_running` is `true` when the running agent answered, and `false` when it is not running (only
-  `status`, `coexistence` and `sites` then still answer `ok`). It is absent only from replies to arguments
+  `status`, `coexistence` and `sites` then still answer `ok`, the last two only when
+  [entitled](#paid-plans-only)). It is absent only from replies to arguments
   the command refused before asking the agent (see [Errors](#errors)).
 
 Column "Always": `yes` = the key is in every reply (or every array element); `no` = only in some replies.
@@ -63,6 +85,8 @@ Column "Always": `yes` = the key is in every reply (or every array element); `no
   "control_panel": "cpanel",
   "dashboard_url": "https://app.infrafence.com/servers/42",
   "disabled_at": null,
+  "entitled": true,
+  "entitlement": "ok",
   "last_heartbeat": "2026-10-16T11:59:20Z",
   "last_sync": "2026-10-16T12:00:00Z",
   "monitor_mode": false,
@@ -89,6 +113,8 @@ printed) and `null` for what only the running agent knows:
   "control_panel": null,
   "dashboard_url": "https://app.infrafence.com/servers/42",
   "disabled_at": null,
+  "entitled": false,
+  "entitlement": "unknown",
   "last_heartbeat": null,
   "last_sync": null,
   "monitor_mode": null,
@@ -102,6 +128,34 @@ printed) and `null` for what only the running agent knows:
 ```
 <!-- /example:status_agent_not_running -->
 
+An organization on a plan without the plugins (Starter): `entitled` is `false` and every other command answers
+`plan_required`.
+
+<!-- example:status_plan_required -->
+```json
+{
+  "agent_id": 42,
+  "agent_running": true,
+  "automode": null,
+  "connected": true,
+  "control_panel": "cpanel",
+  "dashboard_url": "https://app.infrafence.com/servers/42",
+  "disabled_at": null,
+  "entitled": false,
+  "entitlement": "plan_required",
+  "last_heartbeat": "2026-10-16T11:59:20Z",
+  "last_sync": "2026-10-16T12:00:00Z",
+  "monitor_mode": false,
+  "ok": true,
+  "plan": "starter",
+  "protection": "active",
+  "refused_since": null,
+  "suspended": false,
+  "version": "1.0.23"
+}
+```
+<!-- /example:status_plan_required -->
+
 | Field | Type | Values | Always | Meaning |
 |---|---|---|---|---|
 | `ok` | boolean | `true` | yes | |
@@ -112,7 +166,9 @@ printed) and `null` for what only the running agent knows:
 | `last_heartbeat` | string \| null | timestamp | yes | Last heartbeat the dashboard accepted. `null` before the first one, or when the agent is not running. |
 | `last_sync` | string \| null | timestamp | yes | Last configuration sync from the dashboard. |
 | `connected` | boolean | | yes | `true` when the last accepted heartbeat is less than 3 minutes old. |
-| `plan` | string \| null | e.g. `free`, `basic`, `pro` | yes | The organization's plan, as the dashboard sends it. `null` when the dashboard doesn't send it. |
+| `plan` | string \| null | e.g. `starter`, `basic`, `pro`, `automode` | yes | The organization's plan, as the dashboard sent it in the last successful sync (kept across restarts and while the dashboard is unreachable; without a running agent, the saved one). `null` when it is not known or the dashboard doesn't send it. |
+| `entitled` | boolean | | yes | `true` when the plugin may show data: `entitlement` is `ok`. See [Paid plans only](#paid-plans-only). |
+| `entitlement` | string | `ok`, `plan_required`, `unpaid`, `unknown` | yes | Why the plugin may or may not show data; the other commands answer the same code as their error. |
 | `automode` | object \| null | | yes | AutoMode state, read only: the object the dashboard sends, passed through unchanged. `null` when the dashboard doesn't send it (today's dashboards). |
 | `monitor_mode` | boolean \| null | | yes | `true`: detections are reported but nothing is banned. |
 | `suspended` | boolean \| null | | yes | `true`: the organization exceeded its plan's server limit; protection is off. |
@@ -881,6 +937,42 @@ that doesn't offer them yet). An agent older than these commands answers `unknow
 ```
 <!-- /example:error_not_connected -->
 
+Not entitled to the plugins (see [Paid plans only](#paid-plans-only)): every command but `status`, with no data.
+The code says why: `plan_required`, `unpaid` or `unknown`.
+
+<!-- example:error_plan_required -->
+```json
+{
+  "agent_running": true,
+  "error": "plan_required",
+  "message": "the InfraFence plugin is included in the Basic, Pro and AutoMode plans",
+  "ok": false
+}
+```
+<!-- /example:error_plan_required -->
+
+<!-- example:error_unpaid -->
+```json
+{
+  "agent_running": true,
+  "error": "unpaid",
+  "message": "InfraFence protection is switched off for this server (the dashboard has refused it for 24 hours, e.g. the subscription is not active): the plugin shows no data until it is accepted again",
+  "ok": false
+}
+```
+<!-- /example:error_unpaid -->
+
+<!-- example:error_unknown -->
+```json
+{
+  "agent_running": true,
+  "error": "unknown",
+  "message": "waiting for the InfraFence dashboard: this server's plan is not known yet",
+  "ok": false
+}
+```
+<!-- /example:error_unknown -->
+
 Arguments the command refuses before asking the agent: no `agent_running` key.
 
 <!-- example:error_invalid_ip -->
@@ -906,11 +998,14 @@ Error codes:
 |---|---|
 | `bad_request` | Unknown option, missing or extra argument, invalid `--limit`, `--since`, `--note` or `--hours`, full allow list. |
 | `unknown_command` | Not one of the thirteen commands. |
+| `plan_required` | Every command but `status`: the organization's plan doesn't include the plugins (e.g. Starter). No data. |
+| `unpaid` | Every command but `status`: protection is switched off (refused for 24 hours, e.g. unpaid). No data. |
+| `unknown` | Every command but `status`: the plan is not known yet (never synced, or the dashboard doesn't send it). No data. |
 | `invalid_ip` | Not exactly one IPv4 or IPv6 address (ranges, ports, zones, `0.0.0.0`, `::`, broadcast and multicast are refused). |
 | `invalid_path` | Not a clean absolute path. |
 | `invalid_actor` | `--actor` missing on a command that changes something, or not 1–64 of `A–Z a–z 0–9 . _ @ - +`. |
 | `not_root` | The command was not run as root. |
-| `agent_not_running` | The agent is not running (all commands except `status`, `coexistence`, `sites`). |
+| `agent_not_running` | The agent is not running (all commands except `status`, `coexistence`, `sites`; those two answer the entitlement error instead when not entitled). |
 | `loopback_address` | `allow`: a loopback address (`127.0.0.0/8`, `::1`); it is never banned and is refused. |
 | `not_banned` | `unban`: the address is not banned on this server (or was already lifted). |
 | `not_in_allowlist` | `disallow`: the address is not on the allow list. |

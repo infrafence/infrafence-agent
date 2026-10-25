@@ -62,6 +62,10 @@ func main() {
 	// {"error":"suspended"}) or "unauthorized" (401); empty: off.
 	var deny atomic.Value
 	deny.Store("")
+	// plan: the organization's plan in every sync's config (the panel
+	// plugins are for paid plans); empty: not sent, as an older dashboard.
+	var plan atomic.Value
+	plan.Store("pro")
 
 	reply := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -121,6 +125,16 @@ func main() {
 			out[k] = v
 		}
 		st.mu.Unlock()
+		if p := plan.Load().(string); p != "" {
+			cfg := map[string]any{}
+			if raw, ok := out["config"].(json.RawMessage); ok {
+				_ = json.Unmarshal(raw, &cfg)
+			} else {
+				cfg = maps.Clone(out["config"].(map[string]any))
+			}
+			cfg["plan"] = p
+			out["config"] = cfg
+		}
 		reply(w, out)
 	})
 	// Test control: top-level keys of the posted object replace those of the
@@ -142,6 +156,15 @@ func main() {
 		st.version++
 		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok"})
+	})
+	// Test control: /plan?name=starter sets the plan the syncs send
+	// (name= empty: none) and makes the agent sync again.
+	mux.HandleFunc("/plan", func(w http.ResponseWriter, r *http.Request) {
+		plan.Store(r.URL.Query().Get("name"))
+		st.mu.Lock()
+		st.version++
+		st.mu.Unlock()
+		reply(w, map[string]any{"status": "ok", "plan": plan.Load()})
 	})
 	// Test control: /offline?on=1 makes every agent API call fail with 503
 	// until /offline?on=0.
