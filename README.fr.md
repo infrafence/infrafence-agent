@@ -204,7 +204,7 @@ L'agent est téléchargé uniquement depuis GitHub Releases, et l'installateur s
 
 **Prérequis :** x86-64 ou ARM64, accès root, `iptables` ; systemd, upstart ou sysvinit. L'installateur utilise `apt`, `dnf` ou `yum` pour les dépendances manquantes et n'installe `ipset` que lorsque la vérification du serveur indique que c'est sans risque.
 
-**Testé avant chaque version** sur 14 distributions : Ubuntu 20.04, 22.04 et 24.04, Debian 12 et 13, Rocky Linux 8 et 9, AlmaLinux 8 et 9, CentOS Stream 9, Oracle Linux 9, Fedora 41 et 42, Amazon Linux 2023. Sur chacune, le vrai installateur s'exécute, détecte une attaque par force brute SSH, la bannit au pare-feu et se désinstalle proprement. Les autres distributions des familles Debian et RHEL fonctionnent en général : lancez d'abord l'installateur avec `--dry-run`. Voir [Distributions prises en charge](https://infrafence.com/fr/documentation/distributions-prises-en-charge).
+**Testé avant chaque version** sur 15 distributions : Ubuntu 20.04, 22.04, 24.04 et 26.04, Debian 12 et 13, Rocky Linux 8 et 9, AlmaLinux 8 et 9, CentOS Stream 9, Oracle Linux 9, Fedora 41 et 42, Amazon Linux 2023. Sur chacune, le vrai installateur s'exécute, détecte une attaque par force brute SSH, la bannit au pare-feu et se désinstalle proprement. Les autres distributions des familles Debian et RHEL fonctionnent en général : lancez d'abord l'installateur avec `--dry-run`. Voir [Distributions prises en charge](https://infrafence.com/fr/documentation/distributions-prises-en-charge).
 
 ### Docker
 
