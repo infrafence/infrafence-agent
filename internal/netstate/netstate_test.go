@@ -231,3 +231,20 @@ func TestListensPublicIPv6(t *testing.T) {
 		t.Fatal("IPv4-only listener reported on IPv6")
 	}
 }
+
+func TestHasPublicIPv6(t *testing.T) {
+	cidr := func(s string) net.Addr {
+		ip, n, err := net.ParseCIDR(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.IP = ip
+		return n
+	}
+	if hasPublicIPv6([]net.Addr{cidr("127.0.0.1/8"), cidr("203.0.113.5/24"), cidr("::1/128"), cidr("fe80::1/64"), cidr("fd00::5/64")}) {
+		t.Fatal("loopback, link-local, ULA and IPv4 are not public IPv6")
+	}
+	if !hasPublicIPv6([]net.Addr{cidr("fe80::1/64"), cidr("2a01:4f8::5/64")}) {
+		t.Fatal("global IPv6 not found")
+	}
+}

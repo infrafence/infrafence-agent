@@ -33,7 +33,7 @@ import (
 // too, so the dashboard can tie them to the problem.
 //
 // A subject is resolved from a time on: the dashboard sends what it
-// resolved (config.resolutions: a port closed, a fix applied, marked as
+// resolved (the sync's resolutions: a port closed, a fix applied, marked as
 // resolved...), and the agent records what it fixed itself (a port its
 // firewall closed, a fix applied and verified, a file quarantined, a package
 // updated). These are kept in the panel state (panelstate.go), 0600, for 30

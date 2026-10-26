@@ -1527,7 +1527,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	}
 	// Ports closed and egress blocked from the dashboard (fwactions.go).
 	// Problems the dashboard resolved, for the panel plugins (resolution.go).
-	panelNoteResolutions(sync.Config.Resolutions)
+	panelNoteResolutions(sync.SyncResolutions())
 	applyFirewallState(sync.FirewallState, sync.FirewallActions, sync.Config.MonitorMode)
 	if len(sync.FirewallActions) > 0 {
 		go applyFirewallActions(client, sync.FirewallActions)

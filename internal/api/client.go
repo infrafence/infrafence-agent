@@ -492,6 +492,20 @@ type SyncResponse struct {
 	// Domains whose trust badge needs the verification file now; a domain
 	// no longer listed has its token removed.
 	TrustTokens []TrustToken `json:"trust_tokens"`
+	// Problem events resolved in the dashboard (port closed, fix applied,
+	// marked as resolved...), this agent's subjects only; shown by
+	// "infrafence-agent panel events/findings". Absent from dashboards that
+	// don't send them.
+	Resolutions []Resolution `json:"resolutions,omitempty"`
+}
+
+// SyncResolutions are the sync's resolutions: the top-level list, or the
+// one inside config when there is none.
+func (s *SyncResponse) SyncResolutions() []Resolution {
+	if s.Resolutions != nil {
+		return s.Resolutions
+	}
+	return s.Config.Resolutions
 }
 
 // TrustToken is the verification token of one domain's trust badge, served
@@ -598,10 +612,8 @@ type SyncConfig struct {
 	// send them.
 	Plan     string          `json:"plan,omitempty"`
 	AutoMode json.RawMessage `json:"automode,omitempty"`
-	// Problem events resolved in the dashboard (port closed, fix applied,
-	// marked as resolved...), this agent's subjects only; shown by
-	// "infrafence-agent panel events/findings". Absent from dashboards that
-	// don't send them.
+	// Resolutions inside config: read only when the sync response has none
+	// at the top level (SyncResponse.Resolutions).
 	Resolutions []Resolution `json:"resolutions,omitempty"`
 }
 

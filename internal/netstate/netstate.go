@@ -230,6 +230,27 @@ func ListensPublicIPv6(port int) bool {
 	return false
 }
 
+// HasPublicIPv6 reports whether an interface of this host has a public IPv6
+// address. Without one nothing reaches the host over IPv6 from the
+// internet, whatever listens on [::].
+func HasPublicIPv6() bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return true // unknown: assume it has one
+	}
+	return hasPublicIPv6(addrs)
+}
+
+func hasPublicIPv6(addrs []net.Addr) bool {
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if ok && n.IP.To4() == nil && len(n.IP) == net.IPv6len && IsPublic(n.IP) {
+			return true
+		}
+	}
+	return false
+}
+
 func publicInbound(socks []Conn, port int) []string {
 	listening := false
 	for _, c := range socks {
