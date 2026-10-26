@@ -26,7 +26,9 @@ import (
 //   - every active ban with its expiry (the dashboard's, or localBanFor for
 //     the agent's own detections);
 //   - the outbox: bans the agent made itself that the dashboard has not
-//     confirmed yet.
+//     confirmed yet;
+//   - the organization's plan of the last successful sync, for the panel
+//     plugins' entitlement (panel.go): an outage doesn't blank them.
 //
 // At startup it is restored before the firewall setup (bans, allow list)
 // and before any watcher runs (allow list, monitor mode, countries). The
@@ -72,6 +74,9 @@ type protPersisted struct {
 	RefusedLast    int64 `json:"refused_last,omitempty"`
 	DisabledAt     int64 `json:"disabled_at,omitempty"`
 	MotdDirCreated bool  `json:"motd_dir_created,omitempty"`
+	// Plan of the last successful sync; "" when it sent none (kept also
+	// before Synced is set).
+	Plan string `json:"plan,omitempty"`
 }
 
 // pendingBan is a ban the agent made itself, kept until the dashboard lists
@@ -139,8 +144,10 @@ func restoreBeforeFirewall(st *protPersisted) {
 		return
 	}
 	prot.Lock()
+	prot.settings.Plan = st.Plan
 	if st.Synced {
 		prot.settings = protPersisted{
+			Plan:           st.Plan,
 			Synced:         true,
 			WhitelistIPs:   cleanList(st.WhitelistIPs),
 			WhitelistCIDRs: cleanList(st.WhitelistCIDRs),
@@ -234,6 +241,7 @@ func restoreSettings(ws banWatchers, setBlocked func([]string), applyCountries f
 func noteSyncedSettings(wlIPs, wlCIDRs, countries []string, monitorMode bool, bfThreshold, bfWindow int) {
 	prot.Lock()
 	prot.settings = protPersisted{
+		Plan:           prot.settings.Plan,
 		Synced:         true,
 		WhitelistIPs:   cleanList(wlIPs),
 		WhitelistCIDRs: cleanList(wlCIDRs),
@@ -244,6 +252,27 @@ func noteSyncedSettings(wlIPs, wlCIDRs, countries []string, monitorMode bool, bf
 	}
 	prot.Unlock()
 	scheduleProtectionSave()
+}
+
+// noteSyncedPlan records the plan of a successful sync ("" when the
+// dashboard sends none), saved when it changed.
+func noteSyncedPlan(plan string) {
+	plan = cleanText(strings.TrimSpace(plan), 40)
+	prot.Lock()
+	changed := prot.settings.Plan != plan
+	prot.settings.Plan = plan
+	prot.Unlock()
+	if changed {
+		scheduleProtectionSave()
+	}
+}
+
+// knownPlan is the plan of the last successful sync, or the saved one
+// until the first sync after a start.
+func knownPlan() string {
+	prot.Lock()
+	defer prot.Unlock()
+	return prot.settings.Plan
 }
 
 // scheduleProtectionSave writes the state protSaveDelay from now; changes

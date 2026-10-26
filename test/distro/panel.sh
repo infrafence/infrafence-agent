@@ -5,9 +5,11 @@
 # socket (root only, 0600 in a 0700 directory), every read command, that an
 # unban from the panel is reported with the panel user and is not reapplied
 # by the next sync or after a restart, allow/disallow, input validation,
-# the map and the score (one request per interval), the answers without
-# a running agent, and a db_exposed event resolved by a port closed from
-# the dashboard. Sets R_PANEL; appends to EXTRA_RESULT
+# the map and the score (one request per interval), the paid-plan gate
+# (Starter and an unknown plan get no data and change nothing, Basic does,
+# the plan is kept across a restart with the dashboard down), the answers
+# without a running agent, and a db_exposed event resolved by a port closed
+# from the dashboard. Sets R_PANEL; appends to EXTRA_RESULT
 # and sets EXTRA_FAIL=1 on a failure.
 R_PANEL=fail
 API=http://127.0.0.1:8080
@@ -73,6 +75,48 @@ for _ in 1 2; do out=$(pcmd score); done
 { grep -q '"ok":true' <<<"$out" && grep -q '"score":72' <<<"$out" && grep -q '"grade":"C"' <<<"$out" &&
   grep -q '"key":"hardening"' <<<"$out"; } || pf score "$out"
 [ "$(calls score)" = 1 ] || pf score_calls "$(calls score)"
+
+# ── paid plans only: Starter and an unknown plan get no data ──
+# set_plan NAME: the plan the mock's syncs send (empty: none); waits for the sync.
+set_plan() {
+  local before; before=$(syncs)
+  curl -s "$API/plan?name=$1" >/dev/null
+  for _ in $(seq 1 120); do [ "$(syncs)" -gt "$before" ] && { sleep 2; return 0; }; sleep 1; done
+  return 1
+}
+grep -q '"entitlement":"ok"' <<<"$(pcmd status)" || pf pro_status "$(pcmd status)"
+set_plan starter || pf plan_sync "no sync"
+out=$(pcmd status); rc=$?
+{ [ $rc = 0 ] && grep -q '"plan":"starter"' <<<"$out" && grep -q '"entitled":false' <<<"$out" &&
+  grep -q '"entitlement":"plan_required"' <<<"$out"; } || pf starter_status "rc=$rc $out"
+for c in bans allowlist findings events coexistence sites map score; do
+  out=$(pcmd "$c"); rc=$?
+  { [ $rc = 1 ] && grep -q '"error":"plan_required"' <<<"$out" &&
+    ! grep -qE '"(bans|allowlist|findings|events|tools|sites|countries|score|total)":' <<<"$out"; } || pf "starter_$c" "rc=$rc $out"
+done
+out=$(pcmd allow 192.0.2.78 --actor root); rc=$?
+{ [ $rc = 1 ] && grep -q '"error":"plan_required"' <<<"$out"; } || pf starter_allow "rc=$rc $out"
+curl -s "$API/state" | grep -q '"ip":"192.0.2.78"' && pf starter_allow_event "reported"
+set_plan "" || pf plan_sync "no sync"
+grep -q '"entitlement":"unknown"' <<<"$(pcmd status)" || pf unknown_status "$(pcmd status)"
+grep -q '"error":"unknown"' <<<"$(pcmd bans)" || pf unknown_bans "$(pcmd bans)"
+set_plan basic || pf plan_sync "no sync"
+out=$(pcmd status)
+{ grep -q '"plan":"basic"' <<<"$out" && grep -q '"entitled":true' <<<"$out"; } || pf basic_status "$out"
+grep -q '"ok":true' <<<"$(pcmd bans)" || pf basic_bans "$(pcmd bans)"
+grep -q '192.0.2.78' <<<"$(pcmd allowlist)" && pf starter_allow_kept "allowed while not entitled"
+# The plan is kept across a restart while the dashboard is down.
+curl -s "$API/offline?on=1" >/dev/null
+systemctl restart infrafence-agent
+for _ in $(seq 1 90); do [ -S "$sock" ] && break; sleep 1; done
+out=$(pcmd status)
+{ grep -q '"plan":"basic"' <<<"$out" && grep -q '"entitled":true' <<<"$out"; } || pf plan_kept "$out"
+grep -q '"ok":true' <<<"$(pcmd allowlist)" || pf plan_kept_allowlist "$(pcmd allowlist)"
+# The dashboard back (a restart skips the agent's backoff), on Pro again.
+curl -s "$API/offline?on=0" >/dev/null
+systemctl restart infrafence-agent
+for _ in $(seq 1 60); do [ -S "$sock" ] && break; sleep 1; done
+set_plan pro || pf plan_sync "no sync"
 
 # ── validation: never reaches the agent ──
 out=$(pcmd unban '203.0.113.0/24' --actor root); rc=$?

@@ -102,6 +102,9 @@ func main() {
 	case "panel":
 		cmdPanel(os.Args[2:])
 
+	case "version", "--version", "-v":
+		fmt.Printf("infrafence-agent v%s\n", version)
+
 	case "check":
 		// Pre-flight self-test used by the auto-updater to verify the binary
 		// works before restarting the service. Exits 0 on success.
@@ -118,6 +121,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  infrafence-agent register <server_url> <agent_name> <install_token>")
 	fmt.Println("  infrafence-agent start")
+	fmt.Println("  infrafence-agent version              print the installed version")
 	fmt.Println("  infrafence-agent check")
 	fmt.Println("  infrafence-agent preflight [--json]   read-only host compatibility scan")
 	fmt.Println("  infrafence-agent uninstall --clean    remove every change InfraFence made to this host")
@@ -1081,6 +1085,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Handle suspension: when suspended, stop all active protection but keep heartbeat alive.
 	// The agent stays installed — upgrading the plan automatically lifts the suspension.
 	panelNoteSync(sync)
+	// The panel plugins' entitlement; kept for a restart while the
+	// dashboard can't be reached (protstate.go).
+	noteSyncedPlan(sync.Config.Plan)
 	if sync.Config.Suspended {
 		log.Printf("[sync] agent is SUSPENDED (plan server limit exceeded) — disabling all watchers")
 		w.SetMonitorMode(true)

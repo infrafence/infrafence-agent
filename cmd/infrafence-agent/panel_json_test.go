@@ -189,6 +189,11 @@ var panelRefs = []panelRef{
 	{"map_stale", []string{"map", "--hours", "24", "--json"}},
 	{"score", []string{"score", "--json"}},
 	{"error_not_connected", []string{"map", "--hours", "168", "--json"}},
+	// Not entitled to the plugins (last: they change the plan).
+	{"status_plan_required", []string{"status", "--json"}},
+	{"error_plan_required", []string{"bans", "--json"}},
+	{"error_unpaid", []string{"bans", "--json"}},
+	{"error_unknown", []string{"bans", "--json"}},
 }
 
 // refDashboardDown: the dashboard stops answering the map from map_stale
@@ -225,6 +230,22 @@ var panelRefSetups = map[string]func(f *fakePanelHost){
 		panelInfoCache.entries["map:24"].tried = f.now.Add(-panelMapEvery)
 		panelInfoCache.Unlock()
 	},
+	// A Starter organization.
+	"status_plan_required": func(*fakePanelHost) { setKnownPlan("starter") },
+	// Pro, but protection switched off after 24 hours of refusal.
+	"error_unpaid": func(f *fakePanelHost) {
+		setKnownPlan("pro")
+		protCtl.Lock()
+		protCtl.disabledAt = f.now.Add(-time.Hour)
+		protCtl.Unlock()
+	},
+	// Never synced, or a dashboard that doesn't send the plan.
+	"error_unknown": func(*fakePanelHost) {
+		setKnownPlan("")
+		protCtl.Lock()
+		protCtl.disabledAt = time.Time{}
+		protCtl.Unlock()
+	},
 }
 
 // Without a running agent (the socket does not exist).
@@ -254,6 +275,7 @@ func TestPanelJSONReference(t *testing.T) {
 		t.Skip("the panel socket serves root only")
 	}
 	f := withFakePanel(t)
+	setProtectionDisabled(t, time.Time{}) // restored after error_unpaid
 	sockDir, err := os.MkdirTemp("/tmp", "ifj")
 	if err != nil {
 		t.Fatal(err)
