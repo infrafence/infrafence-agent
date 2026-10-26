@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"log"
 	"regexp"
 	"slices"
 	"strconv"
@@ -344,6 +345,33 @@ func resolveFindingLocked(f *panelFinding) {
 // are in force (over IPv6 too), so a database listening on all addresses
 // there is not exposed. Saved or requested state is not enough: when the
 // rules could not be loaded, the port is reported as exposed.
+// A port the agent closed before (saved) but whose rules are not in force
+// yet is checked again for up to a minute: the first firewall setup may still
+// be running.
 func portClosedByAgent(port int) bool {
-	return firewallHasPort(port) && !ipv6Exposed(port)
+	for try := 0; ; try++ {
+		if firewallHasPort(port) {
+			if ipv6Exposed(port) {
+				log.Printf("[dbwatcher] port %d is closed over IPv4 only: still reachable over IPv6", port)
+				return false
+			}
+			return true
+		}
+		appliedMu.Lock()
+		saved := fwAppliedPorts[port]
+		appliedMu.Unlock()
+		if !saved || try >= portInForceTries {
+			if saved {
+				log.Printf("[dbwatcher] port %d: the agent's rules closing it are not in force", port)
+			}
+			return false
+		}
+		time.Sleep(portInForceWait)
+	}
 }
+
+// Replaced in tests.
+var (
+	portInForceTries = 30
+	portInForceWait  = 2 * time.Second
+)

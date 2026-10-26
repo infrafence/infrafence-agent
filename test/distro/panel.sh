@@ -141,10 +141,12 @@ e=$(dbx)
 { grep -q '"state":"resolved"' <<<"$e" && grep -q '"resolved_how":"port_closed"' <<<"$e" &&
   grep -q '"resolved_at":"20' <<<"$e"; } || pf db_exposed_resolved "$e $(curl -s "$API/state" | grep -o '"type":"firewall_action_[a-z_]*"[^}]*"action_id":"151"[^}]*')"
 grep -q '"subject":"port:tcp/6379"' /var/lib/infrafence/panel-state.json 2>/dev/null || pf resolution_saved "$(cat /var/lib/infrafence/panel-state.json 2>&1)"
+# As the dashboard does once it has the result: the port in the state, the request settled.
+wait_sync '{"firewall_state": {"closed_ports": [{"port": 6379, "proto": "tcp"}], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync after close_port"
 systemctl restart infrafence-agent
 for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 sleep 10
-[ -z "$(dbx)" ] || pf db_exposed_again "reported again after a restart with the port closed: $(dbx)"
+[ -z "$(dbx)" ] || pf db_exposed_again "reported again after a restart with the port closed: $(dbx) $(journalctl -u infrafence-agent --since -2min --no-pager 2>/dev/null | grep -E "dbwatcher|firewall\]" | tail -8)"
 # Open again for the following checks (firewall.sh).
 wait_sync '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync to reopen 6379"
 for _ in $(seq 1 30); do iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport 6379 " || break; sleep 1; done

@@ -312,6 +312,8 @@ func TestPortClosedByAgentNeedsRulesInForce(t *testing.T) {
 	t.Cleanup(func() { fwInForce, fwPorts6, fwListens6 = savedInForce, savedPorts6, savedListens6 })
 	fwPorts6 = func() ([]int, bool) { return nil, false }
 	fwListens6 = func(int) bool { return false }
+	portInForceTries, portInForceWait = 1, time.Millisecond
+	t.Cleanup(func() { portInForceTries, portInForceWait = 30, 2*time.Second })
 	fwInForce = func() ([]int, []string) { return nil, nil } // rules not loaded
 	if portClosedByAgent(3306) {
 		t.Fatal("closed without rules in force")
