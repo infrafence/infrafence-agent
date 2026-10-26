@@ -139,6 +139,7 @@ func main() {
 	})
 	// Test control: top-level keys of the posted object replace those of the
 	// sync reply (null removes one; send the whole "config" to change it).
+	// "resolutions" goes at the top level, as the dashboard sends it.
 	mux.HandleFunc("/set-sync", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -184,9 +185,14 @@ func main() {
 		reply(w, map[string]any{"status": "ok", "deny": mode})
 	})
 	// Test control: listen on a TCP port (accept and close), for the
-	// close_port / block_egress cases.
+	// close_port / block_egress cases. net=tcp4: IPv4 only (default "tcp":
+	// a wildcard address is a dual-stack IPv6 socket).
 	mux.HandleFunc("/listen", func(w http.ResponseWriter, r *http.Request) {
-		ln, err := net.Listen("tcp", r.URL.Query().Get("addr"))
+		network := "tcp"
+		if n := r.URL.Query().Get("net"); n == "tcp4" || n == "tcp6" {
+			network = n
+		}
+		ln, err := net.Listen(network, r.URL.Query().Get("addr"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

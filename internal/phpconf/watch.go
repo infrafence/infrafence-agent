@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +18,22 @@ type Risk struct {
 	Directive string
 	Value     string
 	Severity  string // critical or warning
+}
+
+// CheckID is the hardening check that reports this value
+// (PHP_ALLOW_URL_INCLUDE@<runtime>[/<pool>], PHP_DISPLAY_ERRORS@site:<site>...):
+// the same subject in the dashboard. "" for another directive.
+func (r Risk) CheckID() string {
+	base := ""
+	switch strings.ToLower(r.Directive) {
+	case "allow_url_include":
+		base = CheckAllowURLInclude
+	case "display_errors":
+		base = CheckDisplayErrors
+	default:
+		return ""
+	}
+	return ID(base, r.Runtime, r.Pool)
 }
 
 func (r Risk) key() string {

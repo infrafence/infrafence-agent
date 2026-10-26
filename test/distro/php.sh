@@ -54,6 +54,17 @@ server {
   }
 }
 EOF
+  # Apache (the WAF case) may still hold port 80 for a moment, or PHP-FPM
+  # may not answer yet: wait until the test page answers through nginx (at
+  # most 60 s); a page that never answers still fails below.
+  for i in $(seq 1 60); do
+    ask | grep -q '^allow_url_include=' && break
+    if [ "$i" = 10 ] || [ "$i" = 30 ]; then
+      for u in apache2 httpd; do systemctl stop "$u" >/dev/null 2>&1; done
+      systemctl restart "$fpm" nginx >/dev/null 2>&1
+    fi
+    sleep 1
+  done
   systemctl reload nginx
   log "php: fpm=$fpm socket=$sock scan dir=$scandir before: $(ask)"
   # Restart so the agent sees nginx, the site and PHP (baseline: no risk).

@@ -108,7 +108,7 @@ var (
 	fwResolvers     = configuredResolvers
 	fwApply         = firewall.SetPortsEgress
 	fwPorts6        = firewall.Ports6InForce
-	fwListens6      = netstate.ListensPublicIPv6
+	fwListens6      = listensReachableIPv6
 	fwDropConntrack = func(ports []int) {
 		for _, p := range ports {
 			if n := firewall.DropConntrack(p); n > 0 {
@@ -653,8 +653,17 @@ func runFirewallAction(a api.FirewallAction) (typ, severity string, details map[
 }
 
 // ipv6ExposedMessage: the port is closed over IPv4, but ip6tables is missing
-// or refused the rules and something listens on a public IPv6 address.
+// or refused the rules, something listens on a public IPv6 address of the
+// socket table ([::] included, a dual-stack socket too) and the host has a
+// public IPv6 address. An IPv4-only listener, or a host without public IPv6,
+// is not reachable over IPv6.
 const ipv6ExposedMessage = "IPv4 only: still reachable over IPv6"
+
+// listensReachableIPv6: something listens on port over IPv6 and the host has
+// a public IPv6 address to be reached on.
+func listensReachableIPv6(port int) bool {
+	return netstate.ListensPublicIPv6(port) && netstate.HasPublicIPv6()
+}
 
 func ipv6Exposed(port int) bool {
 	if closed, ok := fwPorts6(); ok && containsInt(closed, port) {

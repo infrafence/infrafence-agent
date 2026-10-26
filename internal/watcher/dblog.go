@@ -150,8 +150,16 @@ func HasDBService() bool {
 	return len(detectDBLogPaths()) > 0
 }
 
-// ExposedDBPorts checks if database ports are publicly accessible and returns warnings.
-func ExposedDBPorts() []string {
+// ExposedDBPort is a database port listening on all addresses.
+type ExposedDBPort struct {
+	Port    int
+	Service string // MySQL/MariaDB, PostgreSQL, MongoDB, Redis
+	Warning string
+}
+
+// ExposedDBPortList checks which database ports listen on all addresses
+// (0.0.0.0 or *), in port order.
+func ExposedDBPortList() []ExposedDBPort {
 	dbPorts := map[int]string{
 		3306:  "MySQL/MariaDB",
 		5432:  "PostgreSQL",
@@ -159,8 +167,9 @@ func ExposedDBPorts() []string {
 		6379:  "Redis",
 	}
 
-	var warnings []string
-	for port, name := range dbPorts {
+	var exposed []ExposedDBPort
+	for _, port := range []int{3306, 5432, 6379, 27017} {
+		name := dbPorts[port]
 		// Check if port is listening
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("0.0.0.0:%d", port), 2*time.Second)
 		if err != nil {
@@ -175,11 +184,10 @@ func ExposedDBPorts() []string {
 		}
 		output := string(out)
 		if strings.Contains(output, "0.0.0.0:"+fmt.Sprintf("%d", port)) || strings.Contains(output, "*:"+fmt.Sprintf("%d", port)) {
-			warnings = append(warnings, fmt.Sprintf("%s is exposed publicly on port %d", name, port))
+			exposed = append(exposed, ExposedDBPort{Port: port, Service: name, Warning: fmt.Sprintf("%s is exposed publicly on port %d", name, port)})
 		}
 	}
-
-	return warnings
+	return exposed
 }
 
 // NewDBWatcher creates a watcher for database logs.

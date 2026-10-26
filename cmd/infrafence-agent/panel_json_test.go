@@ -144,10 +144,22 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 	panelNoteEvent(api.EventRequest{Type: "ssh_brute_force", Severity: "warning", SourceIP: "203.0.113.7", OccurredAt: at(-3 * time.Hour), Details: map[string]string{"source": "watcher"}})
 	panelNoteEvent(api.EventRequest{Type: "sql_injection", Severity: "critical", SourceIP: "198.51.100.23", OccurredAt: at(-2 * time.Hour), Details: map[string]string{"source": "modsecurity"}})
 	panelNoteEvent(api.EventRequest{Type: "integrity_change", Severity: "warning", OccurredAt: at(-90 * time.Minute), Details: map[string]string{"file": "/etc/passwd"}})
+	// MySQL open to the internet, closed by the agent's firewall at the
+	// dashboard's request.
+	panelNoteEvent(api.EventRequest{Type: "db_exposed", Severity: "critical", OccurredAt: at(-80 * time.Minute),
+		Details: map[string]string{"warning": "MySQL/MariaDB is exposed publicly on port 3306", "port": "3306", "proto": "tcp", "service": "MySQL/MariaDB"}})
+	panelNoteEvent(api.EventRequest{Type: "firewall_action_done", Severity: "info", OccurredAt: at(-70 * time.Minute),
+		Details: map[string]string{"action_id": "7", "kind": "close_port", "port": "3306", "proto": "tcp", "status": "done", "message": "port 3306 closed"}})
 	panelNoteEvent(api.EventRequest{Type: "malware_realtime", Severity: "critical", OccurredAt: at(-time.Hour),
 		Details: map[string]string{"file_path": alice + "/wp-content/uploads/x.php", "name": "PHP webshell (generic)"}})
 	panelNoteEvent(api.EventRequest{Type: "quarantine_completed", Severity: "info", OccurredAt: at(-50 * time.Minute),
 		Details: map[string]string{"file": alice + "/wp-content/uploads/x.php"}})
+	// A PHP setting still at risk; /etc/passwd marked as expected in the
+	// dashboard.
+	panelNoteEvent(api.EventRequest{Type: "php_config_risk", Severity: "warning", OccurredAt: at(-10 * time.Minute),
+		Details: map[string]string{"runtime": "ea-php82", "directive": "display_errors", "value": "On", "check_id": "PHP_DISPLAY_ERRORS@ea-php82"}})
+	panelNoteResolutions([]api.Resolution{{Subject: "file:/etc/passwd", ResolvedAt: at(-20 * time.Minute), How: "marked_expected", By: "user"}})
+	t.Cleanup(func() { syncedResolutions.Store(nil) })
 	panelNow = func() time.Time { return f.now.Add(-30 * time.Minute) }
 	panelNoteScanFindings([]malware.Finding{{FilePath: bob + "/wp-includes/class-wp-cache.php", Name: "Obfuscated eval", Severity: "high"}})
 	panelNow = func() time.Time { return f.now }

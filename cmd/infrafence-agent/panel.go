@@ -704,6 +704,9 @@ func panelAllowlist() panel.Response {
 func panelFindings(limit int) panel.Response {
 	panelState.Lock()
 	out := append([]panelFinding(nil), panelState.findings...)
+	for i := range out {
+		resolveFindingLocked(&out[i])
+	}
 	panelState.Unlock()
 	slices.SortStableFunc(out, func(a, b panelFinding) int { return strings.Compare(b.LastSeen, a.LastSeen) })
 	total := len(out)
@@ -723,6 +726,12 @@ type panelEventOut struct {
 	SourceIP any    `json:"source_ip"`
 	Source   any    `json:"source"`
 	Time     string `json:"time"`
+
+	// resolution.go
+	Subject     any `json:"subject"`
+	State       any `json:"state"`
+	ResolvedAt  any `json:"resolved_at"`
+	ResolvedHow any `json:"resolved_how"`
 }
 
 func panelEvents(limit int, since string) panel.Response {
@@ -731,24 +740,19 @@ func panelEvents(limit int, since string) panel.Response {
 		cutoff, _ = time.Parse(time.RFC3339, since)
 	}
 	panelState.Lock()
-	var out []panelEvent
-	for i := len(panelState.events) - 1; i >= 0 && len(out) < limit; i-- {
+	res := []panelEventOut{}
+	for i := len(panelState.events) - 1; i >= 0 && len(res) < limit; i-- {
 		e := panelState.events[i]
 		if !cutoff.IsZero() {
 			if t, err := time.Parse(time.RFC3339, e.Time); err == nil && t.Before(cutoff) {
 				continue
 			}
 		}
-		out = append(out, e)
+		o := panelEventOut{Type: e.Type, Severity: e.Severity, SourceIP: orNull(e.SourceIP), Source: orNull(e.Source), Time: e.Time}
+		o.Subject, o.State, o.ResolvedAt, o.ResolvedHow = resolutionFieldsLocked(e.subject, e.problem, e.Time)
+		res = append(res, o)
 	}
 	panelState.Unlock()
-	if out == nil {
-		out = []panelEvent{}
-	}
-	res := make([]panelEventOut, len(out))
-	for i, e := range out {
-		res[i] = panelEventOut{Type: e.Type, Severity: e.Severity, SourceIP: orNull(e.SourceIP), Source: orNull(e.Source), Time: e.Time}
-	}
 	return panel.OK(map[string]any{"events": res})
 }
 

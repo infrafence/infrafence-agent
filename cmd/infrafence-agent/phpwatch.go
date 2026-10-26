@@ -29,6 +29,10 @@ func runPHPWatcher(client *api.Client) {
 			if r.Pool != "" {
 				details["pool"] = r.Pool
 			}
+			if id := r.CheckID(); id != "" {
+				// The hardening check reporting it: its subject (resolution.go).
+				details["check_id"] = id
+			}
 			log.Printf("[php] %s = %s for %s %s (%s:%d)", r.Directive, r.Value, r.Runtime, r.Pool, r.File, r.Line)
 			reportEvent(client, "php_config_risk", r.Severity, details)
 		},

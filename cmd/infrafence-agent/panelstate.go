@@ -98,6 +98,9 @@ type panelPersisted struct {
 	Allowed []panelAllowEntry `json:"allowed,omitempty"`
 	Outbox  []outboxItem      `json:"outbox,omitempty"`
 	NextSeq int64             `json:"next_seq,omitempty"`
+
+	// Problems the agent fixed itself (resolution.go).
+	Resolved []resolution `json:"resolved,omitempty"`
 }
 
 // panelSyncView is what the last sync said, for the read commands.
@@ -122,6 +125,10 @@ type panelEvent struct {
 	SourceIP string `json:"source_ip,omitempty"`
 	Time     string `json:"time"`
 	Source   string `json:"source,omitempty"`
+
+	// details.subject, and whether it is a problem event (resolution.go).
+	subject string
+	problem bool
 }
 
 type panelFinding struct {
@@ -132,7 +139,13 @@ type panelFinding struct {
 	Status   string `json:"status"` // detected, quarantined
 	Detected string `json:"detected"`
 	LastSeen string `json:"last_seen"`
-	key      string
+
+	// Filled in by the findings answer (resolution.go).
+	Subject     string `json:"subject"`
+	State       string `json:"state"`
+	ResolvedAt  any    `json:"resolved_at"`
+	ResolvedHow any    `json:"resolved_how"`
+	key         string
 }
 
 var panelState = struct {
@@ -163,6 +176,7 @@ func loadPanelState() {
 		log.Printf("[panel] state: %v (ignored)", err)
 		return
 	}
+	p.Resolved = boundResolutions(p.Resolved, panelNow())
 	panelState.p = p
 }
 
@@ -333,6 +347,7 @@ func panelNoteEvent(e api.EventRequest) {
 	panelState.events = append(panelState.events, panelEvent{
 		Type: cleanText(e.Type, 64), Severity: cleanText(e.Severity, 16), SourceIP: cleanText(e.SourceIP, 45),
 		Time: cleanText(at, 40), Source: cleanText(e.Details["source"], 64),
+		subject: panelEventSubject(e), problem: problemEvent(e),
 	})
 	if n := len(panelState.events) - maxEvents; n > 0 {
 		panelState.events = slices.Delete(panelState.events, 0, n)
@@ -349,6 +364,16 @@ func panelNoteEvent(e api.EventRequest) {
 			}
 		}
 	}
+	noteFixedLocked(e)
+}
+
+// panelEventSubject is the event's subject, as sent or derived.
+func panelEventSubject(e api.EventRequest) string {
+	s := e.Details["subject"]
+	if s == "" {
+		s = eventSubject(e)
+	}
+	return cleanText(s, maxSubject)
 }
 
 // panelNoteScanFindings adds the findings of a malware scan.

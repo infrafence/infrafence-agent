@@ -7,8 +7,9 @@
 # by the next sync or after a restart, allow/disallow, input validation,
 # the map and the score (one request per interval), the paid-plan gate
 # (Starter and an unknown plan get no data and change nothing, Basic does,
-# the plan is kept across a restart with the dashboard down), and the
-# answers without a running agent. Sets R_PANEL; appends to EXTRA_RESULT
+# the plan is kept across a restart with the dashboard down), the answers
+# without a running agent, and a db_exposed event resolved by a port closed
+# from the dashboard. Sets R_PANEL; appends to EXTRA_RESULT
 # and sets EXTRA_FAIL=1 on a failure.
 R_PANEL=fail
 API=http://127.0.0.1:8080
@@ -165,8 +166,68 @@ for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 sleep 5
 banned 203.0.113.2 && pf restart_reapplied "lifted ban reapplied after restart"
 
-# Back to the default sync for the following checks.
+# ── problem events resolved: a database port open to all over IPv4 only
+# (6379), closed from the dashboard; the db_exposed event shows resolved
+# (also where ip6tables is missing: nothing listens over IPv6), and is not
+# reported again after a restart. Where ip6tables is missing, a dual-stack
+# listener (27017) on a host with a public IPv6 address stays open after the
+# close: it is still reachable over IPv6. ──
 curl -s -X POST "$API/set-sync" -d '{"bans": null, "whitelists": null}' >/dev/null
+curl -s "$API/listen?addr=0.0.0.0:6379&net=tcp4" >/dev/null
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+# dbx [PORT]: the newest db_exposed event of PORT (6379).
+dbx() { pcmd events --limit 500 | grep -o '{[^{}]*"type":"db_exposed"[^{}]*}' | grep -F "\"subject\":\"port:tcp/${1:-6379}\"" | head -1; }
+for _ in $(seq 1 30); do [ -n "$(dbx)" ] && break; sleep 1; done
+e=$(dbx)
+{ grep -q '"subject":"port:tcp/6379"' <<<"$e" && grep -q '"state":"open"' <<<"$e" &&
+  grep -q '"resolved_how":null' <<<"$e"; } || pf db_exposed_open "${e:-no db_exposed event}"
+curl -s "$API/state" | grep -o '"type":"db_exposed"[^}]*}' | grep -q '"subject":"port:tcp/6379"' || pf db_exposed_subject "not sent to the dashboard"
+# Marked as resolved in the dashboard (top-level "resolutions" of the sync), then reopened.
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+wait_sync "{\"resolutions\": [{\"subject\": \"port:tcp/6379\", \"resolved_at\": \"$now\", \"how\": \"marked_resolved\", \"by\": \"user\"}]}" || pf sync "no sync with resolutions"
+e=$(dbx)
+{ grep -q '"state":"resolved"' <<<"$e" && grep -q '"resolved_how":"marked_resolved"' <<<"$e"; } || pf synced_resolution "$e"
+wait_sync '{"resolutions": []}' || pf sync "no sync to reopen"
+grep -q '"state":"open"' <<<"$(dbx)" || pf synced_reopen "$(dbx)"
+wait_sync '{"firewall_actions": [{"id": 151, "kind": "close_port", "port": 6379, "proto": "tcp"}]}' || pf sync "no sync for close_port"
+for _ in $(seq 1 60); do grep -q '"state":"resolved"' <<<"$(dbx)" && break; sleep 1; done
+e=$(dbx)
+{ grep -q '"state":"resolved"' <<<"$e" && grep -q '"resolved_how":"port_closed"' <<<"$e" &&
+  grep -q '"resolved_at":"20' <<<"$e"; } || pf db_exposed_resolved "$e $(curl -s "$API/state" | grep -o '"type":"firewall_action_[a-z_]*"[^}]*"action_id":"151"[^}]*')"
+grep -q '"subject":"port:tcp/6379"' /var/lib/infrafence/panel-state.json 2>/dev/null || pf resolution_saved "$(cat /var/lib/infrafence/panel-state.json 2>&1)"
+# As the dashboard does once it has the result: the port in the state, the request settled.
+wait_sync '{"firewall_state": {"closed_ports": [{"port": 6379, "proto": "tcp"}], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync after close_port"
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+sleep 10
+[ -z "$(dbx)" ] || pf db_exposed_again "reported again after a restart with the port closed: $(dbx) $(journalctl -u infrafence-agent --since -2min --no-pager 2>/dev/null | grep -E "dbwatcher|firewall\]" | tail -8)"
+# Open again for the following checks (firewall.sh).
+wait_sync '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync to reopen 6379"
+for _ in $(seq 1 30); do iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport 6379 " || break; sleep 1; done
+iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport 6379 " && pf reopen_6379 "still closed"
+
+if ! { command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; }; then
+  sysctl -qw net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 2>/dev/null
+  ip link add ifv6test type dummy && ip link set ifv6test up &&
+    ip -6 addr add 2a01:4f8:ffff::10/64 dev ifv6test nodad || pf v6_setup "no public IPv6 address"
+  curl -s "$API/listen?addr=%5B::%5D:27017" >/dev/null
+  systemctl restart infrafence-agent
+  for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+  for _ in $(seq 1 30); do [ -n "$(dbx 27017)" ] && break; sleep 1; done
+  grep -q '"state":"open"' <<<"$(dbx 27017)" || pf v6_db_exposed "$(dbx 27017) (no open db_exposed for 27017)"
+  wait_sync '{"firewall_actions": [{"id": 152, "kind": "close_port", "port": 27017, "proto": "tcp"}]}' || pf sync "no sync for close_port 27017"
+  for _ in $(seq 1 60); do curl -s "$API/state" | grep -q '"action_id":"152"' && break; sleep 1; done
+  ev=$(curl -s "$API/state" | grep -o '"type":"firewall_action_[a-z_]*"[^}]*"action_id":"152"[^}]*')
+  grep -q 'IPv4 only: still reachable over IPv6' <<<"$ev" || pf v6_close_message "$ev"
+  e=$(dbx 27017)
+  grep -q '"state":"open"' <<<"$e" || pf v6_stays_open "resolved although reachable over IPv6: $e"
+  ip link del ifv6test 2>/dev/null
+  wait_sync '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync to reopen 27017"
+fi
+
+# Back to the default sync for the following checks.
+curl -s -X POST "$API/set-sync" -d '{"bans": null, "whitelists": null, "firewall_state": null, "resolutions": null}' >/dev/null
 
 [ -z "$pfail" ] && R_PANEL=ok
 EXTRA_RESULT="${EXTRA_RESULT:-} panel=${R_PANEL}"
