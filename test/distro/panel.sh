@@ -8,8 +8,10 @@
 # the map and the score (one request per interval), the paid-plan gate
 # (Starter and an unknown plan get no data and change nothing, Basic does,
 # the plan is kept across a restart with the dashboard down), the answers
-# without a running agent, and a db_exposed event resolved by a port closed
-# from the dashboard. Sets R_PANEL; appends to EXTRA_RESULT
+# without a running agent, a db_exposed event resolved by a port closed
+# from the dashboard, and the WHM plugin's version (installed, in the
+# heartbeat; latest, from the sync) on a host made to look like cPanel for
+# the last checks. Sets R_PANEL; appends to EXTRA_RESULT
 # and sets EXTRA_FAIL=1 on a failure.
 R_PANEL=fail
 API=http://127.0.0.1:8080
@@ -225,6 +227,44 @@ if ! { command -v ip6tables >/dev/null && ip6tables -S INPUT >/dev/null 2>&1; };
   ip link del ifv6test 2>/dev/null
   wait_sync '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' || pf sync "no sync to reopen 27017"
 fi
+
+# ── the WHM plugin's version: none here, then a host that looks like cPanel
+# with the plugin's VERSION file. The heartbeat carries it; the latest
+# version comes from the sync; both show in panel status. ──
+# last_hb_after N: the body of a heartbeat sent after the Nth.
+hbs() { curl -s "$API/state" | grep -o '"heartbeats":[0-9]*' | cut -d: -f2; }
+last_hb_after() {
+  for _ in $(seq 1 90); do [ "$(hbs)" -gt "$1" ] && break; sleep 1; done
+  curl -s "$API/state" | grep -o '"last_heartbeat":{.*' | head -c 20000
+}
+hb=$(last_hb_after "$(hbs)")
+grep -q '"panel_plugin":null' <<<"$hb" || pf plugin_none_heartbeat "$(grep -o '"panel_plugin":[^,]*' <<<"$hb")"
+out=$(pcmd status)
+{ grep -q '"plugin_installed":null' <<<"$out" && grep -q '"plugin_latest":null' <<<"$out"; } || pf plugin_none_status "$out"
+mkdir -p /usr/local/cpanel /usr/local/share/infrafence-whm
+echo 11.130.0.1 >/usr/local/cpanel/version
+echo 1.0.2 >/usr/local/share/infrafence-whm/VERSION
+before=$(hbs)
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+grep -q '"plugin_installed":"1.0.2"' <<<"$(pcmd status)" || pf plugin_installed "$(pcmd status)"
+hb=$(last_hb_after "$before")
+grep -q '"panel_plugin":{"panel":"whm","version":"1.0.2"}' <<<"$hb" || pf plugin_heartbeat "$(grep -o '"panel_plugin":[^}]*}*' <<<"$hb")"
+wait_sync '{"panel_plugin_latest": {"whm": "1.0.3"}}' || pf sync "no sync with panel_plugin_latest"
+out=$(pcmd status)
+{ grep -q '"plugin_installed":"1.0.2"' <<<"$out" && grep -q '"plugin_latest":"1.0.3"' <<<"$out" &&
+  grep -q '"control_panel":"cpanel"' <<<"$out"; } || pf plugin_latest "$out"
+# A malformed value is ignored, and never fails the sync.
+wait_sync '{"panel_plugin_latest": {"whm": "<b>1.0.4</b>"}, "bans": [{"id":12,"ip_address":"203.0.113.12","expires_at":null}]}' || pf sync "no sync with a bad panel_plugin_latest"
+grep -q '"plugin_latest":null' <<<"$(pcmd status)" || pf plugin_latest_bad "$(pcmd status)"
+banned 203.0.113.12 || pf plugin_latest_bad_sync "the rest of the sync was not applied"
+# The detection only reads: nothing of the plugin's was changed.
+[ "$(cat /usr/local/share/infrafence-whm/VERSION)" = 1.0.2 ] || pf plugin_file_changed
+# Not cPanel any more.
+rm -rf /usr/local/cpanel /usr/local/share/infrafence-whm
+curl -s -X POST "$API/set-sync" -d '{"panel_plugin_latest": null, "bans": null}' >/dev/null
+systemctl restart infrafence-agent
+for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 
 # Back to the default sync for the following checks.
 curl -s -X POST "$API/set-sync" -d '{"bans": null, "whitelists": null, "firewall_state": null, "resolutions": null}' >/dev/null

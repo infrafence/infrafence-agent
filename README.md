@@ -265,6 +265,8 @@ Set them with `sudo systemctl edit infrafence-agent` (`[Service]` → `Environme
 
 **Open or resolved:** every problem event the agent reports (an exposed database port, a changed system file, a risky PHP setting, malware...) carries `details.subject` (`port:tcp/3306`, `file:/etc/passwd`...). From 1.0.34, `panel events` and `panel findings` say whether each problem is still `open` or `resolved` (`subject`, `state`, `resolved_at`, `resolved_how`): resolved in the dashboard, or fixed by the agent itself (a port its firewall closed, a fix applied and verified, a file quarantined, a package updated). A database port the agent's firewall closes is no longer reported as exposed when the agent restarts. Details: [docs/panel-json.md](docs/panel-json.md#problems-and-resolution).
 
+**Plugin version:** the panel plugin is updated from the dashboard (Panel plugins), not with the agent. From 1.0.35 the agent reads the installed WHM plugin's version (read only: `/usr/local/share/infrafence-whm/VERSION`, else the `infrafence-whm` package; at start and at most hourly) and sends it with the heartbeat (`panel_plugin`). `panel status` shows it as `plugin_installed`, next to `plugin_latest`, the latest release the dashboard sends in the sync, so the plugin can say when an update is available. Details: [docs/panel-json.md](docs/panel-json.md#status).
+
 ---
 
 ## Not available yet

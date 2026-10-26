@@ -92,6 +92,8 @@ Column "Always": `yes` = the key is in every reply (or every array element); `no
   "monitor_mode": false,
   "ok": true,
   "plan": "pro",
+  "plugin_installed": "1.0.2",
+  "plugin_latest": "1.0.3",
   "protection": "active",
   "refused_since": null,
   "suspended": false,
@@ -120,6 +122,8 @@ printed) and `null` for what only the running agent knows:
   "monitor_mode": null,
   "ok": true,
   "plan": null,
+  "plugin_installed": null,
+  "plugin_latest": null,
   "protection": null,
   "refused_since": null,
   "suspended": null,
@@ -148,6 +152,8 @@ An organization on a plan without the plugins (Starter): `entitled` is `false` a
   "monitor_mode": false,
   "ok": true,
   "plan": "starter",
+  "plugin_installed": "1.0.2",
+  "plugin_latest": "1.0.3",
   "protection": "active",
   "refused_since": null,
   "suspended": false,
@@ -176,6 +182,8 @@ An organization on a plan without the plugins (Starter): `entitled` is `false` a
 | `refused_since` | string \| null | timestamp | yes | When the dashboard started refusing the agent (no accepted request since); `null` when it is not refusing. |
 | `disabled_at` | string \| null | timestamp | yes | When protection was switched off; `null` while it is on. |
 | `control_panel` | string \| null | `cpanel`, `plesk`, `directadmin`, `cyberpanel`, `hestiacp`, `vestacp`, `ispconfig`, `cloudpanel`, `cwp`, `aapanel`, `keyhelp`, `froxlor`, `enhance`, `virtualmin`, `webmin`, `coolify`, `dokploy`, `easypanel`, `caprover`, `runcloud`, `gridpane`, `forge`, `ploi`, `bitnami` | yes | Hosting panel detected on the server. |
+| `plugin_installed` | string \| null | e.g. `1.0.2` | yes | Version of the InfraFence plugin installed in the panel, read by the agent (WHM: `/usr/local/share/infrafence-whm/VERSION`, else the `infrafence-whm` rpm or deb package). Agent 1.0.35+. `null` when no plugin is found, and on Plesk for now. The plugin is updated from the dashboard (Panel plugins), not with the agent: `version` is the agent's, this is the plugin's. |
+| `plugin_latest` | string \| null | e.g. `1.0.3` | yes | Latest release of this panel's plugin, as the dashboard sent it in the last sync (`panel_plugin_latest`). Agent 1.0.35+. `null` when the dashboard doesn't send it, on Plesk for now, and without a running agent. When it is newer than the plugin's own version (compare as versions, not as text), the plugin can say that an update is available from Dashboard › Panel plugins. Older agents leave both fields out: show nothing. |
 
 ### `bans`
 

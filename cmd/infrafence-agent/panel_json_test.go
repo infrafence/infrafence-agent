@@ -135,7 +135,8 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 			{ID: 102, IPAddress: "198.51.100.9"},
 			{ID: 103, IPAddress: "198.51.100.23", Source: "automode", Reason: "Under attack: HTTP flood", CreatedAt: at(-2 * time.Hour), ExpiresAt: strp(at(4 * time.Hour))},
 		},
-		Whitelists: []api.WhitelistEntry{{ID: 1, IPAddress: strp("203.0.113.20")}, {ID: 2, IPRange: strp("10.0.0.0/8")}},
+		Whitelists:        []api.WhitelistEntry{{ID: 1, IPAddress: strp("203.0.113.20")}, {ID: 2, IPRange: strp("10.0.0.0/8")}},
+		PanelPluginLatest: json.RawMessage(`{"whm":"1.0.3"}`),
 	})
 	panelState.Lock()
 	panelState.p.Allowed = []panelAllowEntry{{IP: "198.51.100.4", Note: "Office VPN", Actor: "root", AddedAt: f.now.Add(-48 * time.Hour).Unix()}}

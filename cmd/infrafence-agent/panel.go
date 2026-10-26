@@ -140,8 +140,11 @@ func offlineStatus() panel.Response {
 		"version": version, "agent_id": nil, "dashboard_url": nil, "last_heartbeat": nil, "last_sync": nil,
 		"connected": false, "plan": nil, "automode": nil, "monitor_mode": nil, "suspended": nil,
 		"protection": nil, "refused_since": nil, "disabled_at": nil,
-		"control_panel": orNull(panelDetectPanelID()),
+		"control_panel": orNull(panelDetectPanelID()), "plugin_latest": nil,
 	})
+	// The plugin's own version, read here (the latest one only the
+	// running agent knows, from the dashboard).
+	r["plugin_installed"] = pluginVersionOf(panelPluginDetect(panelDetectPanelID()))
 	// The switch-off outlives the agent (the firewall stays without
 	// InfraFence's chains): said even when it is not running.
 	st := loadProtectionStateQuiet()
@@ -371,6 +374,14 @@ func panelStatus() panel.Response {
 	}
 	if u := dashboardURL(panelInfo.serverURL, panelInfo.agentID); u != "" {
 		r["dashboard_url"] = u
+	}
+	// The panel plugin, installed and latest: it is updated from the
+	// dashboard, not with the agent.
+	r["plugin_installed"], r["plugin_latest"] = pluginVersionOf(panelPlugin(panelInfo.panelID)), nil
+	if p, ok := panelPluginByPanel[panelInfo.panelID]; ok {
+		if latest, ok := v.pluginLatest[p.name]; ok {
+			r["plugin_latest"] = latest
+		}
 	}
 	return r
 }

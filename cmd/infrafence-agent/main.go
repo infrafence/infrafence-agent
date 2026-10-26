@@ -517,6 +517,11 @@ func runAgent() {
 
 	cpID, cpName, cpVersion := detectControlPanel()
 	panelDomains := collectPanelDomains(cpID)
+	// The panel plugin's version goes with every heartbeat (read again at
+	// most hourly).
+	if p := panelPlugin(cpID); p != nil {
+		log.Printf("[panel] InfraFence %s plugin %s installed", p.Panel, p.Version)
+	}
 
 	// Web-server UA blocking is set up from the sync, only when allowed
 	// (dashboard setting + preflight), see applyWebserverChanges.
@@ -957,6 +962,7 @@ func runAgent() {
 				ControlPanel:        cpName,
 				ControlPanelVersion: cpVersion,
 				PanelDomains:        panelDomains,
+				PanelPlugin:         panelPlugin(cpID),
 				ListeningServices:   listening,
 				SSHPorts:            netstate.SSHPorts(),
 				WebPorts:            netstate.WebPortsFrom(listeningRaw),
