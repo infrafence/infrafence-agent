@@ -204,7 +204,7 @@ Der Agent wird nur von GitHub Releases heruntergeladen, und der Installer bricht
 
 **Voraussetzungen:** x86-64 oder ARM64, root-Zugriff, `iptables`; systemd, upstart oder sysvinit. Der Installer nutzt `apt`, `dnf` oder `yum` für fehlende Abhängigkeiten und installiert `ipset` nur, wenn die Serverprüfung dies als sicher einstuft.
 
-**Vor jedem Release getestet** auf 14 Distributionen: Ubuntu 20.04, 22.04 und 24.04, Debian 12 und 13, Rocky Linux 8 und 9, AlmaLinux 8 und 9, CentOS Stream 9, Oracle Linux 9, Fedora 41 und 42, Amazon Linux 2023. Auf jeder läuft der echte Installer, erkennt einen SSH-Brute-Force-Angriff, sperrt ihn in der Firewall und deinstalliert sich sauber. Andere Distributionen der Debian- und RHEL-Familie funktionieren meist: Starte den Installer zuerst mit `--dry-run`. Siehe [Unterstützte Distributionen](https://infrafence.com/de/dokumentation/unterstuetzte-distributionen).
+**Vor jedem Release getestet** auf 15 Distributionen: Ubuntu 20.04, 22.04, 24.04 und 26.04, Debian 12 und 13, Rocky Linux 8 und 9, AlmaLinux 8 und 9, CentOS Stream 9, Oracle Linux 9, Fedora 41 und 42, Amazon Linux 2023. Auf jeder läuft der echte Installer, erkennt einen SSH-Brute-Force-Angriff, sperrt ihn in der Firewall und deinstalliert sich sauber. Andere Distributionen der Debian- und RHEL-Familie funktionieren meist: Starte den Installer zuerst mit `--dry-run`. Siehe [Unterstützte Distributionen](https://infrafence.com/de/dokumentation/unterstuetzte-distributionen).
 
 ### Docker
 

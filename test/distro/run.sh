@@ -13,6 +13,7 @@ MATRIX="
 ubuntu-20.04|ubuntu:20.04|apt|yes
 ubuntu-22.04|ubuntu:22.04|apt|yes
 ubuntu-24.04|ubuntu:24.04|apt|yes
+ubuntu-26.04|ubuntu:26.04|apt|yes
 debian-12|debian:12|apt|no
 debian-13|debian:13|apt|no
 rocky-8|rockylinux/rockylinux:8|dnf|yes
