@@ -118,6 +118,8 @@ type Session struct {
 	IP        string
 	Port      int
 	Method    string // "password" or "publickey"
+	KeyFP     string // key fingerprint (publickey)
+	Automated bool   // recurring automation (automation.go)
 	LoginAt   time.Time
 	Commands  []CommandEntry
 	SigmaHits int // correlated Sigma alerts during this session
@@ -131,6 +133,7 @@ type SessionTracker struct {
 	sessions map[string]*Session  // keyed by sshd PID
 	knownIPs map[string]bool      // IPs seen before (persisted across sessions on this server)
 	lastEmit map[string]time.Time // dedup: "ip:user" → last event time
+	auto     *automationLog       // recurring automation logins (automation.go)
 	cancel   context.CancelFunc
 	running  atomic.Bool
 }
@@ -142,8 +145,13 @@ func New(onEvent EventFunc) *SessionTracker {
 		sessions: make(map[string]*Session),
 		knownIPs: make(map[string]bool),
 		lastEmit: make(map[string]time.Time),
+		auto:     newAutomationLog(),
 	}
 }
+
+// SetStatePath loads the recurring-automation history from path and saves
+// it there from now on (0600).
+func (t *SessionTracker) SetStatePath(path string) { t.auto.load(path, time.Now()) }
 
 // IsRunning returns true if the tracker goroutine is active.
 func (t *SessionTracker) IsRunning() bool { return t.running.Load() }
@@ -353,18 +361,21 @@ func (t *SessionTracker) processLine(line string) {
 
 	switch parsed.Type {
 	case SSHLogin:
+		automated := parsed.Method == "publickey" && t.auto.record(parsed.User, parsed.IP, parsed.KeyFP, time.Now())
 		// Dedup: same IP+user within 2 minutes → skip (deploy scripts, sshpass chains)
 		dedupKey := parsed.IP + ":" + parsed.User
 		t.mu.Lock()
 		if last, ok := t.lastEmit[dedupKey]; ok && time.Since(last) < 2*time.Minute {
 			// Still track the session internally (for commands) but don't emit event
 			sess := &Session{
-				PID:     parsed.PID,
-				User:    parsed.User,
-				IP:      parsed.IP,
-				Port:    parsed.Port,
-				Method:  parsed.Method,
-				LoginAt: time.Now(),
+				PID:       parsed.PID,
+				User:      parsed.User,
+				IP:        parsed.IP,
+				Port:      parsed.Port,
+				Method:    parsed.Method,
+				KeyFP:     parsed.KeyFP,
+				Automated: automated,
+				LoginAt:   time.Now(),
 			}
 			t.sessions[parsed.PID] = sess
 			t.mu.Unlock()
@@ -373,24 +384,33 @@ func (t *SessionTracker) processLine(line string) {
 		t.lastEmit[dedupKey] = time.Now()
 
 		sess := &Session{
-			PID:     parsed.PID,
-			User:    parsed.User,
-			IP:      parsed.IP,
-			Port:    parsed.Port,
-			Method:  parsed.Method,
-			LoginAt: time.Now(),
+			PID:       parsed.PID,
+			User:      parsed.User,
+			IP:        parsed.IP,
+			Port:      parsed.Port,
+			Method:    parsed.Method,
+			KeyFP:     parsed.KeyFP,
+			Automated: automated,
+			LoginAt:   time.Now(),
 		}
 		t.sessions[parsed.PID] = sess
 		t.knownIPs[parsed.IP] = true
 		t.mu.Unlock()
 
-		t.onEvent("system_audit", "info", map[string]string{
+		audit := map[string]string{
 			"operation": "ssh_login",
 			"user":      parsed.User,
 			"ip":        parsed.IP,
 			"method":    parsed.Method,
 			"port":      strconv.Itoa(parsed.Port),
-		})
+		}
+		if parsed.KeyFP != "" {
+			audit["key_type"], audit["key_fingerprint"] = parsed.KeyType, parsed.KeyFP
+		}
+		if automated {
+			audit["recurring_automation"] = "true"
+		}
+		t.onEvent("system_audit", "info", audit)
 
 	case SSHLogout:
 		t.mu.Lock()
@@ -529,13 +549,14 @@ func (t *SessionTracker) closeSession(s *Session, reason string) {
 	t.mu.Unlock()
 
 	data := SessionData{
-		AuthMethod:  s.Method,
-		IP:          s.IP,
-		User:        s.User,
-		LoginHour:   s.LoginAt.Hour(),
-		Commands:    s.Commands,
-		KnownIPs:    knownIPsCopy,
-		SigmaAlerts: s.SigmaHits,
+		AuthMethod:          s.Method,
+		IP:                  s.IP,
+		User:                s.User,
+		LoginHour:           s.LoginAt.Hour(),
+		Commands:            s.Commands,
+		KnownIPs:            knownIPsCopy,
+		SigmaAlerts:         s.SigmaHits,
+		RecurringAutomation: s.Automated,
 	}
 
 	risk := CalculateRisk(data)
@@ -569,6 +590,9 @@ func (t *SessionTracker) closeSession(s *Session, reason string) {
 		"risk_score":       strconv.Itoa(risk.Score),
 		"risk_factors":     strings.Join(risk.Factors, ","),
 		"close_reason":     reason,
+	}
+	if s.KeyFP != "" {
+		details["key_fingerprint"] = s.KeyFP
 	}
 
 	t.onEvent("ssh_session", severity, details)

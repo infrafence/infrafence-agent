@@ -13,19 +13,23 @@ type RiskResult struct {
 
 // SessionData is the snapshot of a session passed to CalculateRisk.
 type SessionData struct {
-	AuthMethod  string            // "password" or "publickey"
+	AuthMethod  string // "password" or "publickey"
 	IP          string
 	User        string
-	LoginHour   int               // 0-23
+	LoginHour   int // 0-23
 	Commands    []CommandEntry
-	KnownIPs    map[string]bool   // IPs seen before on this server
-	SigmaAlerts int               // number of correlated Sigma alerts during the session
+	KnownIPs    map[string]bool // IPs seen before on this server
+	SigmaAlerts int             // number of correlated Sigma alerts during the session
+	// RecurringAutomation: the same key from the same address at a regular
+	// cadence (automation.go). The context factors (unknown address, night,
+	// other detectors' alerts) are left out; the commands still count.
+	RecurringAutomation bool
 }
 
 // CommandEntry records one privileged operation captured during a session.
 type CommandEntry struct {
-	Type    string            // "sudo", "useradd", "userdel", "passwd", "crontab", "su"
-	Command string            // full command for sudo; descriptive string for others
+	Type    string // "sudo", "useradd", "userdel", "passwd", "crontab", "su"
+	Command string // full command for sudo; descriptive string for others
 	User    string
 	Details map[string]string // useradd fields: name, UID, GID, home, shell
 }
@@ -47,18 +51,23 @@ func CalculateRisk(data SessionData) RiskResult {
 		factors = append(factors, factor)
 	}
 
+	auto := data.RecurringAutomation
+	if auto {
+		add(0, "recurring_automation")
+	}
+
 	// Auth method risk
 	if data.AuthMethod == "password" {
 		add(15, "password_auth")
 	}
 
 	// Unknown source IP
-	if len(data.KnownIPs) == 0 || !data.KnownIPs[data.IP] {
+	if !auto && (len(data.KnownIPs) == 0 || !data.KnownIPs[data.IP]) {
 		add(20, "unknown_ip")
 	}
 
 	// Night-time login (22:00-05:59)
-	if data.LoginHour >= 22 || data.LoginHour <= 5 {
+	if !auto && (data.LoginHour >= 22 || data.LoginHour <= 5) {
 		add(10, "night_login")
 	}
 
@@ -109,8 +118,9 @@ func CalculateRisk(data SessionData) RiskResult {
 		}
 	}
 
-	// Sigma alert correlation
-	if data.SigmaAlerts > 0 {
+	// Sigma alert correlation (an automation job runs whatever else happens
+	// on the host: its timing says nothing)
+	if !auto && data.SigmaAlerts > 0 {
 		add(40*data.SigmaAlerts, "sigma_correlation")
 	}
 

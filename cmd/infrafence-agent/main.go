@@ -52,6 +52,10 @@ var yaraScanner *malware.YaraScanner
 var malwareCustomPaths []string
 var modsecEngine *modsecurity.Engine
 var sessionTracker *session.SessionTracker
+
+// sshAutomationPath keeps the recurring SSH automation logins (session
+// package), 0600.
+var sshAutomationPath = "/var/lib/infrafence/ssh-automation.json"
 var threatFeedIndex = monitor.NewThreatFeedIndex()
 
 // dnsInspector inspects DNS packets (internal/dnswatch); started by the
@@ -689,6 +693,7 @@ func runAgent() {
 			log.Printf("[session] failed to report event: %v", err)
 		}
 	})
+	sessionTracker.SetStatePath(sshAutomationPath)
 	log.Printf("[session] tracker initialized (waiting for panel activation)")
 
 	// Sigma correlation: any security event reported anywhere in the agent

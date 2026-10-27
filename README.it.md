@@ -119,7 +119,7 @@ Hash SHA-256 di riferimento con un avviso a ogni modifica:
 - `/etc/ld.so.preload` e unità systemd (`/etc/systemd/system/*.service`, `*.timer`)
 
 ### Rischio delle sessioni SSH
-Segue ogni sessione SSH dall'inizio alla fine — metodo di autenticazione, reputazione dell'IP di origine, orario di accesso, comandi privilegiati (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — e le assegna un punteggio da 0 a 100 alla chiusura. **Correlazione Sigma**: se un altro rilevatore (WAF, integrità, malware, scansione porte, uscita, DNS) scatta mentre una sessione è aperta, il punteggio di rischio di quella sessione sale.
+Segue ogni sessione SSH dall'inizio alla fine — metodo di autenticazione, reputazione dell'IP di origine, orario di accesso, comandi privilegiati (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — e le assegna un punteggio da 0 a 100 alla chiusura. **Correlazione Sigma**: se un altro rilevatore (WAF, integrità, malware, scansione porte, uscita, DNS) scatta mentre una sessione è aperta, il punteggio di rischio di quella sessione sale. **Automazioni ricorrenti**: la stessa chiave dallo stesso indirizzo a intervalli regolari (un pannello di deploy come Coolify che accede come root ogni pochi minuti, un job di backup) viene riconosciuta; le sue sessioni vengono comunque registrate, valutate solo sui comandi eseguiti (fattore `recurring_automation`, gravità info). Una chiave nuova o un indirizzo nuovo mantengono la valutazione normale.
 
 ### E altro
 - **Posta, database e FTP** — rilevamento del brute force per Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD e vsftpd

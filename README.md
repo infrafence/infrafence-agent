@@ -119,7 +119,7 @@ SHA-256 baselines with an alert on every change:
 - `/etc/ld.so.preload` and systemd units (`/etc/systemd/system/*.service`, `*.timer`)
 
 ### SSH session risk scoring
-Tracks every SSH session end-to-end — auth method, source IP reputation, login hour, privileged commands (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — and scores it 0-100 on close. **Sigma correlation**: if another detector (WAF, integrity, malware, port scan, egress, DNS) fires while a session is open, that session's risk score jumps.
+Tracks every SSH session end-to-end — auth method, source IP reputation, login hour, privileged commands (`sudo`, `useradd`, `passwd`, `crontab`, `su`) — and scores it 0-100 on close. **Sigma correlation**: if another detector (WAF, integrity, malware, port scan, egress, DNS) fires while a session is open, that session's risk score jumps. **Recurring automation**: the same key from the same address at a regular cadence (a deployment panel such as Coolify logging in as root every few minutes, a backup job) is recognised; its sessions are still recorded, scored on their commands only (factor `recurring_automation`, severity info). A new key or a new address keeps the normal scoring.
 
 ### And more
 - **Mail, database and FTP** — brute force detection for Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD and vsftpd
