@@ -287,6 +287,14 @@ if [ $R_EGRESS = ok ]; then
   # which a container's boot may not have reached yet.
   systemctl start systemd-user-sessions >/dev/null 2>&1 || true
   [ -e /run/nologin ] && { sshguard_evidence nologin_present; rm -f /run/nologin; }
+  # Without PAM sshd refuses an account whose password field is locked
+  # ("!", as root's in the Rocky 8 image) even for a key: unusable but not
+  # locked for the case, /etc/shadow restored afterwards.
+  SHADOW_SAVED=""
+  if getent shadow root | cut -d: -f2 | grep -q '^!'; then
+    SHADOW_SAVED=/tmp/shadow.fw-test
+    cp -p /etc/shadow "$SHADOW_SAVED" && usermod -p '*' root
+  fi
   # Nothing may stand between 192.0.2.3 and sshd now: no ban of it.
   if ipset list infrafence-bans 2>/dev/null | grep -q '^192.0.2.3' || iptables -S INFRAFENCE 2>/dev/null | grep -q '192.0.2.3'; then
     sshguard_evidence banned_before_login; sshguard=fail
@@ -320,6 +328,7 @@ if [ $R_EGRESS = ok ]; then
   kill $session 2>/dev/null; wait $session 2>/dev/null
   curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' >/dev/null
   R_SSHGUARD=$sshguard
+  [ -n "$SHADOW_SAVED" ] && cp -p "$SHADOW_SAVED" /etc/shadow && rm -f "$SHADOW_SAVED"
 fi
 rm -f "${SSHD_EXEMPT:-/nonexistent}"
 [ -n "$SSHD_MAIN_SAVED" ] && cp -p "$SSHD_MAIN_SAVED" /etc/ssh/sshd_config && rm -f "$SSHD_MAIN_SAVED"
