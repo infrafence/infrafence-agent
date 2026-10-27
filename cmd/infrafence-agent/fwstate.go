@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/api"
@@ -32,6 +33,13 @@ import (
 //     records), for 30 days: never blocked.
 
 var fwStatePath = "/var/lib/infrafence/firewall-state.json"
+
+// The outbound connections the egress detector counts
+// (monitor.DestinationLog), loaded at startup; nil until then.
+var (
+	egressDestPath     = "/var/lib/infrafence/egress-destinations.json"
+	egressDestinations atomic.Pointer[monitor.DestinationLog]
+)
 
 const (
 	flaggedFor   = 24 * time.Hour

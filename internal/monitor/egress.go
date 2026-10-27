@@ -18,6 +18,11 @@ type EgressDetector struct {
 	feed     *ThreatFeedIndex
 	reported map[string]time.Time
 
+	// Destinations, when set, counts the outbound connections of each
+	// scan; a match on a regular destination says so (regular_destination),
+	// and the agent then blocks it only with a person's approval.
+	Destinations *DestinationLog
+
 	// connSource is overridable in tests; production always uses ParseProcNetTCP.
 	connSource func() ([]TCPConn, error)
 }
@@ -38,6 +43,14 @@ func (d *EgressDetector) Scan() ScanResult {
 	}
 
 	now := time.Now()
+	d.Destinations.Observe(conns)
+
+	listening := map[uint16]bool{}
+	for _, c := range conns {
+		if c.State == tcpListen {
+			listening[c.LocalPort] = true
+		}
+	}
 
 	// Prune expired cooldowns
 	for ip, t := range d.reported {
@@ -67,6 +80,16 @@ func (d *EgressDetector) Scan() ScanResult {
 			continue
 		}
 
+		details := map[string]string{"threat_source": source, "direction": "outbound"}
+		if listening[c.LocalPort] {
+			// The address connected to a service of this server.
+			details["direction"] = "inbound"
+		}
+		if regular, n, days := d.Destinations.Regular(ipStr); regular {
+			details["regular_destination"] = "true"
+			details["regular_connections"] = fmt.Sprintf("%d", n)
+			details["regular_days"] = fmt.Sprintf("%d", days)
+		}
 		events = append(events, api.EventRequest{
 			Type:       "egress_threat_match",
 			Severity:   "critical",
@@ -74,9 +97,7 @@ func (d *EgressDetector) Scan() ScanResult {
 			SourcePort: portPtr(c.LocalPort),
 			TargetPort: portPtr(c.RemotePort),
 			Protocol:   "tcp",
-			Details: map[string]string{
-				"threat_source": source,
-			},
+			Details:    details,
 			OccurredAt: now.UTC().Format(time.RFC3339),
 		})
 		d.reported[ipStr] = now

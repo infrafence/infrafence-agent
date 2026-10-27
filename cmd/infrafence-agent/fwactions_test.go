@@ -638,3 +638,39 @@ func TestEnforcedEgressAndSSHSessions(t *testing.T) {
 		t.Fatalf("refusals %+v", ev)
 	}
 }
+
+// A destination this server talks to regularly is blocked only on a
+// request a person asked for or approved; an enforced block stays.
+func TestEgressRegularDestinationNeedsApproval(t *testing.T) {
+	f := withFakeFirewall(t)
+	saved := fwRegularDestination
+	t.Cleanup(func() { fwRegularDestination = saved })
+	fwRegularDestination = func(ip string) (bool, int, int) { return ip == "185.1.2.3", 40, 5 }
+
+	auto := api.FirewallAction{ID: 90, Kind: "block_egress", IP: "185.1.2.3"}
+	applyFirewallState(nil, []api.FirewallAction{auto}, false)
+	typ, _, d := runFirewallAction(auto)
+	if typ != "firewall_action_failed" || d["reason"] != "regular_destination" || !strings.Contains(d["message"], "40 times on 5 of the last 7 days") {
+		t.Fatalf("automatic block: %s %v", typ, d)
+	}
+	if len(f.egress) != 0 {
+		t.Fatalf("blocked: %v", f.egress)
+	}
+	// The dashboard state alone (no approved request) is refused too.
+	applyFirewallState(&api.FirewallState{EgressBlocked: []string{"185.1.2.3"}}, nil, false)
+	if len(f.egress) != 0 {
+		t.Fatalf("state entry blocked a regular destination: %v", f.egress)
+	}
+	if ev := f.refusalsSoon(1); len(ev) != 1 || ev[0].Details["reason"] != "regular_destination" {
+		t.Fatalf("refusals %+v", ev)
+	}
+	approved := api.FirewallAction{ID: 91, Kind: "block_egress", IP: "185.1.2.3", Approved: true}
+	applyFirewallState(&api.FirewallState{}, []api.FirewallAction{approved}, false)
+	if typ, _, d := runFirewallAction(approved); typ != "firewall_action_done" {
+		t.Fatalf("approved block: %s %v", typ, d)
+	}
+	applyFirewallState(&api.FirewallState{EgressBlocked: []string{"185.1.2.3"}}, nil, false)
+	if !reflect.DeepEqual(f.egress, []string{"185.1.2.3"}) {
+		t.Fatalf("approved block lifted: %v", f.egress)
+	}
+}

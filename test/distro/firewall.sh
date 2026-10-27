@@ -6,9 +6,9 @@
 # address the agent flagged itself: 192.0.2.3 goes into the dashboard threat
 # feed (detection only) and the host holds a connection to it until the
 # egress monitor reports it. Sets R_PORTS, R_EGRESS, R_PERSIST, R_IPV6,
-# R_SSHSOCK, R_HB, R_SSHGUARD; appends to EXTRA_RESULT and sets EXTRA_FAIL=1 on
+# R_SSHSOCK, R_HB, R_SSHGUARD, R_REGULAR; appends to EXTRA_RESULT and sets EXTRA_FAIL=1 on
 # a failure.
-R_PORTS=fail R_EGRESS=fail R_PERSIST=fail R_IPV6=fail R_SSHSOCK=skip R_HB=fail R_SSHGUARD=fail
+R_PORTS=fail R_EGRESS=fail R_PERSIST=fail R_IPV6=fail R_SSHSOCK=skip R_HB=fail R_SSHGUARD=fail R_REGULAR=fail
 API=http://127.0.0.1:8080
 CONFIG='"config":{"bf_threshold":5,"bf_window":60,"monitor_mode":false}'
 
@@ -123,7 +123,15 @@ else
 fi
 
 # ── the agent flags 192.0.2.3 (threat feed + a connection to it), then
-# blocking egress to it is allowed ──
+# blocking egress to it is allowed, but only with approval: the host has
+# connected to it on 3 of the last 7 days (seeded log), so it is a
+# destination the server depends on ──
+today=$(( $(date -u +%s) / 86400 ))
+systemctl stop infrafence-agent
+printf '{"days":{"192.0.2.3":{"%s":3,"%s":2,"%s":2}}}' $today $((today - 1)) $((today - 3)) >/var/lib/infrafence/egress-destinations.json
+chmod 600 /var/lib/infrafence/egress-destinations.json
+systemctl start infrafence-agent
+sleep 12
 # The state now has what the agent reported done (6379 closed).
 curl -s -X POST "$API/set-sync" -d "{$CONFIG, \"threat_feed\": [{\"ip\": \"192.0.2.3\", \"cidr\": null, \"source\": \"distro-test\"}],
   \"firewall_state\": {\"closed_ports\": [{\"port\": 6379, \"proto\": \"tcp\"}], \"egress_blocked\": []}, \"firewall_actions\": null}" >/dev/null
@@ -147,13 +155,20 @@ sshguard=ok
 for _ in $(seq 1 10); do ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' && break; sleep 1; done
 ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' || { log "no pre-auth SSH connection from 192.0.2.3"; sshguard=fail; }
 if [ $flagged = yes ]; then
+  regev=ok
+  curl -s "$API/state" | grep -o '{"type":"egress_threat_match"[^}]*}' | grep '192.0.2.3' | grep -q '"regular_destination":"true"' \
+    || { log "egress_threat_match for 192.0.2.3 without regular_destination"; regev=fail; }
   curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 109, "kind": "block_egress", "ip": "192.0.2.3"}]}' >/dev/null
-  if wait_events 109; then
-    expect 109 firewall_action_done || { e=fail; sshguard=fail; }
+  if wait_events 109 && expect 109 firewall_action_failed regular_destination && ! egress_has 192.0.2.3; then
+    R_REGULAR=$regev
+  fi
+  curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 111, "kind": "block_egress", "ip": "192.0.2.3", "approved": true}]}' >/dev/null
+  if wait_events 111; then
+    expect 111 firewall_action_done || { e=fail; sshguard=fail; }
     egress_has 192.0.2.3 || { log "192.0.2.3 not in the egress set"; e=fail; }
     host_reaches_c2 && { log "host still reaches c2"; e=fail; }
   else
-    log "no result event for 109"; e=fail
+    log "no result event for 111"; e=fail
   fi
 else
   e=fail
@@ -242,6 +257,6 @@ fi
 # ── heartbeat reports the SSH and web ports ──
 curl -s "$API/state" | grep -q '"ssh_ports":\[22' && R_HB=ok || { log "heartbeat without ssh_ports"; curl -s "$API/state" | grep -o '"last_heartbeat":.\{0,200\}'; }
 
-EXTRA_RESULT="${EXTRA_RESULT:-} ports=${R_PORTS} egress=${R_EGRESS} persist=${R_PERSIST} ipv6=${R_IPV6} sshsocket=${R_SSHSOCK} heartbeat_ports=${R_HB} sshguard=${R_SSHGUARD}"
-[ "$R_PORTS$R_EGRESS$R_PERSIST$R_HB$R_SSHGUARD" = okokokokok ] && [ "$R_IPV6" != fail ] && [ "$R_SSHSOCK" != fail ] || EXTRA_FAIL=1
+EXTRA_RESULT="${EXTRA_RESULT:-} ports=${R_PORTS} egress=${R_EGRESS} persist=${R_PERSIST} ipv6=${R_IPV6} sshsocket=${R_SSHSOCK} heartbeat_ports=${R_HB} sshguard=${R_SSHGUARD} regular=${R_REGULAR}"
+[ "$R_PORTS$R_EGRESS$R_PERSIST$R_HB$R_SSHGUARD$R_REGULAR" = okokokokokok ] && [ "$R_IPV6" != fail ] && [ "$R_SSHSOCK" != fail ] || EXTRA_FAIL=1
 ip netns pids c2 2>/dev/null | xargs -r kill 2>/dev/null

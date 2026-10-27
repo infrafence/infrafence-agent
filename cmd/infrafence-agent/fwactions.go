@@ -41,7 +41,11 @@ import (
 //     an address logged in over SSH right now or that an SSH login came from
 //     in the last 30 days, or (for a new request) an address connected to a
 //     service of this server right now. A connection to an SSH port that has
-//     not logged in (a brute force) protects nobody.
+//     not logged in (a brute force) protects nobody. A new request for a
+//     destination this server connects to regularly (on 3 of the last 7
+//     days, monitor.DestinationLog) needs a person's approval (Approved,
+//     else refused as regular_destination): a customer's API on a threat
+//     list must not be cut off by an automatic decision.
 //
 // The checks that depend on what is connected right now (and the "flagged"
 // check) apply to new requests, not to what is already enforced: a restart
@@ -107,12 +111,15 @@ var (
 	fwPublicInbound = netstate.PublicInbound
 	fwSockets       = netstate.Sockets
 	fwSSHSessions   = netstate.SSHSessionAddrs
-	fwEgressRefusal = firewall.EgressRefusal
-	fwResolvers     = configuredResolvers
-	fwApply         = firewall.SetPortsEgress
-	fwPorts6        = firewall.Ports6InForce
-	fwListens6      = listensReachableIPv6
-	fwDropConntrack = func(ports []int) {
+	// fwRegularDestination: the egress detector's count of the server's own
+	// outbound connections (monitor.DestinationLog).
+	fwRegularDestination = func(ip string) (bool, int, int) { return egressDestinations.Load().Regular(ip) }
+	fwEgressRefusal      = firewall.EgressRefusal
+	fwResolvers          = configuredResolvers
+	fwApply              = firewall.SetPortsEgress
+	fwPorts6             = firewall.Ports6InForce
+	fwListens6           = listensReachableIPv6
+	fwDropConntrack      = func(ports []int) {
 		for _, p := range ports {
 			if n := firewall.DropConntrack(p); n > 0 {
 				log.Printf("[firewall] port %d: dropped the tracked connections of %d public address(es)", p, n)
@@ -384,6 +391,7 @@ type fwChecks struct {
 	resolvers map[string]bool
 	dashboard map[string]bool
 	sessions  map[string]bool // clients of the SSH sessions logged in now
+	approved  bool            // the request was asked for or approved by a person
 	socks     []netstate.Conn
 	socksRead bool
 }
@@ -478,6 +486,11 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 	}
 	if live && !fwFlagged(s) {
 		return "not_flagged", fmt.Sprintf("%s was not flagged as a threat by this server in the last 24 hours", ip)
+	}
+	if live && !c.approved {
+		if regular, n, days := fwRegularDestination(s); regular {
+			return "regular_destination", fmt.Sprintf("this server connected to %s %d times on %d of the last 7 days: blocking a destination it depends on needs a person's approval", ip, n, days)
+		}
 	}
 	return "", ""
 }
@@ -626,6 +639,7 @@ func runFirewallAction(a api.FirewallAction) (typ, severity string, details map[
 			return result("done", "", fmt.Sprintf("port %d is not closed", a.Port), nil)
 		}
 	case "block_egress":
+		checks.approved = a.Approved
 		if reason, msg := egressRefusal(checks, a.IP, true); reason != "" {
 			return result("failed", reason, "refused: "+msg, nil)
 		}

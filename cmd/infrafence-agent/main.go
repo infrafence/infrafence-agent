@@ -262,6 +262,7 @@ func runAgent() {
 	// first setup below applies them (also when the dashboard is down).
 	go watchDashboardAddrs(cfg.ServerURL)
 	loadFirewallState()
+	egressDestinations.Store(monitor.NewDestinationLog(egressDestPath))
 	go watchSSHLogins()
 
 	// Bans and allow list as last known (protstate.go), so the first setup
@@ -2023,6 +2024,7 @@ func runSecurityMonitors(client *api.Client) {
 	flood := monitor.NewFloodDetector()
 	integrity := monitor.NewIntegrityDetector()
 	egress := monitor.NewEgressDetector(threatFeedIndex)
+	egress.Destinations = egressDestinations.Load()
 	dns := monitor.NewDNSDetector(threatFeedIndex)
 	dns.SkipResolverChecks = dnsInspector.Running
 
