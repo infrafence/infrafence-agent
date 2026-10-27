@@ -188,7 +188,7 @@ if [ -d /etc/ssh/sshd_config.d ]; then
 fi
 printf '#!/bin/sh\nsleep 900\n' >/tmp/slowpass; chmod 755 /tmp/slowpass
 ip netns exec c2 setsid env DISPLAY=:0 SSH_ASKPASS=/tmp/slowpass SSH_ASKPASS_REQUIRE=force \
-  ssh -b 192.0.2.3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no \
+  ssh -b 192.0.2.3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o GSSAPIAuthentication=no \
   -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 root@192.0.2.1 true </dev/null >/dev/null 2>&1 &
 preauth=$!
 sshguard=ok
@@ -270,7 +270,10 @@ if [ $R_EGRESS = ok ]; then
   fi
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   cat /tmp/c2key.pub >>/root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+  # GSSAPI off: the RPM family's client config turns it on, and its
+  # Kerberos lookups time out slowly in a namespace without DNS.
   ip netns exec c2 ssh -v -b 192.0.2.3 -i /tmp/c2key -o BatchMode=yes -o StrictHostKeyChecking=no \
+    -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey -o ConnectTimeout=10 \
     -o UserKnownHostsFile=/dev/null root@192.0.2.1 sleep 120 </dev/null >/dev/null 2>/tmp/c2ssh.log &
   session=$!
   in=no
