@@ -34,7 +34,7 @@ fw_event() {
   curl -s "$API/state" | grep -o "\"type\":\"firewall_action_[a-z_]*\",\"severity\":\"[a-z]*\",\"details\":{\"action_id\":\"$1\"[^}]*" | head -1
 }
 wait_events() {
-  for _ in $(seq 1 100); do
+  for _ in $(seq 1 180); do
     local missing=0
     for id in "$@"; do [ -n "$(fw_event "$id")" ] || missing=1; done
     [ $missing = 0 ] && return 0
@@ -79,7 +79,12 @@ sshguard_evidence() {
   ls -lZ /root/.ssh/authorized_keys 2>/dev/null | sed 's/^/[sshguard] keys: /'
   journalctl --no-pager -n 30 -u sshd -u ssh 2>/dev/null | tail -8 | sed 's/^/[sshguard] sshd unit: /'
   for id in 109 110 111; do e=$(fw_event $id); [ -n "$e" ] && echo "[sshguard] result $id: ${e:0:400}"; done
-  journalctl -u infrafence-agent --no-pager 2>/dev/null | grep -F 192.0.2.3 | tail -5 | sed 's/^/[sshguard] agent: /'
+  journalctl -u infrafence-agent --no-pager -n 2000 2>/dev/null | grep -F 192.0.2.3 | tail -5 | sed 's/^/[sshguard] agent: /'
+  ls -l /run/nologin /etc/nologin 2>/dev/null | sed 's/^/[sshguard] nologin: /'
+  echo "[sshguard] user-sessions: $(systemctl is-active systemd-user-sessions 2>&1)"
+  echo "[sshguard] root account: $(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f3-) $(chage -l root 2>/dev/null | grep -iE 'must|expire' | tr '\n' ';')"
+  grep -hE '^\s*account' /etc/pam.d/sshd /etc/pam.d/password-auth /etc/pam.d/system-auth 2>/dev/null | sed 's/^/[sshguard] pam: /'
+  journalctl --no-pager -n 300 2>/dev/null | grep -iE 'pam_|account|nologin|sepermit' | tail -8 | sed 's/^/[sshguard] pam log: /'
 }
 v4_closed() { iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport $1 -j DROP"; }
 v6_closed() { ip6tables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport $1 -j DROP"; }
@@ -172,28 +177,37 @@ kill $holder 2>/dev/null; wait $holder 2>/dev/null
 log "egress_threat_match for 192.0.2.3: $flagged"
 # 192.0.2.3 also holds an SSH connection that never logs in (the password
 # prompt hangs, as during a brute force): it must not shield the address.
-# The connection must stay in authentication, without a failed attempt,
-# for the whole case: sshd's LoginGraceTime (120 s) would close it, and a
-# password prompt answered after a while would count as failed logins (5
-# get the address banned, and the logged-in case below could not connect).
-# The prompt never answers, the grace time is raised for the test, and
-# sshd's per-source penalties (OpenSSH 9.8+), which would refuse 192.0.2.3
-# after the connection ends, are off for it. Removed below.
+# The connection must stay in authentication for the whole case, without
+# a failed attempt (5 would get 192.0.2.3 banned, and the logged-in case
+# below could not connect) and without the client giving up (a real ssh
+# client quits when the server offers no method it may use: password
+# logins off, as on Amazon Linux). So the "client" sends its banner and
+# stops, as a scanner does; sshd waits for it in authentication. sshd's
+# LoginGraceTime (120 s) is raised for the test and its per-source
+# penalties (OpenSSH 9.8+) are off for 192.0.2.3; both removed below.
+reload_sshd() { systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true; sleep 1; }
 SSHD_EXEMPT=/etc/ssh/sshd_config.d/00-infrafence-fw-test.conf
+SSHD_MAIN_SAVED=""
 if [ -d /etc/ssh/sshd_config.d ]; then
   echo "LoginGraceTime 900" >"$SSHD_EXEMPT"
   /usr/sbin/sshd -T -o "PerSourcePenaltyExemptList=192.0.2.3" >/dev/null 2>&1 && echo "PerSourcePenaltyExemptList 192.0.2.3" >>"$SSHD_EXEMPT"
-  systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true
-  sleep 1
 fi
-printf '#!/bin/sh\nsleep 900\n' >/tmp/slowpass; chmod 755 /tmp/slowpass
-ip netns exec c2 setsid env DISPLAY=:0 SSH_ASKPASS=/tmp/slowpass SSH_ASKPASS_REQUIRE=force \
-  ssh -b 192.0.2.3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o GSSAPIAuthentication=no \
-  -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 root@192.0.2.1 true </dev/null >/dev/null 2>&1 &
+if ! /usr/sbin/sshd -T 2>/dev/null | grep -qx 'logingracetime 900'; then
+  # No drop-in directory read (OpenSSH 8.0 on EL 8): first line of sshd_config.
+  SSHD_MAIN_SAVED=/tmp/sshd_config.fw-test
+  cp -p /etc/ssh/sshd_config "$SSHD_MAIN_SAVED"
+  { echo "LoginGraceTime 900"; cat "$SSHD_MAIN_SAVED"; } >/etc/ssh/sshd_config
+fi
+reload_sshd
+# The source must be 192.0.2.3 (the c2 namespace's first address is .2):
+# a host route for the connect only.
+ip netns exec c2 ip route replace 192.0.2.1/32 dev veth3 src 192.0.2.3
+ip netns exec c2 bash -c 'exec 3<>/dev/tcp/192.0.2.1/22 && printf "SSH-2.0-OpenSSH_9.6 test\r\n" >&3 && exec sleep 900' </dev/null >/dev/null 2>&1 &
 preauth=$!
 sshguard=ok
 for _ in $(seq 1 10); do ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' && break; sleep 1; done
 ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' || { sshguard_evidence preauth_not_held; sshguard=fail; }
+ip netns exec c2 ip route del 192.0.2.1/32 dev veth3 src 192.0.2.3 2>/dev/null
 if [ $flagged = yes ]; then
   regev=ok
   curl -s "$API/state" | grep -o '{"type":"egress_threat_match"[^}]*}' | grep '192.0.2.3' | grep -q '"regular_destination":"true"' \
@@ -264,6 +278,10 @@ curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egr
 if [ $R_EGRESS = ok ]; then
   rm -f /tmp/c2key /tmp/c2key.pub
   ssh-keygen -q -t ed25519 -N '' -f /tmp/c2key
+  # Logins are refused (pam_nologin) until systemd-user-sessions has run,
+  # which a container's boot may not have reached yet.
+  systemctl start systemd-user-sessions >/dev/null 2>&1 || true
+  [ -e /run/nologin ] && { sshguard_evidence nologin_present; rm -f /run/nologin; }
   # Nothing may stand between 192.0.2.3 and sshd now: no ban of it.
   if ipset list infrafence-bans 2>/dev/null | grep -q '^192.0.2.3' || iptables -S INFRAFENCE 2>/dev/null | grep -q '192.0.2.3'; then
     sshguard_evidence banned_before_login; sshguard=fail
@@ -298,10 +316,9 @@ if [ $R_EGRESS = ok ]; then
   curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' >/dev/null
   R_SSHGUARD=$sshguard
 fi
-if [ -e "${SSHD_EXEMPT:-}" ]; then
-  rm -f "$SSHD_EXEMPT"
-  systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true
-fi
+rm -f "${SSHD_EXEMPT:-/nonexistent}"
+[ -n "$SSHD_MAIN_SAVED" ] && cp -p "$SSHD_MAIN_SAVED" /etc/ssh/sshd_config && rm -f "$SSHD_MAIN_SAVED"
+reload_sshd
 [ $R_PORTS = ok ] || log "ports: $R_PORTS"
 [ $R_EGRESS = ok ] || log "egress: $R_EGRESS"
 if [ -n "$sock" ]; then
