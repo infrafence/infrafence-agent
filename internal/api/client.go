@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -346,6 +347,15 @@ type HeartbeatRequest struct {
 	// close them).
 	SSHPorts []int `json:"ssh_ports,omitempty"`
 	WebPorts []int `json:"web_ports,omitempty"`
+	// The installed panel plugin (WHM today); null when there is none.
+	PanelPlugin *PanelPlugin `json:"panel_plugin"`
+}
+
+// PanelPlugin is the InfraFence plugin installed in the hosting panel:
+// which one ("whm") and its version.
+type PanelPlugin struct {
+	Panel   string `json:"panel"`
+	Version string `json:"version"`
 }
 
 // RuntimeStats reports the agent's own resource usage so we can detect leaks
@@ -497,6 +507,40 @@ type SyncResponse struct {
 	// "infrafence-agent panel events/findings". Absent from dashboards that
 	// don't send them.
 	Resolutions []Resolution `json:"resolutions,omitempty"`
+	// Latest release of each panel plugin ({"whm":"1.0.3"}), shown by
+	// "infrafence-agent panel status". Raw: a malformed value is ignored,
+	// it never fails the sync (PluginLatest).
+	PanelPluginLatest json.RawMessage `json:"panel_plugin_latest,omitempty"`
+}
+
+// PluginLatest is the latest version of each panel plugin the dashboard
+// sent: only known plugins with a valid version, nil when there is none.
+func (s *SyncResponse) PluginLatest() map[string]string {
+	var raw map[string]any
+	if len(s.PanelPluginLatest) == 0 || json.Unmarshal(s.PanelPluginLatest, &raw) != nil {
+		return nil
+	}
+	var out map[string]string
+	for _, p := range PanelPlugins {
+		if v, ok := raw[p].(string); ok && ValidPluginVersion(v) {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[p] = v
+		}
+	}
+	return out
+}
+
+// PanelPlugins are the plugins a version is reported and accepted for.
+var PanelPlugins = []string{"whm"}
+
+var pluginVersionRe = regexp.MustCompile(`^[0-9]{1,6}(\.[0-9]{1,6}){1,3}([-+~][0-9A-Za-z.]{1,32})?$`)
+
+// ValidPluginVersion: a release version such as 1.0.3 (an optional short
+// suffix such as -1 or ~rc1), nothing else.
+func ValidPluginVersion(v string) bool {
+	return pluginVersionRe.MatchString(v)
 }
 
 // SyncResolutions are the sync's resolutions: the top-level list, or the

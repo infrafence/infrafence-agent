@@ -112,6 +112,8 @@ type panelSyncView struct {
 	suspended   bool
 	autoMode    json.RawMessage
 	malwareScan *bool // scheduled malware scanning on; nil: not sent
+	// Latest release of each panel plugin ("whm" -> "1.0.3"); nil: not sent.
+	pluginLatest map[string]string
 }
 
 type localBan struct {
@@ -264,12 +266,13 @@ func panelNoteSync(s *api.SyncResponse) {
 		return
 	}
 	v := panelSyncView{
-		at:          panelNow(),
-		bans:        append([]api.Ban(nil), s.Bans...),
-		whitelists:  append([]api.WhitelistEntry(nil), s.Whitelists...),
-		monitorMode: s.Config.MonitorMode,
-		suspended:   s.Config.Suspended,
-		autoMode:    s.Config.AutoMode,
+		at:           panelNow(),
+		bans:         append([]api.Ban(nil), s.Bans...),
+		whitelists:   append([]api.WhitelistEntry(nil), s.Whitelists...),
+		monitorMode:  s.Config.MonitorMode,
+		suspended:    s.Config.Suspended,
+		autoMode:     s.Config.AutoMode,
+		pluginLatest: s.PluginLatest(),
 	}
 	if s.Config.MalwareScanConfig != nil {
 		on := s.Config.MalwareScanConfig.Enabled

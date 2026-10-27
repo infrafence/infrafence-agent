@@ -94,6 +94,16 @@ func withFakePanel(t *testing.T) *fakePanelHost {
 	}
 	panelEuid = func() int { return 0 }
 	panelDetectPanelID = func() string { return "cpanel" }
+	// The WHM plugin 1.0.2 is installed.
+	savedDetect := panelPluginDetect
+	panelPluginDetect = func(id string) *api.PanelPlugin {
+		if id != "cpanel" {
+			return nil
+		}
+		return &api.PanelPlugin{Panel: "whm", Version: "1.0.2"}
+	}
+	resetPanelPluginCache()
+	t.Cleanup(func() { panelPluginDetect = savedDetect; resetPanelPluginCache() })
 	// Short: socket paths are limited to about 100 bytes.
 	sockDir, err := os.MkdirTemp("/tmp", "ifp")
 	if err != nil {

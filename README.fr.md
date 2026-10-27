@@ -265,6 +265,8 @@ Définissez-les avec `sudo systemctl edit infrafence-agent` (`[Service]` → `En
 
 **Ouvert ou résolu :** chaque événement de problème que l'agent remonte (un port de base de données exposé, un fichier système modifié, un réglage PHP risqué, un malware...) porte `details.subject` (`port:tcp/3306`, `file:/etc/passwd`...). Depuis la 1.0.34, `panel events` et `panel findings` indiquent si chaque problème est encore `open` ou `resolved` (`subject`, `state`, `resolved_at`, `resolved_how`) : résolu dans le tableau de bord, ou corrigé par l'agent lui-même (un port fermé par son pare-feu, un correctif appliqué et vérifié, un fichier mis en quarantaine, un paquet mis à jour). Un port de base de données que le pare-feu de l'agent ferme n'est plus signalé comme exposé au redémarrage de l'agent. Détails : [docs/panel-json.md](docs/panel-json.md#problems-and-resolution) (en anglais).
 
+**Version du plugin :** le plugin du panneau se met à jour depuis le tableau de bord (Plugins de panneaux), pas avec l'agent. Depuis la 1.0.35, l'agent lit la version du plugin WHM installé (en lecture seule : `/usr/local/share/infrafence-whm/VERSION`, sinon le paquet `infrafence-whm` ; au démarrage et au plus une fois par heure) et l'envoie avec le heartbeat (`panel_plugin`). `panel status` l'affiche dans `plugin_installed`, à côté de `plugin_latest`, la dernière version que le tableau de bord envoie à la synchronisation, pour que le plugin puisse signaler une mise à jour disponible. Détails : [docs/panel-json.md](docs/panel-json.md#status).
+
 ---
 
 ## Pas encore disponible
