@@ -51,6 +51,10 @@ const (
 	ReasonInvalid     = "invalid_request"
 	ReasonAmbiguous   = "ambiguous_document_root"
 	ReasonWriteFailed = "write_failed"
+	// ReasonDNSOnly: the domain is served by a container behind a reverse
+	// proxy (no document root on the host); its badge is verified with
+	// the DNS TXT record.
+	ReasonDNSOnly = "dns_only"
 )
 
 // Error is a failure with the reason to report.

@@ -44,7 +44,9 @@ var (
 	trustSites  = detectTrustSites
 	trustPlace  = trust.Place
 	trustRemove = trust.Remove
-	trustReport = func(client *api.Client, typ string, details map[string]string) {
+	// trustProxied: a container domain behind a reverse proxy (proxysites.go).
+	trustProxied = func(domain string) bool { return proxyDomains.Has(domain) }
+	trustReport  = func(client *api.Client, typ string, details map[string]string) {
 		reportEvent(client, typ, "info", details)
 	}
 )
@@ -154,6 +156,9 @@ func applyTrustTokens(client *api.Client, tokens []api.TrustToken) {
 		}
 		valid[d] = true
 		root, reason := trust.Match(d, sites)
+		if reason == trust.ReasonNoDocRoot && trustProxied(d) {
+			reason = trust.ReasonDNSOnly
+		}
 		if reason != "" {
 			status[d] = "failed " + reason
 			continue

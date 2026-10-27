@@ -155,7 +155,8 @@ func ListDockerContainers() ([]DockerContainer, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Bounded: the listing is read every few minutes (internal/proxysites).
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, fmt.Errorf("docker API read: %w", err)
 	}

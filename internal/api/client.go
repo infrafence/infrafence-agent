@@ -323,7 +323,7 @@ type HeartbeatRequest struct {
 	WebServer           string             `json:"web_server,omitempty"`
 	WebServerVersion    string             `json:"web_server_version,omitempty"`
 	Metrics             *SystemMetrics     `json:"metrics,omitempty"`
-	MonitoredDomains    []string           `json:"monitored_domains,omitempty"`
+	MonitoredDomains    []any              `json:"monitored_domains,omitempty"` // names, and ProxyDomain objects
 	MonitoredLogPaths   []string           `json:"monitored_log_paths,omitempty"`
 	FirewallMode        string             `json:"firewall_mode,omitempty"`
 	BanCapacity         int                `json:"ban_capacity,omitempty"`
@@ -349,6 +349,19 @@ type HeartbeatRequest struct {
 	WebPorts []int `json:"web_ports,omitempty"`
 	// The installed panel plugin (WHM today); null when there is none.
 	PanelPlugin *PanelPlugin `json:"panel_plugin"`
+}
+
+// VerifyDNS: the domain has no document root on the host, so its trust
+// badge is verified with the DNS TXT record (the agent writes no file).
+const VerifyDNS = "dns"
+
+// ProxyDomain is a domain a container is served under behind a reverse
+// proxy, from the proxy's labels: Source "traefik", "caddy" or "label"
+// (infrafence.domain).
+type ProxyDomain struct {
+	Domain string `json:"domain"`
+	Source string `json:"source"`
+	Verify string `json:"verify"`
 }
 
 // PanelPlugin is the InfraFence plugin installed in the hosting panel:
