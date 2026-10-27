@@ -20,34 +20,39 @@ func TestParseSSHLoginKeyFingerprint(t *testing.T) {
 	}
 }
 
-// Coolify: root, same key, same private address, every 5 minutes. From the
-// sixth login it is recurring automation; another key or address is not.
+// Coolify: root, same key, same private address, every 5 minutes. Once the
+// series is 6 hours old it is recurring automation; another key or address
+// is not.
 func TestRecurringAutomationCadence(t *testing.T) {
 	a := newAutomationLog()
 	t0 := time.Date(2026, 10, 26, 2, 0, 0, 0, time.UTC)
-	for i := 0; i < 5; i++ {
+	var got bool
+	for i := 0; i <= 6*12; i++ {
 		ts := t0.Add(time.Duration(i)*5*time.Minute + time.Duration(i%3)*time.Second)
-		if a.record("root", "10.0.1.7", fp, ts) {
-			t.Fatalf("recurring after %d logins", i+1)
-		}
+		got = a.record("root", "10.0.1.7", fp, ts)
 		// A second connection of the same run, seconds later, is the same login.
 		a.record("root", "10.0.1.7", fp, ts.Add(3*time.Second))
+		if got && ts.Sub(t0) < autoMinAge {
+			t.Fatalf("recurring after %v", ts.Sub(t0))
+		}
 	}
-	if !a.record("root", "10.0.1.7", fp, t0.Add(25*time.Minute)) {
-		t.Fatal("6 logins 5 minutes apart not recurring")
+	if !got {
+		t.Fatal("6 hours of logins 5 minutes apart not recurring")
 	}
-	if a.record("root", "10.0.1.7", "SHA256:other", t0.Add(25*time.Minute)) {
+	end := t0.Add(6*time.Hour + 5*time.Minute)
+	if a.record("root", "10.0.1.7", "SHA256:other", end) {
 		t.Fatal("a new key is recurring")
 	}
-	if a.record("root", "10.0.1.8", fp, t0.Add(25*time.Minute)) {
+	if a.record("root", "10.0.1.8", fp, end) {
 		t.Fatal("a new address is recurring")
 	}
-	if a.record("root", "10.0.1.7", "", t0.Add(30*time.Minute)) {
+	if a.record("root", "10.0.1.7", "", end) {
 		t.Fatal("no fingerprint is recurring")
 	}
 }
 
-// A person logging in at irregular times is not automation, however often.
+// A person logging in at irregular times is not automation, however often;
+// hourly from a public address needs 12 logins.
 func TestIrregularLoginsAreNotAutomation(t *testing.T) {
 	a := newAutomationLog()
 	t0 := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
@@ -57,10 +62,9 @@ func TestIrregularLoginsAreNotAutomation(t *testing.T) {
 			t.Fatalf("irregular logins taken as automation at +%v", o)
 		}
 	}
-	// Hourly from a public address: recurring too.
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 12; i++ {
 		got := a.record("deploy", "198.51.100.8", fp, t0.Add(time.Duration(i)*time.Hour))
-		if got != (i == 5) {
+		if got != (i == 11) {
 			t.Fatalf("hourly login %d: %v", i+1, got)
 		}
 	}
@@ -71,7 +75,10 @@ func TestAutomationLogPersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ssh-automation.json")
 	a := newAutomationLog()
 	now := time.Now()
-	a.load(path, now.Add(-time.Hour))
+	a.load(path, now.Add(-8*time.Hour))
+	for i := 0; i < 6; i++ {
+		a.record("root", "10.0.1.7", fp, now.Add(time.Duration(i-6)*5*time.Minute-7*time.Hour))
+	}
 	for i := 0; i < 6; i++ {
 		a.record("root", "10.0.1.7", fp, now.Add(time.Duration(i-6)*5*time.Minute))
 	}
@@ -135,7 +142,7 @@ func TestTrackerRecurringAutomationSession(t *testing.T) {
 	tr := New(func(typ, sev string, d map[string]string) { events = append(events, ev{typ, sev, d}) })
 	tr.UpdateConfig(Config{Enabled: true, SigmaEnabled: true})
 	now := time.Now()
-	for i := 6; i >= 1; i-- {
+	for i := 6 * 12; i >= 1; i-- {
 		tr.auto.record("root", "10.0.1.7", fp, now.Add(-time.Duration(i)*5*time.Minute))
 	}
 	login := func(pid, key string) {
@@ -158,7 +165,8 @@ func TestTrackerRecurringAutomationSession(t *testing.T) {
 	if len(sessions) != 2 {
 		t.Fatalf("events %+v", events)
 	}
-	if a := sessions[0]; a.sev != "info" || a.d["risk_factors"] != "recurring_automation" || a.d["key_fingerprint"] != fp {
+	if a := sessions[0]; a.sev != "info" || a.d["risk_factors"] != "recurring_automation" || a.d["key_fingerprint"] != fp ||
+		!strings.Contains(a.d["risk_factors_unadjusted"], "sigma_correlation") {
 		t.Fatalf("automation session %+v", a)
 	}
 	if b := sessions[1]; b.sev == "info" || strings.Contains(b.d["risk_factors"], "recurring_automation") {

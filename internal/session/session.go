@@ -594,6 +594,13 @@ func (t *SessionTracker) closeSession(s *Session, reason string) {
 	if s.KeyFP != "" {
 		details["key_fingerprint"] = s.KeyFP
 	}
+	if s.Automated {
+		// What the session would have scored as a person's.
+		data.RecurringAutomation = false
+		full := CalculateRisk(data)
+		details["risk_score_unadjusted"] = strconv.Itoa(full.Score)
+		details["risk_factors_unadjusted"] = strings.Join(full.Factors, ",")
+	}
 
 	t.onEvent("ssh_session", severity, details)
 }

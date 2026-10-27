@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -20,7 +21,10 @@ import (
 // address and key fingerprint have logged in at a regular cadence:
 //
 //   - public key logins only (the fingerprint sshd logs), at least
-//     autoMinLogins of them (this one included) in the last autoWindow;
+//     autoMinLogins of them (autoMinLoginsPublic from a public address),
+//     this one included, in the last autoWindow, the first of the series
+//     at least autoMinAge ago: an intruder with a stolen key who starts
+//     logging in every few minutes is scored normally for hours first;
 //   - logins less than autoBurst apart count as one (a tool opening several
 //     connections at once);
 //   - the gaps between them are regular: at least autoRegularShare of them
@@ -37,6 +41,8 @@ import (
 const (
 	autoWindow              = 7 * 24 * time.Hour
 	autoMinLogins           = 6
+	autoMinLoginsPublic     = 12
+	autoMinAge              = 6 * time.Hour
 	autoBurst               = 30 * time.Second
 	autoMinGap              = time.Minute
 	autoMaxGap              = 25 * time.Hour
@@ -51,12 +57,13 @@ type automationLog struct {
 	mu     sync.Mutex
 	path   string
 	logins map[string][]int64 // "user ip fingerprint" -> login times (Unix seconds), oldest first
+	first  map[string]int64   // "user ip fingerprint" -> first login of the series (Unix seconds)
 	dirty  bool
 	saved  time.Time
 }
 
 func newAutomationLog() *automationLog {
-	return &automationLog{logins: map[string][]int64{}}
+	return &automationLog{logins: map[string][]int64{}, first: map[string]int64{}}
 }
 
 func autoKey(user, ip, fp string) string { return user + " " + ip + " " + fp }
@@ -79,6 +86,9 @@ func (a *automationLog) record(user, ip, fp string, t time.Time) bool {
 		}
 	}
 	times = kept
+	if len(times) == 0 || a.first[k] == 0 || a.first[k] > now {
+		a.first[k] = now // a new series
+	}
 	if n := len(times); n == 0 || now-times[n-1] >= int64(autoBurst/time.Second) {
 		times = append(times, now)
 		if len(times) > autoMaxLogins {
@@ -93,12 +103,15 @@ func (a *automationLog) record(user, ip, fp string, t time.Time) bool {
 	if a.dirty && a.path != "" && t.Sub(a.saved) >= autoSaveEvery {
 		a.saveLocked(t)
 	}
+	if now-a.first[k] < int64(autoMinAge/time.Second) {
+		return false
+	}
 	return regularCadence(times, isPrivateIP(ip))
 }
 
 // regularCadence: enough logins, at regular gaps.
 func regularCadence(times []int64, private bool) bool {
-	if len(times) < autoMinLogins {
+	if len(times) < autoMinLogins || !private && len(times) < autoMinLoginsPublic {
 		return false
 	}
 	gaps := make([]int64, 0, len(times)-1)
@@ -141,12 +154,14 @@ func (a *automationLog) evictLocked() {
 	sort.Slice(keys, func(i, j int) bool { return last(keys[i]) < last(keys[j]) })
 	for _, k := range keys[:len(keys)-autoMaxKeys] {
 		delete(a.logins, k)
+		delete(a.first, k)
 	}
 	a.dirty = true
 }
 
 type automationFile struct {
 	Logins map[string][]int64 `json:"logins"`
+	First  map[string]int64   `json:"first"`
 }
 
 // load reads the saved history from path and saves to it from now on.
@@ -155,11 +170,16 @@ func (a *automationLog) load(path string, now time.Time) {
 	defer a.mu.Unlock()
 	a.path = path
 	a.saved = now
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Printf("[session] read %s: %v", path, err)
 		}
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 4<<20))
+	f.Close()
+	if err != nil {
 		return
 	}
 	var in automationFile
@@ -184,6 +204,10 @@ func (a *automationLog) load(path string, now time.Time) {
 		}
 		if len(kept) > 0 {
 			a.logins[k] = kept
+			a.first[k] = kept[0]
+			if f := in.First[k]; f > 0 && f < kept[0] {
+				a.first[k] = f
+			}
 		}
 	}
 	if len(a.logins) > autoMaxKeys {
@@ -192,7 +216,7 @@ func (a *automationLog) load(path string, now time.Time) {
 }
 
 func (a *automationLog) saveLocked(now time.Time) {
-	data, err := json.Marshal(automationFile{Logins: a.logins})
+	data, err := json.Marshal(automationFile{Logins: a.logins, First: a.first})
 	if err != nil {
 		return
 	}
