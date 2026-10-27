@@ -27,6 +27,7 @@ type fakeFirewall struct {
 	inbound  map[int][]string
 	sockets  []netstate.Conn
 	sessions []string // logged-in SSH clients
+	noSSHD   bool     // no OpenSSH process visible
 	flagged  map[string]bool
 	logins   map[string]bool
 	ports6   bool // ip6tables mirrors the closed ports
@@ -59,7 +60,7 @@ func withFakeFirewall(t *testing.T) *fakeFirewall {
 	fwWebPorts = func() []int { return []int{80, 443, 8080} }
 	fwPublicInbound = func(p int) []string { return f.inbound[p] }
 	fwSockets = func() []netstate.Conn { return f.sockets }
-	fwSSHSessions = func() []string { return f.sessions }
+	fwSSHSessions = func() ([]string, bool) { return f.sessions, !f.noSSHD }
 	fwEgressRefusal = func(ip string) string {
 		if p := net.ParseIP(ip); p != nil && p.IsPrivate() {
 			return "private_target"
@@ -100,7 +101,7 @@ func withFakeFirewall(t *testing.T) *fakeFirewall {
 		fwDropConntrack = saved[16].(func([]int))
 		fwReportRefusal = saved[17].(func(api.EventRequest))
 		fwStatePath = saved[18].(string)
-		fwSSHSessions = saved[19].(func() []string)
+		fwSSHSessions = saved[19].(func() ([]string, bool))
 		resetFirewallMemory()
 	})
 	return f
@@ -672,5 +673,21 @@ func TestEgressRegularDestinationNeedsApproval(t *testing.T) {
 	applyFirewallState(&api.FirewallState{EgressBlocked: []string{"185.1.2.3"}}, nil, false)
 	if !reflect.DeepEqual(f.egress, []string{"185.1.2.3"}) {
 		t.Fatalf("approved block lifted: %v", f.egress)
+	}
+}
+
+// Without an OpenSSH process to inspect (dropbear, sshd in a container of
+// its own), any connection to an SSH port still shields its address.
+func TestEgressSSHServerNotInspectable(t *testing.T) {
+	f := withFakeFirewall(t)
+	f.noSSHD = true
+	f.sockets = []netstate.Conn{
+		{LocalPort: 22, State: 0x0A},
+		{LocalPort: 22, RemoteIP: net.ParseIP("185.1.2.3").To4(), State: 0x01},
+	}
+	a := api.FirewallAction{ID: 95, Kind: "block_egress", IP: "185.1.2.3"}
+	applyFirewallState(nil, []api.FirewallAction{a}, false)
+	if typ, _, d := runFirewallAction(a); typ != "firewall_action_failed" || d["reason"] != "ssh_client" {
+		t.Fatalf("%s %v", typ, d)
 	}
 }

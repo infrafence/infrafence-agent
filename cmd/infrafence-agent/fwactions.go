@@ -110,7 +110,7 @@ var (
 	fwWebPorts      = netstate.WebPorts
 	fwPublicInbound = netstate.PublicInbound
 	fwSockets       = netstate.Sockets
-	fwSSHSessions   = netstate.SSHSessionAddrs
+	fwSSHSessions   = netstate.SSHSessions
 	// fwRegularDestination: the egress detector's count of the server's own
 	// outbound connections (monitor.DestinationLog).
 	fwRegularDestination = func(ip string) (bool, int, int) { return egressDestinations.Load().Regular(ip) }
@@ -391,9 +391,11 @@ type fwChecks struct {
 	resolvers map[string]bool
 	dashboard map[string]bool
 	sessions  map[string]bool // clients of the SSH sessions logged in now
-	approved  bool            // the request was asked for or approved by a person
-	socks     []netstate.Conn
-	socksRead bool
+	// sshUnknown: no OpenSSH process seen, sessions cannot be told apart.
+	sshUnknown bool
+	approved   bool // the request was asked for or approved by a person
+	socks      []netstate.Conn
+	socksRead  bool
 }
 
 func newFwChecks() *fwChecks {
@@ -457,12 +459,24 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 	}
 	if c.sessions == nil {
 		c.sessions = map[string]bool{}
-		for _, a := range fwSSHSessions() {
+		addrs, seen := fwSSHSessions()
+		for _, a := range addrs {
 			c.sessions[a] = true
 		}
+		c.sshUnknown = !seen
 	}
 	if c.sessions[s] {
 		return "ssh_client", fmt.Sprintf("%s is logged in over SSH right now", ip)
+	}
+	if c.sshUnknown {
+		// No OpenSSH process to tell a session from a connection still
+		// authenticating (another SSH server, sshd in its own container):
+		// every connection to an SSH port counts, as before.
+		for _, k := range c.sockets() {
+			if k.State == 0x01 && k.RemoteIP.Equal(p) && c.ssh[k.LocalPort] {
+				return "ssh_client", fmt.Sprintf("%s is connected to SSH right now (the SSH server's sessions cannot be inspected)", ip)
+			}
+		}
 	}
 	if fwSSHLoginSeen(s) {
 		return "ssh_login", fmt.Sprintf("an SSH login came from %s in the last 30 days", ip)
