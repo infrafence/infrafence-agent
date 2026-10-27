@@ -72,6 +72,12 @@ sshguard_evidence() {
   ss -tnpe state established 2>/dev/null | grep -F 192.0.2.3 | sed 's/^/[sshguard] owners: /'
   journalctl --no-pager -n 400 2>/dev/null | grep -F 192.0.2.3 | grep -iE 'sshd|penalt' | tail -8 | sed 's/^/[sshguard] journal: /'
   ipset list infrafence-bans 2>/dev/null | grep '^192.0.2.3' | sed 's/^/[sshguard] banned: /'
+  [ -s /tmp/c2ssh.log ] && grep -vE '^debug1: (Reading|Connecting to|kex|SSH2_MSG|expecting|rekey|Remote protocol|Local version|compat|Server host key|Will attempt|Authentications that|Next authentication|Offering|Trying private|Authenticated|channel|Requesting|Entering|Sending|pledge|client_input|Exit status)' /tmp/c2ssh.log | tail -12 | sed 's/^/[sshguard] client: /'
+  ip netns exec c2 timeout 3 bash -c '</dev/tcp/192.0.2.1/22' 2>/dev/null && echo "[sshguard] tcp 22 from c2: open" || echo "[sshguard] tcp 22 from c2: no answer"
+  iptables-save 2>/dev/null | grep -E '192\.0\.2|INFRAFENCE-EGRESS|match-set' | head -12 | sed 's/^/[sshguard] iptables: /'
+  /usr/sbin/sshd -T 2>&1 | grep -iE '^(logingracetime|maxstartups|persourcepenalt|permitrootlogin|pubkeyauthentication|authorizedkeysfile|maxsessions)' | sed 's/^/[sshguard] sshd -T: /'
+  ls -lZ /root/.ssh/authorized_keys 2>/dev/null | sed 's/^/[sshguard] keys: /'
+  journalctl --no-pager -n 30 -u sshd -u ssh 2>/dev/null | tail -8 | sed 's/^/[sshguard] sshd unit: /'
   for id in 109 110 111; do e=$(fw_event $id); [ -n "$e" ] && echo "[sshguard] result $id: ${e:0:400}"; done
   journalctl -u infrafence-agent --no-pager 2>/dev/null | grep -F 192.0.2.3 | tail -5 | sed 's/^/[sshguard] agent: /'
 }
@@ -264,8 +270,8 @@ if [ $R_EGRESS = ok ]; then
   fi
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   cat /tmp/c2key.pub >>/root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
-  ip netns exec c2 ssh -b 192.0.2.3 -i /tmp/c2key -o BatchMode=yes -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null root@192.0.2.1 sleep 120 </dev/null >/dev/null 2>&1 &
+  ip netns exec c2 ssh -v -b 192.0.2.3 -i /tmp/c2key -o BatchMode=yes -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null root@192.0.2.1 sleep 120 </dev/null >/dev/null 2>/tmp/c2ssh.log &
   session=$!
   in=no
   # The login can take a while: pam_systemd waits for logind, masked in
