@@ -55,6 +55,26 @@ egress_has() {
     iptables -S INFRAFENCE-EGRESS | grep -q "$1/32"
   fi
 }
+# sshguard_evidence WHY prints what the SSH guard looks at, for the CI log,
+# and records WHY in the RESULT line.
+SSHGUARD_WHY=""
+sshguard_evidence() {
+  SSHGUARD_WHY="${SSHGUARD_WHY:+$SSHGUARD_WHY,}$1"
+  log "sshguard: $1"
+  ss -tn state established 2>/dev/null | grep -F 192.0.2.3 | sed 's/^/[sshguard] ss: /'
+  for p in $(pgrep -x sshd; pgrep -x sshd-session; pgrep -x sshd-auth); do
+    printf '[sshguard] pid %s user %s comm %s exe %s title %s sockets %s ssh_connection %s\n' "$p" \
+      "$(stat -c %U /proc/$p 2>/dev/null)" "$(cat /proc/$p/comm 2>/dev/null)" "$(readlink /proc/$p/exe 2>/dev/null)" \
+      "$(tr '\0' ' ' </proc/$p/cmdline 2>/dev/null | cut -c1-80)" \
+      "$(ls -l /proc/$p/fd 2>/dev/null | grep -o 'socket:\[[0-9]*\]' | tr '\n' ' ')" \
+      "$(tr '\0' '\n' </proc/$p/environ 2>/dev/null | grep -c '^SSH_CONNECTION=' || echo unreadable)"
+  done
+  ss -tnpe state established 2>/dev/null | grep -F 192.0.2.3 | sed 's/^/[sshguard] owners: /'
+  journalctl --no-pager -n 400 2>/dev/null | grep -F 192.0.2.3 | grep -iE 'sshd|penalt' | tail -8 | sed 's/^/[sshguard] journal: /'
+  ipset list infrafence-bans 2>/dev/null | grep '^192.0.2.3' | sed 's/^/[sshguard] banned: /'
+  for id in 109 110 111; do e=$(fw_event $id); [ -n "$e" ] && echo "[sshguard] result $id: ${e:0:400}"; done
+  journalctl -u infrafence-agent --no-pager 2>/dev/null | grep -F 192.0.2.3 | tail -5 | sed 's/^/[sshguard] agent: /'
+}
 v4_closed() { iptables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport $1 -j DROP"; }
 v6_closed() { ip6tables -S INFRAFENCE-PORTS 2>/dev/null | grep -q -- "--ctorigdstport $1 -j DROP"; }
 
@@ -146,21 +166,28 @@ kill $holder 2>/dev/null; wait $holder 2>/dev/null
 log "egress_threat_match for 192.0.2.3: $flagged"
 # 192.0.2.3 also holds an SSH connection that never logs in (the password
 # prompt hangs, as during a brute force): it must not shield the address.
-# sshd's per-source penalties (OpenSSH 9.8+) would refuse 192.0.2.3 for a
-# while after that connection ends: exempted for the test, removed below.
+# The connection must stay in authentication, without a failed attempt,
+# for the whole case: sshd's LoginGraceTime (120 s) would close it, and a
+# password prompt answered after a while would count as failed logins (5
+# get the address banned, and the logged-in case below could not connect).
+# The prompt never answers, the grace time is raised for the test, and
+# sshd's per-source penalties (OpenSSH 9.8+), which would refuse 192.0.2.3
+# after the connection ends, are off for it. Removed below.
 SSHD_EXEMPT=/etc/ssh/sshd_config.d/00-infrafence-fw-test.conf
-if [ -d /etc/ssh/sshd_config.d ] && /usr/sbin/sshd -T -o "PerSourcePenaltyExemptList=192.0.2.3" >/dev/null 2>&1; then
-  echo "PerSourcePenaltyExemptList 192.0.2.3" >"$SSHD_EXEMPT"
+if [ -d /etc/ssh/sshd_config.d ]; then
+  echo "LoginGraceTime 900" >"$SSHD_EXEMPT"
+  /usr/sbin/sshd -T -o "PerSourcePenaltyExemptList=192.0.2.3" >/dev/null 2>&1 && echo "PerSourcePenaltyExemptList 192.0.2.3" >>"$SSHD_EXEMPT"
   systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true
+  sleep 1
 fi
-printf '#!/bin/sh\nsleep 90\n' >/tmp/slowpass; chmod 755 /tmp/slowpass
+printf '#!/bin/sh\nsleep 900\n' >/tmp/slowpass; chmod 755 /tmp/slowpass
 ip netns exec c2 setsid env DISPLAY=:0 SSH_ASKPASS=/tmp/slowpass SSH_ASKPASS_REQUIRE=force \
   ssh -b 192.0.2.3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no \
-  -o PreferredAuthentications=password root@192.0.2.1 true </dev/null >/dev/null 2>&1 &
+  -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 root@192.0.2.1 true </dev/null >/dev/null 2>&1 &
 preauth=$!
 sshguard=ok
 for _ in $(seq 1 10); do ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' && break; sleep 1; done
-ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' || { log "no pre-auth SSH connection from 192.0.2.3"; sshguard=fail; }
+ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' || { sshguard_evidence preauth_not_held; sshguard=fail; }
 if [ $flagged = yes ]; then
   regev=ok
   curl -s "$API/state" | grep -o '{"type":"egress_threat_match"[^}]*}' | grep '192.0.2.3' | grep -q '"regular_destination":"true"' \
@@ -169,9 +196,11 @@ if [ $flagged = yes ]; then
   if wait_events 109 && expect 109 firewall_action_failed regular_destination && ! egress_has 192.0.2.3; then
     R_REGULAR=$regev
   fi
+  # Still authenticating when the approved block is asked for.
+  ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' || { sshguard_evidence preauth_dropped_before_111; sshguard=fail; }
   curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 111, "kind": "block_egress", "ip": "192.0.2.3", "approved": true}]}' >/dev/null
   if wait_events 111; then
-    expect 111 firewall_action_done || { e=fail; sshguard=fail; }
+    expect 111 firewall_action_done || { e=fail; sshguard=fail; sshguard_evidence preauth_shielded; }
     egress_has 192.0.2.3 || { log "192.0.2.3 not in the egress set"; e=fail; }
     host_reaches_c2 && { log "host still reaches c2"; e=fail; }
   else
@@ -229,27 +258,32 @@ curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egr
 if [ $R_EGRESS = ok ]; then
   rm -f /tmp/c2key /tmp/c2key.pub
   ssh-keygen -q -t ed25519 -N '' -f /tmp/c2key
+  # Nothing may stand between 192.0.2.3 and sshd now: no ban of it.
+  if ipset list infrafence-bans 2>/dev/null | grep -q '^192.0.2.3' || iptables -S INFRAFENCE 2>/dev/null | grep -q '192.0.2.3'; then
+    sshguard_evidence banned_before_login; sshguard=fail
+  fi
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   cat /tmp/c2key.pub >>/root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
   ip netns exec c2 ssh -b 192.0.2.3 -i /tmp/c2key -o BatchMode=yes -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null root@192.0.2.1 sleep 120 </dev/null >/dev/null 2>&1 &
   session=$!
   in=no
-  for _ in $(seq 1 15); do
+  # The login can take a while: pam_systemd waits for logind, masked in
+  # the test image, until its D-Bus call times out (25 s).
+  for _ in $(seq 1 60); do
     ps -eo args | grep -qE '^sshd(-session)?: root@' && { in=yes; break; }
     sleep 1
   done
   if [ $in = yes ]; then
     curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 110, "kind": "block_egress", "ip": "192.0.2.3"}]}' >/dev/null
     if wait_events 110; then
-      expect 110 firewall_action_failed ssh_client || sshguard=fail
-      egress_has 192.0.2.3 && { log "logged-in 192.0.2.3 blocked"; sshguard=fail; }
+      expect 110 firewall_action_failed ssh_client || { sshguard=fail; sshguard_evidence session_not_recognised; }
+      egress_has 192.0.2.3 && { sshguard=fail; sshguard_evidence session_blocked; }
     else
-      log "no result event for 110"; sshguard=fail
+      sshguard=fail; sshguard_evidence no_result_110
     fi
   else
-    log "the SSH login from 192.0.2.3 did not happen"; ps -eo user,args | grep sshd | sed 's/^/[firewall] /'; sshguard=fail
-    journalctl --no-pager -n 15 -u sshd -u ssh 2>/dev/null | grep -F 192.0.2.3 | sed 's/^/[firewall] /'
+    sshguard=fail; sshguard_evidence login_did_not_happen
   fi
   kill $session 2>/dev/null; wait $session 2>/dev/null
   curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' >/dev/null
@@ -269,6 +303,6 @@ fi
 # ── heartbeat reports the SSH and web ports ──
 curl -s "$API/state" | grep -q '"ssh_ports":\[22' && R_HB=ok || { log "heartbeat without ssh_ports"; curl -s "$API/state" | grep -o '"last_heartbeat":.\{0,200\}'; }
 
-EXTRA_RESULT="${EXTRA_RESULT:-} ports=${R_PORTS} egress=${R_EGRESS} persist=${R_PERSIST} ipv6=${R_IPV6} sshsocket=${R_SSHSOCK} heartbeat_ports=${R_HB} sshguard=${R_SSHGUARD} regular=${R_REGULAR}"
+EXTRA_RESULT="${EXTRA_RESULT:-} ports=${R_PORTS} egress=${R_EGRESS} persist=${R_PERSIST} ipv6=${R_IPV6} sshsocket=${R_SSHSOCK} heartbeat_ports=${R_HB} sshguard=${R_SSHGUARD}${SSHGUARD_WHY:+ sshguard_why=$SSHGUARD_WHY} regular=${R_REGULAR}"
 [ "$R_PORTS$R_EGRESS$R_PERSIST$R_HB$R_SSHGUARD$R_REGULAR" = okokokokokok ] && [ "$R_IPV6" != fail ] && [ "$R_SSHSOCK" != fail ] || EXTRA_FAIL=1
 ip netns pids c2 2>/dev/null | xargs -r kill 2>/dev/null
