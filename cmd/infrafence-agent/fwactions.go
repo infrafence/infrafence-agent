@@ -38,8 +38,10 @@ import (
 //     in the last 24 hours (egress_threat_match, dns_threat_answer, or the
 //     threat-feed blocklist it enforces), and never to a private, protected
 //     or allow-listed address, the dashboard API, a configured DNS resolver,
-//     an address an SSH login came from in the last 30 days, or (for a new
-//     request) an address connected to this server right now.
+//     an address logged in over SSH right now or that an SSH login came from
+//     in the last 30 days, or (for a new request) an address connected to a
+//     service of this server right now. A connection to an SSH port that has
+//     not logged in (a brute force) protects nobody.
 //
 // The checks that depend on what is connected right now (and the "flagged"
 // check) apply to new requests, not to what is already enforced: a restart
@@ -104,6 +106,7 @@ var (
 	fwWebPorts      = netstate.WebPorts
 	fwPublicInbound = netstate.PublicInbound
 	fwSockets       = netstate.Sockets
+	fwSSHSessions   = netstate.SSHSessionAddrs
 	fwEgressRefusal = firewall.EgressRefusal
 	fwResolvers     = configuredResolvers
 	fwApply         = firewall.SetPortsEgress
@@ -380,6 +383,7 @@ type fwChecks struct {
 	ssh, web  map[int]bool
 	resolvers map[string]bool
 	dashboard map[string]bool
+	sessions  map[string]bool // clients of the SSH sessions logged in now
 	socks     []netstate.Conn
 	socksRead bool
 }
@@ -443,6 +447,15 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 	if c.resolvers[s] {
 		return "dns_resolver", fmt.Sprintf("%s is a DNS resolver of this server", ip)
 	}
+	if c.sessions == nil {
+		c.sessions = map[string]bool{}
+		for _, a := range fwSSHSessions() {
+			c.sessions[a] = true
+		}
+	}
+	if c.sessions[s] {
+		return "ssh_client", fmt.Sprintf("%s is logged in over SSH right now", ip)
+	}
 	if fwSSHLoginSeen(s) {
 		return "ssh_login", fmt.Sprintf("an SSH login came from %s in the last 30 days", ip)
 	}
@@ -453,11 +466,11 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 		}
 	}
 	for _, k := range c.sockets() {
-		if k.State != 0x01 || !k.RemoteIP.Equal(p) {
+		// A connection to an SSH port shields nobody by itself: only a
+		// logged-in session does (above). A brute force keeps many
+		// connections open while it guesses.
+		if k.State != 0x01 || !k.RemoteIP.Equal(p) || c.ssh[k.LocalPort] {
 			continue
-		}
-		if c.ssh[k.LocalPort] {
-			return "ssh_client", fmt.Sprintf("%s is connected to SSH right now", ip)
 		}
 		if live && listening[k.LocalPort] {
 			return "established_connection", fmt.Sprintf("%s is connected to port %d of this server right now", ip, k.LocalPort)

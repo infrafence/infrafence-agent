@@ -457,10 +457,115 @@ func sshConnection(path string) (net.IP, int) {
 }
 
 // SSHSessionAddrs returns the public client addresses of the SSH sessions
-// logged in right now: SSH_CONNECTION in the environment of a process (sshd
-// sets it only after authentication) whose address still has an
-// established connection to that server port.
-func SSHSessionAddrs() []string { return sessionAddrs(procRoot, PublicInbound) }
+// logged in right now. Only authenticated sessions count, never a
+// connection still authenticating (a brute force holds many of those):
+//
+//   - SSH_CONNECTION in the environment of a process (sshd sets it only for
+//     the session's processes, after authentication) whose address still
+//     has an established connection to that server port;
+//   - the client of an established socket held by a logged-in sshd process
+//     (loggedInTitle), which also covers a session without a shell
+//     (ssh -N, port forwarding).
+func SSHSessionAddrs() []string {
+	set := map[string]bool{}
+	for _, a := range sessionAddrs(procRoot, PublicInbound) {
+		set[a] = true
+	}
+	for _, a := range loggedInSockAddrs(procRoot, Sockets()) {
+		set[a] = true
+	}
+	out := make([]string, 0, len(set))
+	for a := range set {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// loggedInTitle reports whether an sshd process title (the start of
+// /proc/<pid>/cmdline) is one sshd gives a process after authentication:
+// "sshd: alice@pts/0", "sshd-session: root@notty", "sshd: alice" (no
+// session channel). Before authentication every sshd process carries a
+// bracketed role: "sshd: root [priv]", "sshd: unknown [net]",
+// "sshd: [accepted]", "sshd-session: root [preauth]", the listener
+// "sshd: /usr/sbin/sshd -D [listener] ..."; the monitor keeps "[priv]" for
+// the whole session, so it is never the one counted.
+func loggedInTitle(title string) bool {
+	var rest string
+	switch {
+	case strings.HasPrefix(title, "sshd: "):
+		rest = title[len("sshd: "):]
+	case strings.HasPrefix(title, "sshd-session: "):
+		rest = title[len("sshd-session: "):]
+	default:
+		return false
+	}
+	rest = strings.TrimSpace(rest)
+	return rest != "" && !strings.ContainsAny(rest, "[]") && !strings.HasPrefix(rest, "/")
+}
+
+// procTitle returns the process title: /proc/<pid>/cmdline up to the first
+// NUL (setproctitle writes it over argv).
+func procTitle(dir string) string {
+	f, err := os.Open(dir + "/cmdline")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(f, buf)
+	t, _, _ := strings.Cut(string(buf[:n]), "\x00")
+	return strings.TrimSpace(t)
+}
+
+// loggedInSockAddrs returns the public clients of the established sockets
+// held by logged-in sshd processes.
+func loggedInSockAddrs(root string, socks []Conn) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	inodes := map[uint64]bool{}
+	n := 0
+	for _, e := range entries {
+		pid := e.Name()
+		if pid == "" || pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+		if n++; n > maxProcs {
+			break
+		}
+		dir := root + "/" + pid
+		comm, err := os.ReadFile(dir + "/comm")
+		if err != nil || !strings.HasPrefix(strings.TrimSpace(string(comm)), "sshd") || !loggedInTitle(procTitle(dir)) {
+			continue
+		}
+		fds, _ := os.ReadDir(dir + "/fd")
+		for _, fd := range fds {
+			link, err := os.Readlink(dir + "/fd/" + fd.Name())
+			if err != nil {
+				continue
+			}
+			if v, ok := strings.CutPrefix(link, "socket:["); ok {
+				if i, err := strconv.ParseUint(strings.TrimSuffix(v, "]"), 10, 64); err == nil {
+					inodes[i] = true
+				}
+			}
+		}
+	}
+	set := map[string]bool{}
+	for _, c := range socks {
+		if c.State == stateEstablished && c.Inode != 0 && inodes[c.Inode] && IsPublic(c.RemoteIP) {
+			set[c.RemoteIP.String()] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for a := range set {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
 
 func sessionAddrs(root string, inbound func(port int) []string) []string {
 	entries, err := os.ReadDir(root)

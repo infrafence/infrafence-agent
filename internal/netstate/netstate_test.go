@@ -248,3 +248,63 @@ func TestHasPublicIPv6(t *testing.T) {
 		t.Fatal("global IPv6 not found")
 	}
 }
+
+func TestLoggedInTitle(t *testing.T) {
+	for title, want := range map[string]bool{
+		"sshd: alice@pts/0":               true,
+		"sshd: root@notty":                true,
+		"sshd-session: root@pts/1":        true,
+		"sshd: alice":                     true, // ssh -N
+		"sshd: root [priv]":               false,
+		"sshd: unknown [net]":             false,
+		"sshd: root [net]":                false,
+		"sshd: [accepted]":                false,
+		"sshd-session: root [priv]":       false,
+		"sshd-session: unknown [preauth]": false,
+		"sshd-auth: root [net]":           false,
+		"sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups": false,
+		"/usr/sbin/sshd -D": false,
+		"sshd: ":            false,
+		"":                  false,
+	} {
+		if got := loggedInTitle(title); got != want {
+			t.Errorf("%q: %v, want %v", title, got, want)
+		}
+	}
+}
+
+// Sockets of procTCP: inode 2 is 198.51.100.7 connected to 6379, inode 3 the
+// LAN client 10.0.0.5. Only a logged-in sshd process (not [priv] or [net])
+// makes its client a session.
+func TestLoggedInSockAddrs(t *testing.T) {
+	fakeProc(t)
+	root := procRoot
+	mk := func(pid, comm, cmdline string, inodes ...string) {
+		dir := filepath.Join(root, pid)
+		_ = os.MkdirAll(filepath.Join(dir, "fd"), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644)
+		for i, ino := range inodes {
+			if err := os.Symlink("socket:["+ino+"]", filepath.Join(dir, "fd", string(rune('3'+i)))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// Pre-authentication: the monitor and the network child hold the socket.
+	mk("100", "sshd", "sshd: root [priv]\x00\x00\x00", "2")
+	mk("101", "sshd", "sshd: root [net]\x00", "2")
+	if got := loggedInSockAddrs(root, Sockets()); len(got) != 0 {
+		t.Fatalf("pre-auth connection counted as a session: %v", got)
+	}
+	// Logged in: the session process holds it too. The LAN client is not public.
+	mk("102", "sshd-session", "sshd-session: root@notty\x00", "2", "3")
+	if got := loggedInSockAddrs(root, Sockets()); !reflect.DeepEqual(got, []string{"198.51.100.7"}) {
+		t.Fatalf("got %v", got)
+	}
+	// A process that is not sshd, whatever its title, does not count.
+	_ = os.RemoveAll(filepath.Join(root, "102"))
+	mk("103", "bash", "sshd: root@pts/0\x00", "2")
+	if got := loggedInSockAddrs(root, Sockets()); len(got) != 0 {
+		t.Fatalf("non-sshd process counted: %v", got)
+	}
+}

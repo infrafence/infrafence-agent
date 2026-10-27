@@ -6,8 +6,9 @@
 # address the agent flagged itself: 192.0.2.3 goes into the dashboard threat
 # feed (detection only) and the host holds a connection to it until the
 # egress monitor reports it. Sets R_PORTS, R_EGRESS, R_PERSIST, R_IPV6,
-# R_SSHSOCK, R_HB; appends to EXTRA_RESULT and sets EXTRA_FAIL=1 on a failure.
-R_PORTS=fail R_EGRESS=fail R_PERSIST=fail R_IPV6=fail R_SSHSOCK=skip R_HB=fail
+# R_SSHSOCK, R_HB, R_SSHGUARD; appends to EXTRA_RESULT and sets EXTRA_FAIL=1 on
+# a failure.
+R_PORTS=fail R_EGRESS=fail R_PERSIST=fail R_IPV6=fail R_SSHSOCK=skip R_HB=fail R_SSHGUARD=fail
 API=http://127.0.0.1:8080
 CONFIG='"config":{"bf_threshold":5,"bf_window":60,"monitor_mode":false}'
 
@@ -135,10 +136,20 @@ for _ in $(seq 1 150); do
 done
 kill $holder 2>/dev/null; wait $holder 2>/dev/null
 log "egress_threat_match for 192.0.2.3: $flagged"
+# 192.0.2.3 also holds an SSH connection that never logs in (the password
+# prompt hangs, as during a brute force): it must not shield the address.
+printf '#!/bin/sh\nsleep 90\n' >/tmp/slowpass; chmod 755 /tmp/slowpass
+ip netns exec c2 setsid env DISPLAY=:0 SSH_ASKPASS=/tmp/slowpass SSH_ASKPASS_REQUIRE=force \
+  ssh -b 192.0.2.3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no \
+  -o PreferredAuthentications=password root@192.0.2.1 true </dev/null >/dev/null 2>&1 &
+preauth=$!
+sshguard=ok
+for _ in $(seq 1 10); do ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' && break; sleep 1; done
+ss -tn state established 2>/dev/null | grep -q '192.0.2.1:22 *192.0.2.3:' || { log "no pre-auth SSH connection from 192.0.2.3"; sshguard=fail; }
 if [ $flagged = yes ]; then
   curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 109, "kind": "block_egress", "ip": "192.0.2.3"}]}' >/dev/null
   if wait_events 109; then
-    expect 109 firewall_action_done || e=fail
+    expect 109 firewall_action_done || { e=fail; sshguard=fail; }
     egress_has 192.0.2.3 || { log "192.0.2.3 not in the egress set"; e=fail; }
     host_reaches_c2 && { log "host still reaches c2"; e=fail; }
   else
@@ -147,6 +158,7 @@ if [ $flagged = yes ]; then
 else
   e=fail
 fi
+kill $preauth 2>/dev/null; wait $preauth 2>/dev/null
 [ $p = ok ] && R_PORTS=half; [ $e = ok ] && R_EGRESS=half
 curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [{"port": 6379, "proto": "tcp"}], "egress_blocked": ["192.0.2.3"]}, "firewall_actions": null}' >/dev/null
 
@@ -189,6 +201,37 @@ else
   log "no result events for 105-106"
 fi
 curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' >/dev/null
+
+# ── a logged-in SSH session from 192.0.2.3 (still flagged): blocking egress
+# to it is refused while it is open ──
+if [ $R_EGRESS = ok ]; then
+  rm -f /tmp/c2key /tmp/c2key.pub
+  ssh-keygen -q -t ed25519 -N '' -f /tmp/c2key
+  mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  cat /tmp/c2key.pub >>/root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
+  ip netns exec c2 ssh -b 192.0.2.3 -i /tmp/c2key -o BatchMode=yes -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null root@192.0.2.1 sleep 120 </dev/null >/dev/null 2>&1 &
+  session=$!
+  in=no
+  for _ in $(seq 1 15); do
+    ps -eo args | grep -qE '^sshd(-session)?: root@' && { in=yes; break; }
+    sleep 1
+  done
+  if [ $in = yes ]; then
+    curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 110, "kind": "block_egress", "ip": "192.0.2.3"}]}' >/dev/null
+    if wait_events 110; then
+      expect 110 firewall_action_failed ssh_client || sshguard=fail
+      egress_has 192.0.2.3 && { log "logged-in 192.0.2.3 blocked"; sshguard=fail; }
+    else
+      log "no result event for 110"; sshguard=fail
+    fi
+  else
+    log "the SSH login from 192.0.2.3 did not happen"; ps -eo user,args | grep sshd | sed 's/^/[firewall] /'; sshguard=fail
+  fi
+  kill $session 2>/dev/null; wait $session 2>/dev/null
+  curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' >/dev/null
+  R_SSHGUARD=$sshguard
+fi
 [ $R_PORTS = ok ] || log "ports: $R_PORTS"
 [ $R_EGRESS = ok ] || log "egress: $R_EGRESS"
 if [ -n "$sock" ]; then
@@ -199,6 +242,6 @@ fi
 # ── heartbeat reports the SSH and web ports ──
 curl -s "$API/state" | grep -q '"ssh_ports":\[22' && R_HB=ok || { log "heartbeat without ssh_ports"; curl -s "$API/state" | grep -o '"last_heartbeat":.\{0,200\}'; }
 
-EXTRA_RESULT="${EXTRA_RESULT:-} ports=${R_PORTS} egress=${R_EGRESS} persist=${R_PERSIST} ipv6=${R_IPV6} sshsocket=${R_SSHSOCK} heartbeat_ports=${R_HB}"
-[ "$R_PORTS$R_EGRESS$R_PERSIST$R_HB" = okokokok ] && [ "$R_IPV6" != fail ] && [ "$R_SSHSOCK" != fail ] || EXTRA_FAIL=1
+EXTRA_RESULT="${EXTRA_RESULT:-} ports=${R_PORTS} egress=${R_EGRESS} persist=${R_PERSIST} ipv6=${R_IPV6} sshsocket=${R_SSHSOCK} heartbeat_ports=${R_HB} sshguard=${R_SSHGUARD}"
+[ "$R_PORTS$R_EGRESS$R_PERSIST$R_HB$R_SSHGUARD" = okokokokok ] && [ "$R_IPV6" != fail ] && [ "$R_SSHSOCK" != fail ] || EXTRA_FAIL=1
 ip netns pids c2 2>/dev/null | xargs -r kill 2>/dev/null
