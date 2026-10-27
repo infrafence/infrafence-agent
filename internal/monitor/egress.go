@@ -85,6 +85,7 @@ func (d *EgressDetector) Scan() ScanResult {
 			// The address connected to a service of this server.
 			details["direction"] = "inbound"
 		}
+		d.Destinations.Flag(ipStr)
 		if regular, n, days := d.Destinations.Regular(ipStr); regular {
 			details["regular_destination"] = "true"
 			details["regular_connections"] = fmt.Sprintf("%d", n)

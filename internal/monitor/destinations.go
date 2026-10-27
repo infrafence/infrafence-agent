@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"log"
@@ -21,6 +22,12 @@ import (
 // agent does not block egress to it on its own: the egress_threat_match
 // says regular_destination and the block waits for a person's approval.
 //
+// What counts is the history before the address first matched a threat
+// list: the verdict is taken then and kept for destFlagDays (Flag). A C2
+// address that was already listed when the server first reached it never
+// becomes "regular" by being contacted again; a customer's API that is
+// listed later stays regular.
+//
 // A connection counts once per day it is seen: an established or
 // TIME_WAIT socket (/proc/net/tcp) from a local port nothing listens on, or
 // a tracked flow (conntrack) that this host or one of its containers
@@ -31,6 +38,7 @@ type DestinationLog struct {
 	mu    sync.Mutex
 	path  string
 	days  map[string]map[int64]int // address -> day (Unix days, UTC) -> connections
+	flags map[string]destFlag      // address -> verdict when it first matched a threat list
 	seen  map[string]int64         // connection key -> day it was counted
 	dirty bool
 	saved time.Time
@@ -49,6 +57,7 @@ const (
 	destMinConns    = 5
 	maxDestinations = 5000
 	maxSeenConns    = 50000
+	destFlagDays    = 30
 	destSaveEvery   = 10 * time.Minute
 	// maxConntrackRead bounds what one scan reads of the conntrack table.
 	maxConntrackRead = 16 << 20
@@ -58,7 +67,7 @@ const (
 // loaded from it when the file exists.
 func NewDestinationLog(path string) *DestinationLog {
 	l := &DestinationLog{
-		path: path, days: map[string]map[int64]int{}, seen: map[string]int64{},
+		path: path, days: map[string]map[int64]int{}, flags: map[string]destFlag{}, seen: map[string]int64{},
 		now: time.Now, conntrack: readConntrack, local: localAddrs,
 	}
 	l.load()
@@ -82,6 +91,9 @@ func (l *DestinationLog) Observe(conns []TCPConn) {
 	}
 	keys := map[string]string{} // connection key -> remote address
 	for _, c := range conns {
+		if len(keys) >= maxSeenConns {
+			break
+		}
 		if (c.State != TCPEstablished && c.State != TCPTimeWait) || listening[c.LocalPort] || !publicIPv4(c.RemoteIP) {
 			continue
 		}
@@ -89,18 +101,13 @@ func (l *DestinationLog) Observe(conns []TCPConn) {
 		keys["s "+strconv.Itoa(int(c.LocalPort))+" "+ip+":"+strconv.Itoa(int(c.RemotePort))] = ip
 	}
 	if ct := l.conntrack(); ct != "" {
-		for k, ip := range conntrackOutbound(ct, l.local()) {
-			keys[k] = ip
-		}
+		conntrackOutbound(ct, l.local(), keys)
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	seen := make(map[string]int64, len(keys))
 	for k, ip := range keys {
-		if len(seen) >= maxSeenConns {
-			break
-		}
 		if l.seen[k] != today {
 			d := l.days[ip]
 			if d == nil {
@@ -138,6 +145,23 @@ func (l *DestinationLog) pruneLocked(today int64) {
 			delete(l.days, ip)
 		}
 	}
+	for ip, f := range l.flags {
+		if f.Day <= today-destFlagDays || f.Day > today+1 {
+			delete(l.flags, ip)
+			l.dirty = true
+		}
+	}
+	if n := len(l.flags) - maxDestinations; n > 0 {
+		ips := make([]string, 0, len(l.flags))
+		for ip := range l.flags {
+			ips = append(ips, ip)
+		}
+		sort.Slice(ips, func(i, j int) bool { return l.flags[ips[i]].Day < l.flags[ips[j]].Day })
+		for _, ip := range ips[:n] {
+			delete(l.flags, ip)
+		}
+		l.dirty = true
+	}
 	if n := len(l.days) - maxDestinations; n > 0 {
 		ips := make([]string, 0, len(l.days))
 		for ip := range l.days {
@@ -156,8 +180,40 @@ func (l *DestinationLog) pruneLocked(today int64) {
 	}
 }
 
-// Regular reports whether this server connected to ip regularly over the
-// last destWindowDays days, with the connections and days counted.
+// destFlag is the verdict taken when an address first matched a threat
+// list.
+type destFlag struct {
+	Day     int64 `json:"day"`
+	Regular bool  `json:"regular"`
+	Conns   int   `json:"conns"`
+	Days    int   `json:"days"`
+}
+
+// Flag records that ip matched a threat list now; the first time, the
+// verdict is taken from the days before today and kept for destFlagDays.
+func (l *DestinationLog) Flag(ip string) {
+	if l == nil {
+		return
+	}
+	p := net.ParseIP(strings.TrimSpace(ip)).To4()
+	if p == nil {
+		return
+	}
+	today := day(l.now())
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.flags[p.String()]; ok {
+		return
+	}
+	r, n, d := l.countLocked(p.String(), today-1)
+	l.flags[p.String()] = destFlag{Day: today, Regular: r, Conns: n, Days: d}
+	l.dirty = true
+	l.pruneLocked(today)
+}
+
+// Regular reports whether this server connected to ip regularly, with the
+// connections and days counted: the verdict taken when ip was first
+// flagged (Flag), else the last destWindowDays days.
 func (l *DestinationLog) Regular(ip string) (regular bool, conns, days int) {
 	if l == nil {
 		return false, 0, 0
@@ -169,8 +225,17 @@ func (l *DestinationLog) Regular(ip string) (regular bool, conns, days int) {
 	today := day(l.now())
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for dd, n := range l.days[p.String()] {
-		if dd > today-destWindowDays && dd <= today && n > 0 {
+	if f, ok := l.flags[p.String()]; ok && f.Day > today-destFlagDays {
+		return f.Regular, f.Conns, f.Days
+	}
+	return l.countLocked(p.String(), today)
+}
+
+// countLocked counts the connections to ip on the destWindowDays days up
+// to last.
+func (l *DestinationLog) countLocked(ip string, last int64) (regular bool, conns, days int) {
+	for dd, n := range l.days[ip] {
+		if dd > last-destWindowDays && dd <= last && n > 0 {
 			conns += n
 			days++
 		}
@@ -189,11 +254,12 @@ func (l *DestinationLog) Save() {
 }
 
 type destFile struct {
-	Days map[string]map[string]int `json:"days"` // address -> Unix day -> connections
+	Days  map[string]map[string]int `json:"days"`            // address -> Unix day -> connections
+	Flags map[string]destFlag       `json:"flags,omitempty"` // address -> verdict when first flagged
 }
 
 func (l *DestinationLog) saveLocked() {
-	out := destFile{Days: make(map[string]map[string]int, len(l.days))}
+	out := destFile{Days: make(map[string]map[string]int, len(l.days)), Flags: l.flags}
 	for ip, d := range l.days {
 		m := make(map[string]int, len(d))
 		for dd, n := range d {
@@ -217,11 +283,16 @@ func (l *DestinationLog) load() {
 	if l.path == "" {
 		return
 	}
-	data, err := os.ReadFile(l.path)
+	f, err := os.Open(l.path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			log.Printf("[egress] read %s: %v", l.path, err)
 		}
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 8<<20))
+	f.Close()
+	if err != nil {
 		return
 	}
 	var in destFile
@@ -242,6 +313,11 @@ func (l *DestinationLog) load() {
 		}
 		if len(m) > 0 {
 			l.days[p.To4().String()] = m
+		}
+	}
+	for ip, f := range in.Flags {
+		if p := net.ParseIP(ip); p != nil && publicIPv4(p) && f.Conns >= 0 && f.Days >= 0 && f.Days <= destWindowDays {
+			l.flags[p.To4().String()] = f
 		}
 	}
 	l.pruneLocked(day(l.now()))
@@ -305,16 +381,17 @@ func localAddrs() map[string]bool {
 	return out
 }
 
-// conntrackOutbound returns the TCP flows this host or one of its
+// conntrackOutbound adds to keys the TCP flows this host or one of its
 // containers started to a public IPv4 address, established or finished
 // normally: the original source is a local or private address, the
 // original destination a public one that is not this host. Keyed like the
 // sockets of Observe for the host's own connections, by the original tuple
-// for the others.
-func conntrackOutbound(table string, local map[string]bool) map[string]string {
-	out := map[string]string{}
-	for _, line := range strings.Split(table, "\n") {
-		f := strings.Fields(line)
+// for the others; at most maxSeenConns keys.
+func conntrackOutbound(table string, local map[string]bool, keys map[string]string) {
+	sc := bufio.NewScanner(strings.NewReader(table))
+	sc.Buffer(make([]byte, 0, 4096), 64*1024)
+	for sc.Scan() && len(keys) < maxSeenConns {
+		f := strings.Fields(sc.Text())
 		ok, isTCP := false, false
 		var src, dst, sport, dport string
 		for _, w := range f {
@@ -347,10 +424,9 @@ func conntrackOutbound(table string, local map[string]bool) map[string]string {
 		if local[s.String()] {
 			// The host's own connection: the same key as its socket, so
 			// it is counted once.
-			out["s "+sport+" "+ip+":"+dport] = ip
+			keys["s "+sport+" "+ip+":"+dport] = ip
 		} else {
-			out["c "+s.String()+":"+sport+" "+ip+":"+dport] = ip
+			keys["c "+s.String()+":"+sport+" "+ip+":"+dport] = ip
 		}
 	}
-	return out
 }

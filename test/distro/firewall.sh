@@ -124,11 +124,11 @@ fi
 
 # ── the agent flags 192.0.2.3 (threat feed + a connection to it), then
 # blocking egress to it is allowed, but only with approval: the host has
-# connected to it on 3 of the last 7 days (seeded log), so it is a
-# destination the server depends on ──
+# connected to it on 3 of the 7 days before it was listed (seeded log), so
+# it is a destination the server depends on ──
 today=$(( $(date -u +%s) / 86400 ))
 systemctl stop infrafence-agent
-printf '{"days":{"192.0.2.3":{"%s":3,"%s":2,"%s":2}}}' $today $((today - 1)) $((today - 3)) >/var/lib/infrafence/egress-destinations.json
+printf '{"days":{"192.0.2.3":{"%s":3,"%s":2,"%s":2}}}' $((today - 1)) $((today - 2)) $((today - 3)) >/var/lib/infrafence/egress-destinations.json
 chmod 600 /var/lib/infrafence/egress-destinations.json
 systemctl start infrafence-agent
 sleep 12

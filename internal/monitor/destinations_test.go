@@ -12,7 +12,7 @@ import (
 
 func testLog(t *testing.T, path string, now *time.Time) *DestinationLog {
 	t.Helper()
-	l := &DestinationLog{path: path, days: map[string]map[int64]int{}, seen: map[string]int64{},
+	l := &DestinationLog{path: path, days: map[string]map[int64]int{}, flags: map[string]destFlag{}, seen: map[string]int64{},
 		now: func() time.Time { return *now }, conntrack: func() string { return "" },
 		local: func() map[string]bool { return map[string]bool{"192.0.2.10": true} }}
 	l.load()
@@ -145,7 +145,7 @@ func TestEgressDetectorRegularDestination(t *testing.T) {
 	feed.Update([]api.ThreatEntry{{IP: strPtr("198.51.100.20"), Source: "test-feed"}, {IP: strPtr("203.0.113.9"), Source: "test-feed"}})
 	now := time.Now()
 	l := testLog(t, "", &now)
-	l.days["198.51.100.20"] = map[int64]int{day(now): 3, day(now) - 1: 2, day(now) - 3: 1}
+	l.days["198.51.100.20"] = map[int64]int{day(now) - 1: 3, day(now) - 2: 2, day(now) - 3: 1}
 	d := NewEgressDetector(feed)
 	d.Destinations = l
 	d.connSource = func() ([]TCPConn, error) {
@@ -164,5 +164,40 @@ func TestEgressDetectorRegularDestination(t *testing.T) {
 	}
 	if r := got["203.0.113.9"]; r["regular_destination"] != "" || r["direction"] != "inbound" {
 		t.Fatalf("inbound: %v", r)
+	}
+}
+
+// The verdict is the history before the first threat match: a C2 first
+// reached while listed never becomes regular; an API listed later stays.
+func TestDestinationLogVerdictAtFirstFlag(t *testing.T) {
+	now := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "d.json")
+	l := testLog(t, path, &now)
+	l.days["198.51.100.20"] = map[int64]int{day(now) - 1: 3, day(now) - 2: 2, day(now) - 4: 1}
+	l.Flag("198.51.100.20")
+	l.Flag("198.51.100.66") // the C2, first seen today
+	for d := 0; d < 4; d++ {
+		now = now.Add(24 * time.Hour)
+		for i := 0; i < 3; i++ {
+			l.Observe([]TCPConn{out(uint16(40000+10*d+i), "198.51.100.66", 443)})
+		}
+		l.Flag("198.51.100.66")
+	}
+	if r, _, _ := l.Regular("198.51.100.66"); r {
+		t.Fatal("C2 contacted after its listing became regular")
+	}
+	if r, n, days := l.Regular("198.51.100.20"); !r || n != 6 || days != 3 {
+		t.Fatalf("API: %v %d %d", r, n, days)
+	}
+	l.Save()
+	back := testLog(t, path, &now)
+	if r, _, _ := back.Regular("198.51.100.20"); !r {
+		t.Fatal("verdict lost across a restart")
+	}
+	// After destFlagDays the verdict expires.
+	now = now.Add(destFlagDays * 24 * time.Hour)
+	back.Observe(nil)
+	if len(back.flags) != 0 {
+		t.Fatalf("flags kept: %v", back.flags)
 	}
 }
