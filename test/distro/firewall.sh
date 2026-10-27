@@ -82,6 +82,7 @@ sshguard_evidence() {
   journalctl -u infrafence-agent --no-pager -n 2000 2>/dev/null | grep -F 192.0.2.3 | tail -5 | sed 's/^/[sshguard] agent: /'
   ls -l /run/nologin /etc/nologin 2>/dev/null | sed 's/^/[sshguard] nologin: /'
   echo "[sshguard] user-sessions: $(systemctl is-active systemd-user-sessions 2>&1)"
+  echo "[sshguard] shadow: $(ls -l /etc/shadow 2>&1) root entry $(getent shadow root >/dev/null && echo present || echo missing) unix_chkpwd $(ls -l "$(command -v unix_chkpwd || echo /usr/sbin/unix_chkpwd)" 2>&1 | cut -d' ' -f1) selinuxfs $(grep -c selinuxfs /proc/filesystems) usepam $(/usr/sbin/sshd -T 2>/dev/null | grep '^usepam')"
   echo "[sshguard] root account: $(grep '^root:' /etc/shadow 2>/dev/null | cut -d: -f3-) $(chage -l root 2>/dev/null | grep -iE 'must|expire' | tr '\n' ';')"
   grep -hE '^\s*account' /etc/pam.d/sshd /etc/pam.d/password-auth /etc/pam.d/system-auth 2>/dev/null | sed 's/^/[sshguard] pam: /'
   journalctl --no-pager -n 300 2>/dev/null | grep -iE 'pam_|account|nologin|sepermit' | tail -8 | sed 's/^/[sshguard] pam log: /'
@@ -185,18 +186,22 @@ log "egress_threat_match for 192.0.2.3: $flagged"
 # stops, as a scanner does; sshd waits for it in authentication. sshd's
 # LoginGraceTime (120 s) is raised for the test and its per-source
 # penalties (OpenSSH 9.8+) are off for 192.0.2.3; both removed below.
+# PAM is off for the test's sshd too: in the RPM images on CI runners PAM's
+# account check of root fails ("unix_chkpwd: could not obtain user info"),
+# so the logged-in case could never log in; the guard looks at sshd's
+# processes and sockets, which PAM does not change.
 reload_sshd() { systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true; sleep 1; }
 SSHD_EXEMPT=/etc/ssh/sshd_config.d/00-infrafence-fw-test.conf
 SSHD_MAIN_SAVED=""
 if [ -d /etc/ssh/sshd_config.d ]; then
-  echo "LoginGraceTime 900" >"$SSHD_EXEMPT"
+  printf 'LoginGraceTime 900\nUsePAM no\n' >"$SSHD_EXEMPT"
   /usr/sbin/sshd -T -o "PerSourcePenaltyExemptList=192.0.2.3" >/dev/null 2>&1 && echo "PerSourcePenaltyExemptList 192.0.2.3" >>"$SSHD_EXEMPT"
 fi
-if ! /usr/sbin/sshd -T 2>/dev/null | grep -qx 'logingracetime 900'; then
+if ! /usr/sbin/sshd -T 2>/dev/null | grep -qx 'logingracetime 900' || ! /usr/sbin/sshd -T 2>/dev/null | grep -qx 'usepam no'; then
   # No drop-in directory read (OpenSSH 8.0 on EL 8): first line of sshd_config.
   SSHD_MAIN_SAVED=/tmp/sshd_config.fw-test
   cp -p /etc/ssh/sshd_config "$SSHD_MAIN_SAVED"
-  { echo "LoginGraceTime 900"; cat "$SSHD_MAIN_SAVED"; } >/etc/ssh/sshd_config
+  { echo "LoginGraceTime 900"; echo "UsePAM no"; cat "$SSHD_MAIN_SAVED"; } >/etc/ssh/sshd_config
 fi
 reload_sshd
 # The source must be 192.0.2.3 (the c2 namespace's first address is .2):
