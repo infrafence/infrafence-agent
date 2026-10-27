@@ -184,6 +184,9 @@ fi
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 
+# ── SSH checks read the effective configuration (test/distro/sshconfig.sh) ──
+. /distro/sshconfig.sh
+
 # ── PHP configuration: detection, verified fix and revert (test/distro/php.sh) ──
 . /distro/php.sh
 

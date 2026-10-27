@@ -35,6 +35,8 @@ type state struct {
 	GeoIPRequests int               `json:"geoip_requests"`
 	Bans          []json.RawMessage `json:"bans"`
 	Events        []json.RawMessage `json:"events"`
+	// LastScan is the latest hardening scan result the agent submitted.
+	LastScan json.RawMessage `json:"last_scan,omitempty"`
 	// InfoCalls counts the requests for the attack map ("map:24",
 	// "map:168") and the security score ("score").
 	InfoCalls map[string]int `json:"info_calls"`
@@ -214,6 +216,13 @@ func main() {
 		st.Bans = append(st.Bans, body)
 		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok", "id": len(st.Bans)})
+	})
+	mux.HandleFunc("/api/v1/agent/scan-results", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		st.mu.Lock()
+		st.LastScan = body
+		st.mu.Unlock()
+		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/agent/events", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

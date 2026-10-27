@@ -26,6 +26,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/sshdconfig"
 )
 
 // Why a finding can't be fixed automatically. The dashboard translates these
@@ -297,7 +299,11 @@ func setSSH(h Host, key, value string) (string, error) {
 	if value != "" {
 		out, err := h.Run(sshd, "-T")
 		if err != nil || !hasEffective(out, key, value) {
-			return "", fmt.Errorf("another setting overrides %s, %s", key, undone(restore()))
+			rb := undone(restore())
+			if s, ok := sshWinner(h, key); ok {
+				return "", fmt.Errorf("%s sets %s %s and wins (sshd keeps the first value it reads), %s: change it there by hand", s.Where(), key, s.Value, rb)
+			}
+			return "", fmt.Errorf("another setting overrides %s, %s", key, rb)
 		}
 	}
 	if err := reloadSSH(h); err != nil {
@@ -307,6 +313,31 @@ func setSSH(h Host, key, value string) (string, error) {
 		return fmt.Sprintf("removed %s from %s; sshd reloaded", key, SSHDropIn), nil
 	}
 	return fmt.Sprintf("set %s %s in %s; sshd reloaded (open sessions unaffected)", key, value, SSHDropIn), nil
+}
+
+// sshWinner returns the setting of key that sshd reads first, when it is
+// not InfraFence's drop-in: the file to change by hand.
+func sshWinner(h Host, key string) (sshdconfig.Setting, bool) {
+	cfg, ok := sshdconfig.Parse(hostFS{h})
+	if !ok {
+		return sshdconfig.Setting{}, false
+	}
+	s, ok := cfg.Get(key)
+	if !ok || s.File == SSHDropIn {
+		return sshdconfig.Setting{}, false
+	}
+	return s, true
+}
+
+// hostFS reads the sshd configuration through h.
+type hostFS struct{ h Host }
+
+func (f hostFS) ReadFile(p string) ([]byte, error) { return f.h.ReadFile(p) }
+func (f hostFS) Glob(pattern string) ([]string, error) {
+	if g, ok := f.h.(interface{ Glob(string) []string }); ok {
+		return g.Glob(pattern), nil
+	}
+	return filepath.Glob(pattern)
 }
 
 func reloadSSH(h Host) error {
