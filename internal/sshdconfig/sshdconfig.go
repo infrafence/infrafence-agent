@@ -10,6 +10,8 @@
 package sshdconfig
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -173,5 +175,22 @@ var OS FS = osFS{}
 
 type osFS struct{}
 
-func (osFS) ReadFile(path string) ([]byte, error)  { return os.ReadFile(path) }
+// ReadFile reads a regular file, at most 1 MiB: an Include naming a FIFO
+// or a device must not hang or fill memory.
+func (osFS) ReadFile(path string) ([]byte, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, 1<<20))
+}
+
 func (osFS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
