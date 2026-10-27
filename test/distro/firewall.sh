@@ -146,6 +146,13 @@ kill $holder 2>/dev/null; wait $holder 2>/dev/null
 log "egress_threat_match for 192.0.2.3: $flagged"
 # 192.0.2.3 also holds an SSH connection that never logs in (the password
 # prompt hangs, as during a brute force): it must not shield the address.
+# sshd's per-source penalties (OpenSSH 9.8+) would refuse 192.0.2.3 for a
+# while after that connection ends: exempted for the test, removed below.
+SSHD_EXEMPT=/etc/ssh/sshd_config.d/00-infrafence-fw-test.conf
+if [ -d /etc/ssh/sshd_config.d ] && /usr/sbin/sshd -T -o "PerSourcePenaltyExemptList=192.0.2.3" >/dev/null 2>&1; then
+  echo "PerSourcePenaltyExemptList 192.0.2.3" >"$SSHD_EXEMPT"
+  systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true
+fi
 printf '#!/bin/sh\nsleep 90\n' >/tmp/slowpass; chmod 755 /tmp/slowpass
 ip netns exec c2 setsid env DISPLAY=:0 SSH_ASKPASS=/tmp/slowpass SSH_ASKPASS_REQUIRE=force \
   ssh -b 192.0.2.3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no \
@@ -242,10 +249,15 @@ if [ $R_EGRESS = ok ]; then
     fi
   else
     log "the SSH login from 192.0.2.3 did not happen"; ps -eo user,args | grep sshd | sed 's/^/[firewall] /'; sshguard=fail
+    journalctl --no-pager -n 15 -u sshd -u ssh 2>/dev/null | grep -F 192.0.2.3 | sed 's/^/[firewall] /'
   fi
   kill $session 2>/dev/null; wait $session 2>/dev/null
   curl -s -X POST "$API/set-sync" -d '{"firewall_state": {"closed_ports": [], "egress_blocked": []}, "firewall_actions": null}' >/dev/null
   R_SSHGUARD=$sshguard
+fi
+if [ -e "${SSHD_EXEMPT:-}" ]; then
+  rm -f "$SSHD_EXEMPT"
+  systemctl reload sshd >/dev/null 2>&1 || systemctl reload ssh >/dev/null 2>&1 || true
 fi
 [ $R_PORTS = ok ] || log "ports: $R_PORTS"
 [ $R_EGRESS = ok ] || log "egress: $R_EGRESS"
