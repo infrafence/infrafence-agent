@@ -50,7 +50,12 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	binary := flag.String("binary", "", "agent binary served at /releases/infrafence-agent-linux-<arch>")
 	geoip := flag.String("geoip", "/tmp/mockapi-geoip.mmdb", "country database served at /api/v1/agent/geoip (missing: 503)")
+	dockerSock := flag.String("docker-sock", "", "serve a Coolify server's Docker API on this Unix socket instead (docker.go)")
 	flag.Parse()
+	if *dockerSock != "" {
+		serveDocker(*dockerSock)
+		return
+	}
 
 	bin, err := os.ReadFile(*binary)
 	if err != nil {

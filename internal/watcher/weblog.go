@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/proxysites"
 )
 
 // EventFunc is called when a suspicious event is detected (may or may not result in a ban).
@@ -925,6 +927,9 @@ func detectCpanelDomlogs() []LogPathInfo {
 //  2. `docker exec nginx -T` — parses nginx config for log directives
 //  3. Fallback: scan bind-mounted directories for *access*.log files
 //
+// Traefik and Caddy proxy containers get neither 2 nor 3 (no nginx in them,
+// JSON logs): the domains behind them come from labels (internal/proxysites).
+//
 // Supported labels:
 //
 //	infrafence.monitor=true     — force-monitor this container (even if not a web image)
@@ -1009,6 +1014,16 @@ func detectDockerLogInfo() []LogPathInfo {
 				}
 			}
 			continue // explicit path set — skip auto-detection
+		}
+
+		// Traefik and Caddy (Coolify's coolify-proxy, for one) run no
+		// nginx, and write JSON access logs (when they write any), which
+		// this watcher does not read: their sites are reported from the
+		// containers' labels (internal/proxysites). infrafence.log-path
+		// above still points at a log in a supported format.
+		if flavour := proxysites.Flavour(image); flavour != "" {
+			log.Printf("[webwatcher] docker: %s is a %s proxy: its domains come from container labels, its access log is not read", name, flavour)
+			continue
 		}
 
 		mounts := dockerBindMounts(id)

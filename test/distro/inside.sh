@@ -181,6 +181,9 @@ fi
 # ── trust badge verification file in an nginx site (test/distro/trust.sh) ──
 . /distro/trust.sh
 
+# ── Coolify: container domains from proxy labels (test/distro/coolify.sh) ──
+. /distro/coolify.sh
+
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 

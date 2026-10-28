@@ -912,6 +912,9 @@ func runAgent() {
 	// Metrics collector
 	metricsCollector := monitor.NewMetricsCollector()
 
+	// Container domains behind a reverse proxy (proxysites.go).
+	go proxyDomains.Run(context.Background())
+
 	// Heartbeat ticker (includes zombie count + web server info + system metrics)
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
@@ -945,7 +948,7 @@ func runAgent() {
 				ZombieCount:       zReport.Count,
 				WebServer:         wsName,
 				WebServerVersion:  wsVersion,
-				MonitoredDomains:  monitoredDomains,
+				MonitoredDomains:  heartbeatDomains(monitoredDomains, proxyDomains.Domains()),
 				MonitoredLogPaths: monitoredLogPaths,
 				FirewallMode:      fwStatus.Mode,
 				BanCapacity:       fwStatus.Capacity,
