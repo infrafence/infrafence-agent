@@ -98,7 +98,7 @@ jobs:
             checksums.txt
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             build/infrafence-agent-linux-amd64
@@ -217,7 +217,7 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
 
       - name: Attest Docker image provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/infrafence/infrafence-agent
           subject-digest: ${{ steps.docker-build.outputs.digest }}
