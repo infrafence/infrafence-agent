@@ -595,6 +595,10 @@ type FirewallAction struct {
 	Port  int    `json:"port,omitempty"`
 	Proto string `json:"proto,omitempty"`
 	IP    string `json:"ip,omitempty"`
+	// Approved: a person asked for or approved this request (the
+	// dashboard's requested_by). Some blocks wait for one, such as egress
+	// to a destination this server talks to regularly.
+	Approved bool `json:"approved,omitempty"`
 }
 
 // FirewallState is every port the dashboard wants closed to the public and

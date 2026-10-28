@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/sshdconfig"
 )
 
 // Finding represents a single security check result.
@@ -55,7 +57,7 @@ func Run() []Finding {
 func checkSSHConfig() []Finding {
 	var findings []Finding
 
-	content, ok := sshEffectiveConfig()
+	v, ok := readSSHView()
 	if !ok {
 		findings = append(findings, Finding{
 			Category:    "ssh_config",
@@ -69,68 +71,65 @@ func checkSSHConfig() []Finding {
 	}
 
 	// Check root login
-	rootLogin := sshConfigValue(content, "PermitRootLogin")
+	rootLogin := v.value("PermitRootLogin", "prohibit-password")
 	passed := rootLogin == "no" || rootLogin == "prohibit-password" || rootLogin == "without-password"
 	findings = append(findings, Finding{
 		Category:       "ssh_config",
 		Severity:       "critical",
 		CheckID:        "SSH_ROOT_LOGIN",
 		Title:          "SSH root login",
-		Description:    fmt.Sprintf("PermitRootLogin is set to '%s'", rootLogin),
-		Recommendation: "Set PermitRootLogin to 'no' in /etc/ssh/sshd_config",
-		Details:        map[string]string{"value": rootLogin},
+		Description:    fmt.Sprintf("PermitRootLogin is set to '%s'", rootLogin) + v.where("PermitRootLogin", rootLogin),
+		Recommendation: v.fix("PermitRootLogin", "no", "Set PermitRootLogin to 'no'"),
+		Details:        v.details("PermitRootLogin", rootLogin),
 		Passed:         passed,
 	})
 
 	// Check password auth
-	passAuth := sshConfigValue(content, "PasswordAuthentication")
+	passAuth := v.value("PasswordAuthentication", "yes")
 	passed = passAuth == "no"
 	findings = append(findings, Finding{
 		Category:       "ssh_config",
 		Severity:       "high",
 		CheckID:        "SSH_PASSWORD_AUTH",
 		Title:          "SSH password authentication",
-		Description:    fmt.Sprintf("PasswordAuthentication is '%s'", passAuth),
-		Recommendation: "Disable password authentication and use SSH keys only",
-		Details:        map[string]string{"value": passAuth},
+		Description:    fmt.Sprintf("PasswordAuthentication is '%s'", passAuth) + v.where("PasswordAuthentication", passAuth),
+		Recommendation: v.fix("PasswordAuthentication", "no", "Disable password authentication and use SSH keys only: set PasswordAuthentication no"),
+		Details:        v.details("PasswordAuthentication", passAuth),
 		Passed:         passed,
 	})
 
 	// Check SSH port
-	port := sshConfigValue(content, "Port")
-	if port == "" {
-		port = "22"
-	}
+	port := v.value("Port", "22")
 	passed = port != "22"
+	d := v.details("Port", port)
+	d["port"] = port
 	findings = append(findings, Finding{
 		Category:       "ssh_config",
 		Severity:       "low",
 		CheckID:        "SSH_DEFAULT_PORT",
 		Title:          "SSH on default port",
-		Description:    fmt.Sprintf("SSH is running on port %s", port),
+		Description:    fmt.Sprintf("SSH is running on port %s", port) + v.where("Port", port),
 		Recommendation: "Consider changing the SSH port from the default 22",
-		Details:        map[string]string{"port": port},
+		Details:        d,
 		Passed:         passed,
 	})
 
 	// Check X11 forwarding
-	x11 := sshConfigValue(content, "X11Forwarding")
+	x11 := v.value("X11Forwarding", "no")
 	passed = x11 == "no" || x11 == ""
 	findings = append(findings, Finding{
 		Category:       "ssh_config",
 		Severity:       "low",
 		CheckID:        "SSH_X11_FORWARDING",
 		Title:          "SSH X11 forwarding",
-		Description:    fmt.Sprintf("X11Forwarding is '%s'", x11),
-		Recommendation: "Disable X11Forwarding unless required",
+		Description:    fmt.Sprintf("X11Forwarding is '%s'", x11) + v.where("X11Forwarding", x11),
+		Recommendation: v.fix("X11Forwarding", "no", "Disable X11Forwarding unless required"),
+		Details:        v.details("X11Forwarding", x11),
 		Passed:         passed,
 	})
 
 	// Check MaxAuthTries
-	maxAuth := sshConfigValue(content, "MaxAuthTries")
-	if maxAuth == "" {
-		maxAuth = "6" // default
-	}
+	maxAuth := v.value("MaxAuthTries", "6")
 	n, err := strconv.Atoi(maxAuth)
 	passed = err == nil && n <= 4
 	findings = append(findings, Finding{
@@ -138,9 +137,9 @@ func checkSSHConfig() []Finding {
 		Severity:       "medium",
 		CheckID:        "SSH_MAX_AUTH_TRIES",
 		Title:          "SSH max auth tries",
-		Description:    fmt.Sprintf("MaxAuthTries is %s", maxAuth),
-		Recommendation: "Set MaxAuthTries to 4 or lower",
-		Details:        map[string]string{"value": maxAuth},
+		Description:    fmt.Sprintf("MaxAuthTries is %s", maxAuth) + v.where("MaxAuthTries", maxAuth),
+		Recommendation: v.fix("MaxAuthTries", "4", "Set MaxAuthTries to 4 or lower"),
+		Details:        v.details("MaxAuthTries", maxAuth),
 		Passed:         passed,
 	})
 
@@ -394,21 +393,113 @@ func checkFirewall() []Finding {
 
 // ─── Helpers ───
 
-// sshEffectiveConfig returns the configuration sshd actually uses: `sshd -T`
-// when available (it resolves Include files and defaults), otherwise the
-// drop-in files followed by the main file — sshd keeps the first value it
-// reads, and Debian/Ubuntu include sshd_config.d at the top of the main file.
-func sshEffectiveConfig() (string, bool) {
-	for _, bin := range []string{"sshd", "/usr/sbin/sshd"} {
-		if out, err := runTimeout(10*time.Second, bin, "-T"); err == nil && len(out) > 0 {
-			return out, true
+// sshView is what the SSH checks read: the values sshd actually uses
+// (`sshd -T`, which resolves Include files, Match defaults and built-in
+// defaults) and the files read in sshd's order (sshdconfig), which say
+// where each value is set and stand in for `sshd -T` when it cannot run
+// (on a socket-activated sshd it fails until /run/sshd exists).
+type sshView struct {
+	dump     string // sshd -T output, "" without
+	files    sshdconfig.Config
+	hasFiles bool
+}
+
+// Replaced in tests.
+var (
+	sshdDump = func() string {
+		for _, bin := range []string{"/usr/sbin/sshd", "/usr/local/sbin/sshd", "/usr/bin/sshd"} {
+			if _, err := os.Stat(bin); err != nil {
+				continue
+			}
+			// Read only: -T prints the configuration and exits.
+			out, err := runOutput(10*time.Second, bin, "-T")
+			if err == nil && strings.Contains(out, "\n") {
+				return out
+			}
 		}
+		return ""
 	}
-	data, err := os.ReadFile("/etc/ssh/sshd_config")
-	if err != nil {
-		return "", false
+	sshFS = sshdconfig.OS
+)
+
+func readSSHView() (sshView, bool) {
+	v := sshView{dump: sshdDump()}
+	v.files, v.hasFiles = sshdconfig.Parse(sshFS)
+	return v, v.dump != "" || v.hasFiles
+}
+
+// value returns the effective value of key: sshd -T, else the first value
+// in the files, else sshd's default def.
+func (v sshView) value(key, def string) string {
+	if v.dump != "" {
+		if val := sshConfigValue(v.dump, key); val != "" {
+			return val
+		}
+		return def
 	}
-	return readDirConfigs("/etc/ssh/sshd_config.d") + "\n" + string(data), true
+	if s, ok := v.files.Get(key); ok {
+		return s.Value
+	}
+	return def
+}
+
+// source returns the file and line that set the effective value val, when
+// the files agree with it.
+func (v sshView) source(key, val string) (sshdconfig.Setting, bool) {
+	s, ok := v.files.Get(key)
+	if !ok || !sshdconfig.Same(key, s.Value, val) {
+		return sshdconfig.Setting{}, false
+	}
+	return s, true
+}
+
+// where says where val comes from, for the description.
+func (v sshView) where(key, val string) string {
+	if s, ok := v.source(key, val); ok {
+		return fmt.Sprintf(" (set in %s)", s.Where())
+	}
+	if _, set := v.files.Get(key); v.hasFiles && !set {
+		return " (sshd's default: no file sets it)"
+	}
+	return ""
+}
+
+// details are the value and, when known, where it is set.
+func (v sshView) details(key, val string) map[string]string {
+	d := map[string]string{"value": val, "effective_from": "config files"}
+	if v.dump != "" {
+		d["effective_from"] = "sshd -T"
+	}
+	if s, ok := v.source(key, val); ok {
+		d["source"], d["source_file"], d["source_line"] = s.Where(), s.File, strconv.Itoa(s.Line)
+	}
+	return d
+}
+
+// fix is the recommendation: what to set, and in which file. sshd keeps the
+// first value it reads and reads the sshd_config.d drop-ins where
+// sshd_config includes them (at its top on current distributions), so the
+// line to change is the one that sets the value now; a line added further
+// down sshd_config changes nothing.
+func (v sshView) fix(key, want, what string) string {
+	if s, ok := v.files.Get(key); ok {
+		if s.DropIn() {
+			return fmt.Sprintf("%s in %s (line %d), where it is set now, then reload SSH. sshd keeps the first value it reads and reads %s before the rest of sshd_config, so a value set there wins over sshd_config.",
+				what, s.File, s.Line, s.File)
+		}
+		return fmt.Sprintf("%s in %s (line %d), then reload SSH. A file in /etc/ssh/sshd_config.d/ that sets %s would win over it: sshd keeps the first value it reads.",
+			what, s.File, s.Line, key)
+	}
+	return fmt.Sprintf("%s in a file of /etc/ssh/sshd_config.d/ read before any other (for example 00-hardening.conf), or in /etc/ssh/sshd_config above its Include line, then reload SSH: sshd keeps the first value it reads.", what)
+}
+
+// runOutput runs a command and returns its standard output, killing it
+// after d.
+func runOutput(d time.Duration, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	return string(out), err
 }
 
 // runTimeout runs a command and returns its combined output, killing it

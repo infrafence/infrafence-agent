@@ -11,6 +11,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -457,10 +459,44 @@ func sshConnection(path string) (net.IP, int) {
 }
 
 // SSHSessionAddrs returns the public client addresses of the SSH sessions
-// logged in right now: SSH_CONNECTION in the environment of a process (sshd
-// sets it only after authentication) whose address still has an
-// established connection to that server port.
-func SSHSessionAddrs() []string { return sessionAddrs(procRoot, PublicInbound) }
+// logged in right now (SSHSessions).
+func SSHSessionAddrs() []string {
+	addrs, _ := SSHSessions()
+	return addrs
+}
+
+// SSHSessions returns the public client addresses of the SSH sessions
+// logged in right now. Only authenticated sessions count, never a
+// connection still authenticating (a brute force holds many of those):
+//
+//   - SSH_CONNECTION in the environment of a process (sshd sets it only for
+//     the session's processes, after authentication) whose address still
+//     has an established connection to that server port;
+//   - the client of an established connection to an SSH port held by a
+//     logged-in OpenSSH process (loggedInSockAddrs), which also covers a
+//     session without a shell (ssh -N, port forwarding).
+//
+// seen is false when no OpenSSH server process is visible at all (another
+// SSH server such as dropbear, sshd in a container of its own, a /proc the
+// agent cannot read): the caller cannot tell a logged-in client from one
+// still authenticating, and must treat every connection to an SSH port as
+// a session.
+func SSHSessions() (addrs []string, seen bool) {
+	set := map[string]bool{}
+	for _, a := range sessionAddrs(procRoot, PublicInbound) {
+		set[a] = true
+	}
+	logged, seen := loggedInSockAddrs(procRoot, Sockets(), SSHPorts(), passwdUsers())
+	for _, a := range logged {
+		set[a] = true
+	}
+	out := make([]string, 0, len(set))
+	for a := range set {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out, seen
+}
 
 func sessionAddrs(root string, inbound func(port int) []string) []string {
 	entries, err := os.ReadDir(root)
@@ -498,6 +534,151 @@ func sessionAddrs(root string, inbound func(port int) []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// reLoggedInTitle is the title OpenSSH gives a process after
+// authentication: "sshd: alice@pts/0", "sshd-session: root@notty", or
+// "sshd: alice" for a session without a channel (ssh -N). Before
+// authentication every sshd process carries a bracketed role ("sshd: root
+// [priv]", "sshd: unknown [net]", "sshd: [accepted]", "[preauth]", the
+// listener's "[listener]"), which this never matches; the monitor keeps
+// "[priv]" for the whole session.
+var reLoggedInTitle = regexp.MustCompile(`^sshd(?:-session)?: ([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}\$?)(@(?:pts/\d+|notty|tty\d*))?$`)
+
+// loggedInTitle reports whether title is a logged-in title for a user of
+// users. The bare form ("sshd: alice") needs the user to exist: sshd
+// truncates a long title, and "sshd: <long name chosen by an attacker>
+// [priv]" cut before " [priv]" must not pass for a session.
+func loggedInTitle(title string, users map[string]bool) bool {
+	m := reLoggedInTitle.FindStringSubmatch(title)
+	if m == nil {
+		return false
+	}
+	return m[2] != "" || users[m[1]]
+}
+
+// maxTitle is how much of /proc/<pid>/cmdline procTitle reads.
+const maxTitle = 4096
+
+// procTitle returns the process title: /proc/<pid>/cmdline up to the first
+// NUL (setproctitle writes it over argv). A title filling the whole read
+// is unknown ("").
+func procTitle(dir string) string {
+	f, err := os.Open(dir + "/cmdline")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, maxTitle)
+	n, _ := io.ReadFull(f, buf)
+	t, _, cut := strings.Cut(string(buf[:n]), "\x00")
+	if !cut && n == maxTitle {
+		return ""
+	}
+	return strings.TrimSpace(t)
+}
+
+// sshdBinary reports whether exe (the target of /proc/<pid>/exe) is an
+// OpenSSH server binary installed by the system: a process can name itself
+// "sshd", it cannot run from these root-owned directories unless root put
+// it there. " (deleted)" follows a binary replaced by an upgrade.
+func sshdBinary(exe string) bool {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	switch filepath.Base(exe) {
+	case "sshd", "sshd-session", "sshd-auth":
+	default:
+		return false
+	}
+	for _, dir := range []string{"/usr/sbin/", "/usr/bin/", "/sbin/", "/usr/lib/openssh/", "/usr/libexec/openssh/", "/usr/libexec/", "/usr/local/sbin/", "/usr/local/libexec/"} {
+		if strings.HasPrefix(exe, dir) && !strings.Contains(exe[len(dir):], "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// passwdFile is replaced in tests.
+var passwdFile = "/etc/passwd"
+
+// passwdUsers returns the user names of /etc/passwd.
+func passwdUsers() map[string]bool {
+	out := map[string]bool{}
+	f, err := os.Open(passwdFile)
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+	b, _ := io.ReadAll(io.LimitReader(f, 4<<20))
+	for _, line := range strings.Split(string(b), "\n") {
+		if name, _, ok := strings.Cut(line, ":"); ok && name != "" {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// readExe is replaced in tests.
+var readExe = func(dir string) string {
+	exe, _ := os.Readlink(dir + "/exe")
+	return exe
+}
+
+// loggedInSockAddrs returns the public clients of the established
+// connections to an SSH port held by logged-in OpenSSH processes: comm
+// "sshd*", the binary one of sshdBinary, a logged-in title. seen reports
+// whether any OpenSSH server process was found.
+func loggedInSockAddrs(root string, socks []Conn, sshPorts []int, users map[string]bool) (addrs []string, seen bool) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, false
+	}
+	ports := map[int]bool{}
+	for _, p := range sshPorts {
+		ports[p] = true
+	}
+	inodes := map[uint64]bool{}
+	n := 0
+	for _, e := range entries {
+		pid := e.Name()
+		if pid == "" || pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+		if n++; n > maxProcs {
+			break
+		}
+		dir := root + "/" + pid
+		comm, err := os.ReadFile(dir + "/comm")
+		if err != nil || !strings.HasPrefix(strings.TrimSpace(string(comm)), "sshd") || !sshdBinary(readExe(dir)) {
+			continue
+		}
+		seen = true
+		if !loggedInTitle(procTitle(dir), users) {
+			continue
+		}
+		fds, _ := os.ReadDir(dir + "/fd")
+		for _, fd := range fds {
+			link, err := os.Readlink(dir + "/fd/" + fd.Name())
+			if err != nil {
+				continue
+			}
+			if v, ok := strings.CutPrefix(link, "socket:["); ok {
+				if i, err := strconv.ParseUint(strings.TrimSuffix(v, "]"), 10, 64); err == nil {
+					inodes[i] = true
+				}
+			}
+		}
+	}
+	set := map[string]bool{}
+	for _, c := range socks {
+		if c.State == stateEstablished && c.Inode != 0 && inodes[c.Inode] && ports[c.LocalPort] && IsPublic(c.RemoteIP) {
+			set[c.RemoteIP.String()] = true
+		}
+	}
+	for a := range set {
+		addrs = append(addrs, a)
+	}
+	sort.Strings(addrs)
+	return addrs, seen
 }
 
 // webProcesses are the process names (/proc/<pid>/comm) of web servers and

@@ -1042,6 +1042,8 @@ uninstall() {
     rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
     rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
     rm -f /var/lib/infrafence/firewall-state.json  # saved closed ports / egress blocks
+    rm -f /var/lib/infrafence/egress-destinations.json  # destinations this server connects to (approval before blocking them)
+    rm -f /var/lib/infrafence/ssh-automation.json  # recurring SSH automation logins (key, address, times)
     rm -f /var/lib/infrafence/panel-state.json     # bans lifted / addresses allowed from WHM or Plesk
     rm -f /var/lib/infrafence/protection-state.json /var/lib/infrafence/protection-state.json.corrupt  # last known bans, allow list, country blocks
     rm -f /var/lib/infrafence/trust-state.json     # trust badge verification files written (removed by "uninstall --clean")

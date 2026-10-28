@@ -188,6 +188,34 @@ func TestSSHFixRolledBackWhenOverridden(t *testing.T) {
 	}
 }
 
+// sshd_config includes the drop-ins after its own value: the fix is rolled
+// back and the error names the line to change by hand. sshd_config itself
+// is never edited.
+func TestSSHFixOverriddenNamesTheFile(t *testing.T) {
+	h := sshHost()
+	main := "MaxAuthTries 6\nInclude /etc/ssh/sshd_config.d/*.conf\n"
+	h.files["/etc/ssh/sshd_config"] = main
+	h.files["/etc/ssh/sshd_config.d/50-cloud-init.conf"] = "PasswordAuthentication yes\n"
+	h.run = func(name string, args ...string) (string, error) {
+		if name == "sshd" && args[0] == "-T" {
+			return "maxauthtries 6\n", nil
+		}
+		return "", nil
+	}
+	_, err := Apply(h, "SSH_MAX_AUTH_TRIES", safe)
+	if err == nil || !strings.Contains(err.Error(), "/etc/ssh/sshd_config:1 sets MaxAuthTries 6") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, ok := h.files[SSHDropIn]; ok || h.files["/etc/ssh/sshd_config"] != main {
+		t.Fatal("drop-in left behind or sshd_config edited")
+	}
+	for _, c := range h.calls {
+		if strings.Contains(c, "reload") {
+			t.Fatalf("sshd reloaded after a rollback: %v", h.calls)
+		}
+	}
+}
+
 func TestSSHWithoutIncludeIsUnsupported(t *testing.T) {
 	h := sshHost()
 	h.files["/etc/ssh/sshd_config"] = "PermitRootLogin yes\n"

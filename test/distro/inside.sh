@@ -184,6 +184,9 @@ fi
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 
+# ── SSH checks read the effective configuration (test/distro/sshconfig.sh) ──
+. /distro/sshconfig.sh
+
 # ── PHP configuration: detection, verified fix and revert (test/distro/php.sh) ──
 . /distro/php.sh
 
@@ -202,6 +205,8 @@ left=""
 iptables -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables"
 ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
+[ -e /var/lib/infrafence/egress-destinations.json ] && left="$left egress-destinations"
+[ -e /var/lib/infrafence/ssh-automation.json ] && left="$left ssh-automation"
 [ -e /var/lib/infrafence/panel-state.json ] && left="$left panel-state"
 [ -e /var/lib/infrafence/protection-state.json ] && left="$left protection-state"
 [ -e /var/lib/infrafence/trust-state.json ] && left="$left trust-state"

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,5 +247,108 @@ func TestHasPublicIPv6(t *testing.T) {
 	}
 	if !hasPublicIPv6([]net.Addr{cidr("fe80::1/64"), cidr("2a01:4f8::5/64")}) {
 		t.Fatal("global IPv6 not found")
+	}
+}
+
+func TestLoggedInTitle(t *testing.T) {
+	users := map[string]bool{"alice": true, "root": true}
+	long := strings.Repeat("a", 200)
+	for title, want := range map[string]bool{
+		"sshd: alice@pts/0":               true,
+		"sshd: root@notty":                true,
+		"sshd-session: root@pts/1":        true,
+		"sshd: alice":                     true,  // ssh -N
+		"sshd: bob":                       false, // no such user: a truncated pre-auth title
+		"sshd: " + long:                   false,
+		"sshd: root [priv]":               false,
+		"sshd: unknown [net]":             false,
+		"sshd: root [net]":                false,
+		"sshd: [accepted]":                false,
+		"sshd-session: root [priv]":       false,
+		"sshd-session: unknown [preauth]": false,
+		"sshd-auth: root [net]":           false,
+		"sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups": false,
+		"/usr/sbin/sshd -D":      false,
+		"sshd: root@pts/0 extra": false,
+		"sshd: ":                 false,
+		"":                       false,
+	} {
+		if got := loggedInTitle(title, users); got != want {
+			t.Errorf("%q: %v, want %v", title, got, want)
+		}
+	}
+}
+
+func TestSSHDBinary(t *testing.T) {
+	for exe, want := range map[string]bool{
+		"/usr/sbin/sshd":                    true,
+		"/usr/lib/openssh/sshd-session":     true,
+		"/usr/libexec/openssh/sshd-session": true,
+		"/usr/sbin/sshd (deleted)":          true,
+		"/tmp/sshd":                         false,
+		"/usr/sbin/x/sshd":                  false,
+		"/var/www/sshd":                     false,
+		"/usr/bin/bash":                     false,
+	} {
+		if got := sshdBinary(exe); got != want {
+			t.Errorf("%q: %v, want %v", exe, got, want)
+		}
+	}
+}
+
+// Sockets of procTCP: inode 2 is 198.51.100.7 connected to 6379, inode 3 the
+// LAN client 10.0.0.5. Only a logged-in OpenSSH process (not [priv] or
+// [net], not a look-alike) holding a connection to an SSH port makes its
+// client a session.
+func TestLoggedInSockAddrs(t *testing.T) {
+	fakeProc(t)
+	root := procRoot
+	exes := map[string]string{}
+	old := readExe
+	readExe = func(dir string) string { return exes[filepath.Base(dir)] }
+	t.Cleanup(func() { readExe = old })
+	users := map[string]bool{"root": true}
+	ssh := []int{6379} // the port of inode 2, as an SSH port
+	mk := func(pid, comm, exe, cmdline string, inodes ...string) {
+		dir := filepath.Join(root, pid)
+		_ = os.MkdirAll(filepath.Join(dir, "fd"), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "comm"), []byte(comm+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644)
+		exes[pid] = exe
+		for i, ino := range inodes {
+			if err := os.Symlink("socket:["+ino+"]", filepath.Join(dir, "fd", string(rune('3'+i)))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, seen := loggedInSockAddrs(root, Sockets(), ssh, users); seen {
+		t.Fatal("no sshd process, seen anyway")
+	}
+	// Pre-authentication: the monitor and the network child hold the socket.
+	mk("100", "sshd", "/usr/sbin/sshd", "sshd: root [priv]\x00\x00\x00", "2")
+	mk("101", "sshd", "/usr/sbin/sshd", "sshd: root [net]\x00", "2")
+	if got, seen := loggedInSockAddrs(root, Sockets(), ssh, users); len(got) != 0 || !seen {
+		t.Fatalf("pre-auth connection counted as a session: %v %v", got, seen)
+	}
+	// A look-alike: named sshd, logged-in title, but not the system binary.
+	mk("103", "sshd", "/tmp/sshd", "sshd: root@pts/0\x00", "2")
+	if got, _ := loggedInSockAddrs(root, Sockets(), ssh, users); len(got) != 0 {
+		t.Fatalf("look-alike process counted: %v", got)
+	}
+	// Logged in: the session process holds it too. The LAN client is not public.
+	mk("102", "sshd-session", "/usr/lib/openssh/sshd-session", "sshd-session: root@notty\x00", "2", "3")
+	if got, _ := loggedInSockAddrs(root, Sockets(), ssh, users); !reflect.DeepEqual(got, []string{"198.51.100.7"}) {
+		t.Fatalf("got %v", got)
+	}
+	// Not an SSH port: an outbound connection of a real session does not count.
+	if got, _ := loggedInSockAddrs(root, Sockets(), []int{22}, users); len(got) != 0 {
+		t.Fatalf("connection to a port that is not SSH counted: %v", got)
+	}
+	// A title filling the whole read is unknown.
+	big := filepath.Join(root, "104")
+	mk("104", "sshd", "/usr/sbin/sshd", "")
+	_ = os.WriteFile(filepath.Join(big, "cmdline"), []byte("sshd: root@pts/0"+strings.Repeat(" ", maxTitle)), 0o644)
+	if procTitle(big) != "" {
+		t.Fatal("truncated title read as a title")
 	}
 }

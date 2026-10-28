@@ -38,8 +38,14 @@ import (
 //     in the last 24 hours (egress_threat_match, dns_threat_answer, or the
 //     threat-feed blocklist it enforces), and never to a private, protected
 //     or allow-listed address, the dashboard API, a configured DNS resolver,
-//     an address an SSH login came from in the last 30 days, or (for a new
-//     request) an address connected to this server right now.
+//     an address logged in over SSH right now or that an SSH login came from
+//     in the last 30 days, or (for a new request) an address connected to a
+//     service of this server right now. A connection to an SSH port that has
+//     not logged in (a brute force) protects nobody. A new request for a
+//     destination this server connects to regularly (on 3 of the last 7
+//     days, monitor.DestinationLog) needs a person's approval (Approved,
+//     else refused as regular_destination): a customer's API on a threat
+//     list must not be cut off by an automatic decision.
 //
 // The checks that depend on what is connected right now (and the "flagged"
 // check) apply to new requests, not to what is already enforced: a restart
@@ -104,12 +110,16 @@ var (
 	fwWebPorts      = netstate.WebPorts
 	fwPublicInbound = netstate.PublicInbound
 	fwSockets       = netstate.Sockets
-	fwEgressRefusal = firewall.EgressRefusal
-	fwResolvers     = configuredResolvers
-	fwApply         = firewall.SetPortsEgress
-	fwPorts6        = firewall.Ports6InForce
-	fwListens6      = listensReachableIPv6
-	fwDropConntrack = func(ports []int) {
+	fwSSHSessions   = netstate.SSHSessions
+	// fwRegularDestination: the egress detector's count of the server's own
+	// outbound connections (monitor.DestinationLog).
+	fwRegularDestination = func(ip string) (bool, int, int) { return egressDestinations.Load().Regular(ip) }
+	fwEgressRefusal      = firewall.EgressRefusal
+	fwResolvers          = configuredResolvers
+	fwApply              = firewall.SetPortsEgress
+	fwPorts6             = firewall.Ports6InForce
+	fwListens6           = listensReachableIPv6
+	fwDropConntrack      = func(ports []int) {
 		for _, p := range ports {
 			if n := firewall.DropConntrack(p); n > 0 {
 				log.Printf("[firewall] port %d: dropped the tracked connections of %d public address(es)", p, n)
@@ -380,8 +390,12 @@ type fwChecks struct {
 	ssh, web  map[int]bool
 	resolvers map[string]bool
 	dashboard map[string]bool
-	socks     []netstate.Conn
-	socksRead bool
+	sessions  map[string]bool // clients of the SSH sessions logged in now
+	// sshUnknown: no OpenSSH process seen, sessions cannot be told apart.
+	sshUnknown bool
+	approved   bool // the request was asked for or approved by a person
+	socks      []netstate.Conn
+	socksRead  bool
 }
 
 func newFwChecks() *fwChecks {
@@ -443,6 +457,27 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 	if c.resolvers[s] {
 		return "dns_resolver", fmt.Sprintf("%s is a DNS resolver of this server", ip)
 	}
+	if c.sessions == nil {
+		c.sessions = map[string]bool{}
+		addrs, seen := fwSSHSessions()
+		for _, a := range addrs {
+			c.sessions[a] = true
+		}
+		c.sshUnknown = !seen
+	}
+	if c.sessions[s] {
+		return "ssh_client", fmt.Sprintf("%s is logged in over SSH right now", ip)
+	}
+	if c.sshUnknown {
+		// No OpenSSH process to tell a session from a connection still
+		// authenticating (another SSH server, sshd in its own container):
+		// every connection to an SSH port counts, as before.
+		for _, k := range c.sockets() {
+			if k.State == 0x01 && k.RemoteIP.Equal(p) && c.ssh[k.LocalPort] {
+				return "ssh_client", fmt.Sprintf("%s is connected to SSH right now (the SSH server's sessions cannot be inspected)", ip)
+			}
+		}
+	}
 	if fwSSHLoginSeen(s) {
 		return "ssh_login", fmt.Sprintf("an SSH login came from %s in the last 30 days", ip)
 	}
@@ -453,11 +488,11 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 		}
 	}
 	for _, k := range c.sockets() {
-		if k.State != 0x01 || !k.RemoteIP.Equal(p) {
+		// A connection to an SSH port shields nobody by itself: only a
+		// logged-in session does (above). A brute force keeps many
+		// connections open while it guesses.
+		if k.State != 0x01 || !k.RemoteIP.Equal(p) || c.ssh[k.LocalPort] {
 			continue
-		}
-		if c.ssh[k.LocalPort] {
-			return "ssh_client", fmt.Sprintf("%s is connected to SSH right now", ip)
 		}
 		if live && listening[k.LocalPort] {
 			return "established_connection", fmt.Sprintf("%s is connected to port %d of this server right now", ip, k.LocalPort)
@@ -465,6 +500,11 @@ func egressRefusal(c *fwChecks, ip string, live bool) (reason, message string) {
 	}
 	if live && !fwFlagged(s) {
 		return "not_flagged", fmt.Sprintf("%s was not flagged as a threat by this server in the last 24 hours", ip)
+	}
+	if live && !c.approved {
+		if regular, n, days := fwRegularDestination(s); regular {
+			return "regular_destination", fmt.Sprintf("this server connected to %s %d times on %d of the last 7 days: blocking a destination it depends on needs a person's approval", ip, n, days)
+		}
 	}
 	return "", ""
 }
@@ -613,6 +653,7 @@ func runFirewallAction(a api.FirewallAction) (typ, severity string, details map[
 			return result("done", "", fmt.Sprintf("port %d is not closed", a.Port), nil)
 		}
 	case "block_egress":
+		checks.approved = a.Approved
 		if reason, msg := egressRefusal(checks, a.IP, true); reason != "" {
 			return result("failed", reason, "refused: "+msg, nil)
 		}

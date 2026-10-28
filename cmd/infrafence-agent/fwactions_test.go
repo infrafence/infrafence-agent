@@ -26,6 +26,8 @@ type fakeFirewall struct {
 	verifyOK bool
 	inbound  map[int][]string
 	sockets  []netstate.Conn
+	sessions []string // logged-in SSH clients
+	noSSHD   bool     // no OpenSSH process visible
 	flagged  map[string]bool
 	logins   map[string]bool
 	ports6   bool // ip6tables mirrors the closed ports
@@ -40,7 +42,7 @@ func withFakeFirewall(t *testing.T) *fakeFirewall {
 	f := &fakeFirewall{verifyOK: true, inbound: map[int][]string{}, ports6: true, listens6: map[int]bool{},
 		flagged: map[string]bool{"185.1.2.3": true}, logins: map[string]bool{}}
 	saved := []any{fwSSHPorts, fwWebPorts, fwPublicInbound, fwSockets, fwEgressRefusal, fwResolvers, fwApply, fwSnapshot, fwCheck, fwInForce, fwReport,
-		fwFlagged, fwSSHLoginSeen, fwDashboardIPs, fwPorts6, fwListens6, fwDropConntrack, fwReportRefusal, fwStatePath}
+		fwFlagged, fwSSHLoginSeen, fwDashboardIPs, fwPorts6, fwListens6, fwDropConntrack, fwReportRefusal, fwStatePath, fwSSHSessions}
 	fwStatePath = filepath.Join(t.TempDir(), "firewall-state.json")
 	fwFlagged = func(ip string) bool { return f.flagged[ip] }
 	fwSSHLoginSeen = func(ip string) bool { return f.logins[ip] }
@@ -58,6 +60,7 @@ func withFakeFirewall(t *testing.T) *fakeFirewall {
 	fwWebPorts = func() []int { return []int{80, 443, 8080} }
 	fwPublicInbound = func(p int) []string { return f.inbound[p] }
 	fwSockets = func() []netstate.Conn { return f.sockets }
+	fwSSHSessions = func() ([]string, bool) { return f.sessions, !f.noSSHD }
 	fwEgressRefusal = func(ip string) string {
 		if p := net.ParseIP(ip); p != nil && p.IsPrivate() {
 			return "private_target"
@@ -98,6 +101,7 @@ func withFakeFirewall(t *testing.T) *fakeFirewall {
 		fwDropConntrack = saved[16].(func([]int))
 		fwReportRefusal = saved[17].(func(api.EventRequest))
 		fwStatePath = saved[18].(string)
+		fwSSHSessions = saved[19].(func() ([]string, bool))
 		resetFirewallMemory()
 	})
 	return f
@@ -262,12 +266,20 @@ func TestOnlyAllowListedPortsClose(t *testing.T) {
 
 func TestEgress(t *testing.T) {
 	f := withFakeFirewall(t)
-	f.sockets = []netstate.Conn{{LocalPort: 2222, RemoteIP: net.ParseIP("198.51.100.50").To4(), State: 0x01}}
+	// 198.51.100.50 is logged in over SSH (port 2222); 198.51.100.51 is only
+	// connected to it, still authenticating.
+	f.sockets = []netstate.Conn{
+		{LocalPort: 2222, State: 0x0A},
+		{LocalPort: 2222, RemoteIP: net.ParseIP("198.51.100.50").To4(), State: 0x01},
+		{LocalPort: 2222, RemoteIP: net.ParseIP("198.51.100.51").To4(), State: 0x01},
+	}
+	f.sessions = []string{"198.51.100.50"}
 	f.sockets = append(f.sockets,
 		netstate.Conn{LocalPort: 6379, State: 0x0A},
 		netstate.Conn{LocalPort: 6379, RemoteIP: net.ParseIP("198.51.100.60").To4(), State: 0x01})
 	f.logins["198.51.100.70"] = true
-	for _, ip := range []string{"198.51.100.50", "198.51.100.60", "198.51.100.70", "203.0.113.80", "1.1.1.1"} {
+	f.logins["198.51.100.50"] = true // logged in now: the more precise reason wins
+	for _, ip := range []string{"198.51.100.50", "198.51.100.51", "198.51.100.60", "198.51.100.70", "203.0.113.80", "1.1.1.1"} {
 		f.flagged[ip] = true
 	}
 	for ip, reason := range map[string]string{
@@ -285,6 +297,17 @@ func TestEgress(t *testing.T) {
 		if typ != "firewall_action_failed" || d["reason"] != reason {
 			t.Errorf("%s: %s %v, want %s", ip, typ, d, reason)
 		}
+	}
+	// A connection to SSH that has not logged in protects nobody.
+	pre := api.FirewallAction{ID: 33, Kind: "block_egress", IP: "198.51.100.51"}
+	applyFirewallState(nil, []api.FirewallAction{pre}, false)
+	if typ, _, d := runFirewallAction(pre); typ != "firewall_action_done" {
+		t.Fatalf("pre-auth connection shielded its address: %s %v", typ, d)
+	}
+	resetFirewallMemory()
+	f.egress = nil
+	for _, ip := range []string{"185.1.2.3"} {
+		f.flagged[ip] = true
 	}
 	block := api.FirewallAction{ID: 31, Kind: "block_egress", IP: "185.1.2.3"}
 	applyFirewallState(nil, []api.FirewallAction{block}, false)
@@ -585,5 +608,86 @@ func TestParseLastIPs(t *testing.T) {
 		"\nwtmp begins Sun Oct  1 00:00:00 2026\n"
 	if got := parseLastIPs(out); !reflect.DeepEqual(got, []string{"198.51.100.7", "2001:db8::7"}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// A block in force is lifted when its address logs in over SSH, never for a
+// connection to SSH that has not logged in.
+func TestEnforcedEgressAndSSHSessions(t *testing.T) {
+	f := withFakeFirewall(t)
+	block := api.FirewallAction{ID: 80, Kind: "block_egress", IP: "185.1.2.3"}
+	applyFirewallState(nil, []api.FirewallAction{block}, false)
+	if typ, _, d := runFirewallAction(block); typ != "firewall_action_done" {
+		t.Fatalf("block: %s %v", typ, d)
+	}
+	state := &api.FirewallState{EgressBlocked: []string{"185.1.2.3"}}
+	f.sockets = []netstate.Conn{
+		{LocalPort: 22, State: 0x0A},
+		{LocalPort: 22, RemoteIP: net.ParseIP("185.1.2.3").To4(), State: 0x01},
+	}
+	applyFirewallState(state, nil, false)
+	if !reflect.DeepEqual(f.egress, []string{"185.1.2.3"}) {
+		t.Fatalf("pre-auth connection lifted the block: %v", f.egress)
+	}
+	f.sessions = []string{"185.1.2.3"}
+	applyFirewallState(state, nil, false)
+	if len(f.egress) != 0 {
+		t.Fatalf("logged-in address still blocked: %v", f.egress)
+	}
+	ev := f.refusalsSoon(1)
+	if len(ev) != 1 || ev[0].Details["reason"] != "ssh_client" {
+		t.Fatalf("refusals %+v", ev)
+	}
+}
+
+// A destination this server talks to regularly is blocked only on a
+// request a person asked for or approved; an enforced block stays.
+func TestEgressRegularDestinationNeedsApproval(t *testing.T) {
+	f := withFakeFirewall(t)
+	saved := fwRegularDestination
+	t.Cleanup(func() { fwRegularDestination = saved })
+	fwRegularDestination = func(ip string) (bool, int, int) { return ip == "185.1.2.3", 40, 5 }
+
+	auto := api.FirewallAction{ID: 90, Kind: "block_egress", IP: "185.1.2.3"}
+	applyFirewallState(nil, []api.FirewallAction{auto}, false)
+	typ, _, d := runFirewallAction(auto)
+	if typ != "firewall_action_failed" || d["reason"] != "regular_destination" || !strings.Contains(d["message"], "40 times on 5 of the last 7 days") {
+		t.Fatalf("automatic block: %s %v", typ, d)
+	}
+	if len(f.egress) != 0 {
+		t.Fatalf("blocked: %v", f.egress)
+	}
+	// The dashboard state alone (no approved request) is refused too.
+	applyFirewallState(&api.FirewallState{EgressBlocked: []string{"185.1.2.3"}}, nil, false)
+	if len(f.egress) != 0 {
+		t.Fatalf("state entry blocked a regular destination: %v", f.egress)
+	}
+	if ev := f.refusalsSoon(1); len(ev) != 1 || ev[0].Details["reason"] != "regular_destination" {
+		t.Fatalf("refusals %+v", ev)
+	}
+	approved := api.FirewallAction{ID: 91, Kind: "block_egress", IP: "185.1.2.3", Approved: true}
+	applyFirewallState(&api.FirewallState{}, []api.FirewallAction{approved}, false)
+	if typ, _, d := runFirewallAction(approved); typ != "firewall_action_done" {
+		t.Fatalf("approved block: %s %v", typ, d)
+	}
+	applyFirewallState(&api.FirewallState{EgressBlocked: []string{"185.1.2.3"}}, nil, false)
+	if !reflect.DeepEqual(f.egress, []string{"185.1.2.3"}) {
+		t.Fatalf("approved block lifted: %v", f.egress)
+	}
+}
+
+// Without an OpenSSH process to inspect (dropbear, sshd in a container of
+// its own), any connection to an SSH port still shields its address.
+func TestEgressSSHServerNotInspectable(t *testing.T) {
+	f := withFakeFirewall(t)
+	f.noSSHD = true
+	f.sockets = []netstate.Conn{
+		{LocalPort: 22, State: 0x0A},
+		{LocalPort: 22, RemoteIP: net.ParseIP("185.1.2.3").To4(), State: 0x01},
+	}
+	a := api.FirewallAction{ID: 95, Kind: "block_egress", IP: "185.1.2.3"}
+	applyFirewallState(nil, []api.FirewallAction{a}, false)
+	if typ, _, d := runFirewallAction(a); typ != "firewall_action_failed" || d["reason"] != "ssh_client" {
+		t.Fatalf("%s %v", typ, d)
 	}
 }

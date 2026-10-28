@@ -28,6 +28,8 @@ type ParsedLine struct {
 	IP         string            // source IP (SSH only)
 	Port       int               // source port (SSH only)
 	Method     string            // "password" or "publickey" (SSH login only)
+	KeyType    string            // "ED25519", "RSA"... (publickey login only)
+	KeyFP      string            // "SHA256:..." (publickey login only)
 	TTY        string            // sudo TTY (e.g. "pts/0")
 	PWD        string            // sudo working directory
 	TargetUser string            // sudo target user; su target user
@@ -39,9 +41,10 @@ type ParsedLine struct {
 
 // Package-level compiled regexes for zero-allocation matching.
 var (
-	// SSH login: sshd[PID]: Accepted METHOD for USER from IP port PORT
+	// SSH login: sshd[PID]: Accepted METHOD for USER from IP port PORT,
+	// for a key followed by "ssh2: ED25519 SHA256:..." (type, fingerprint).
 	reSSHLogin = regexp.MustCompile(
-		`sshd(?:-session)?\[(\d+)\]: Accepted (\w+) for (\S+) from ([\d.]+) port (\d+)`,
+		`sshd(?:-session)?\[(\d+)\]: Accepted (\w+) for (\S+) from ([\d.]+) port (\d+)(?: ssh2)?(?:: ([A-Z0-9-]+(?:-CERT)?) ((?:SHA256|MD5):\S+))?`,
 	)
 
 	// SSH logout: sshd[PID]: pam_unix(sshd:session): session closed for user USER
@@ -86,13 +89,15 @@ func ParseLine(line string) *ParsedLine {
 	if m := reSSHLogin.FindStringSubmatch(line); m != nil {
 		port, _ := strconv.Atoi(m[5])
 		return &ParsedLine{
-			Type:   SSHLogin,
-			PID:    m[1],
-			Method: m[2],
-			User:   m[3],
-			IP:     m[4],
-			Port:   port,
-			Raw:    line,
+			Type:    SSHLogin,
+			PID:     m[1],
+			Method:  m[2],
+			User:    m[3],
+			IP:      m[4],
+			Port:    port,
+			KeyType: m[6],
+			KeyFP:   m[7],
+			Raw:     line,
 		}
 	}
 

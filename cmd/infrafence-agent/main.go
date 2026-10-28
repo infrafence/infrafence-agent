@@ -52,6 +52,10 @@ var yaraScanner *malware.YaraScanner
 var malwareCustomPaths []string
 var modsecEngine *modsecurity.Engine
 var sessionTracker *session.SessionTracker
+
+// sshAutomationPath keeps the recurring SSH automation logins (session
+// package), 0600.
+var sshAutomationPath = "/var/lib/infrafence/ssh-automation.json"
 var threatFeedIndex = monitor.NewThreatFeedIndex()
 
 // dnsInspector inspects DNS packets (internal/dnswatch); started by the
@@ -262,6 +266,7 @@ func runAgent() {
 	// first setup below applies them (also when the dashboard is down).
 	go watchDashboardAddrs(cfg.ServerURL)
 	loadFirewallState()
+	egressDestinations.Store(monitor.NewDestinationLog(egressDestPath))
 	go watchSSHLogins()
 
 	// Bans and allow list as last known (protstate.go), so the first setup
@@ -688,6 +693,7 @@ func runAgent() {
 			log.Printf("[session] failed to report event: %v", err)
 		}
 	})
+	sessionTracker.SetStatePath(sshAutomationPath)
 	log.Printf("[session] tracker initialized (waiting for panel activation)")
 
 	// Sigma correlation: any security event reported anywhere in the agent
@@ -2023,6 +2029,7 @@ func runSecurityMonitors(client *api.Client) {
 	flood := monitor.NewFloodDetector()
 	integrity := monitor.NewIntegrityDetector()
 	egress := monitor.NewEgressDetector(threatFeedIndex)
+	egress.Destinations = egressDestinations.Load()
 	dns := monitor.NewDNSDetector(threatFeedIndex)
 	dns.SkipResolverChecks = dnsInspector.Running
 

@@ -292,6 +292,13 @@ func cmdUninstall(args []string) {
 	if err := os.Remove(fwStatePath); err == nil {
 		fmt.Println("removed", fwStatePath)
 	}
+	// The destinations this server connects to (egress detector) and the
+	// recurring SSH automation logins (session tracker).
+	for _, p := range []string{egressDestPath, sshAutomationPath} {
+		if err := os.Remove(p); err == nil {
+			fmt.Println("removed", p)
+		}
+	}
 	// Bans lifted and addresses allowed from a hosting panel.
 	if err := os.Remove(panelStatePath); err == nil {
 		fmt.Println("removed", panelStatePath)
