@@ -145,10 +145,21 @@ func TestFTPClientSweepingOtherPortsIsAScan(t *testing.T) {
 	}
 }
 
-func TestFTPHalfOpenControlIsNotAnFTPClient(t *testing.T) {
-	// A SYN scan of 21 leaves only a half-open connection: the passive
-	// range then counts like any other port.
-	root := ftpServer(t, sock{procV4(server, 21), procV4(client, 51000), tcpSynRecv})
+func TestShortFTPSessionGoneFromTheTable(t *testing.T) {
+	// Twenty uploads in a second: by the time the table is read, the
+	// control connection and every data connection are gone. The SYN to 21
+	// (the FTP server listening) is what tells it was an FTP client.
+	root := ftpServer(t)
+	if got := session(NewLocal(root), client, filezilla, time.Now()); len(got) > 0 {
+		t.Fatalf("short FTP session reported: %+v", got)
+	}
+}
+
+func TestSYNTo21WithoutFTPServer(t *testing.T) {
+	// Nothing listens on 21: trying it doesn't make an FTP client, and the
+	// configured passive range counts like any other port.
+	root := ftpServer(t)
+	writeTable(t, root, "tcp", []sock{{procV4(server, 21), procV4(client, 51000), tcpSynRecv}})
 	if got := session(NewLocal(root), client, filezilla, time.Now()); len(got) != 1 {
 		t.Fatalf("got %+v", got)
 	}

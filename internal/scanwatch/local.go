@@ -16,14 +16,16 @@ import (
 //     listener, open or closing) means the port was open when the SYN came,
 //     even if its listener is gone by now;
 //   - a port in the FTP server's passive range, from an address that has a
-//     connection to an FTP control port, is an FTP data connection. The
-//     server opens a new port for each listing or transfer and closes it
-//     right after, so an upload can be over before the table is read.
+//     connection to an FTP control port or tried one while the FTP server
+//     listened, is an FTP data connection. The server opens a new port for
+//     each listing or transfer and closes it right after, so an upload can
+//     be over before the table is read; a short session (twenty uploads in
+//     a second) can be over entirely, control connection included.
 //
-// An address that holds an FTP connection is still reported for every port
-// outside the passive range; one without an FTP connection, for every port.
-// A scanner that connects to the FTP server first can probe the passive
-// range unseen, where nothing but the FTP server's own data ports listen.
+// An address that talks to the FTP server is still reported for every port
+// outside the passive range; any other address, for every port. A scanner
+// that tries the FTP port first can probe the passive range unseen, where
+// nothing but the FTP server's own data ports listen.
 
 const (
 	// How old an attempt must be before the table is read: by then the
@@ -65,6 +67,10 @@ type Local struct {
 	pending []attempt
 	snap    *sockets
 	snapAt  time.Time
+	// Control ports (copied from the FTP configuration) and the addresses
+	// that tried one while it listened, until Due collects them.
+	control map[uint16]bool
+	ftpSYN  map[netip.Addr]time.Time
 
 	// Used by Due only.
 	nextRead   time.Time
@@ -77,7 +83,11 @@ type Local struct {
 
 // NewLocal reads the sockets and FTP configuration under root.
 func NewLocal(root string) *Local {
-	return &Local{root: root, ftpClients: map[netip.Addr]time.Time{}}
+	ftp := LoadFTPConfig(root)
+	return &Local{
+		root: root, ftp: ftp, ftpAt: time.Now(), control: ftp.Control,
+		ftpClients: map[netip.Addr]time.Time{}, ftpSYN: map[netip.Addr]time.Time{},
+	}
 }
 
 // Add queues an attempt from src to port. It returns false when the attempt
@@ -85,6 +95,9 @@ func NewLocal(root string) *Local {
 func (l *Local) Add(src netip.Addr, port uint16, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.control[port] && len(l.ftpSYN) < maxTracked {
+		l.ftpSYN[src.Unmap()] = now
+	}
 	if l.snap != nil && now.Sub(l.snapAt) < maxSnapshotAge && l.snap.listening[port] {
 		return true // an open service
 	}
@@ -103,6 +116,7 @@ func (l *Local) Due(now time.Time) []attempt {
 		l.ftpAt = now
 		l.mu.Lock()
 		snap := l.snap
+		l.control = l.ftp.Control
 		l.mu.Unlock()
 		l.logFTP(snap)
 	}
@@ -117,6 +131,10 @@ func (l *Local) Due(now time.Time) []attempt {
 	ready := l.pending[:cut]
 	if cut > 0 {
 		l.pending = append([]attempt(nil), l.pending[cut:]...)
+	}
+	var syns map[netip.Addr]time.Time
+	if cut > 0 && len(l.ftpSYN) > 0 {
+		syns, l.ftpSYN = l.ftpSYN, map[netip.Addr]time.Time{}
 	}
 	l.mu.Unlock()
 	if cut == 0 {
@@ -144,8 +162,14 @@ func (l *Local) Due(now time.Time) []attempt {
 	}
 	l.readErr = false
 
-	passive := l.ftp.passiveRanges(l.ftpListening(snap))
+	ftpListening := l.ftpListening(snap)
+	passive := l.ftp.passiveRanges(ftpListening)
 	l.logFTP(snap)
+	if ftpListening {
+		for addr, t := range syns {
+			l.ftpClients[addr] = t
+		}
+	}
 	for addr := range snap.ftpControl {
 		l.ftpClients[addr] = now
 	}
