@@ -37,8 +37,11 @@ if command -v apt-get >/dev/null; then
 else
   dnf install -y -q vsftpd >/tmp/ftp-pkg.log 2>&1 && [ -f /etc/vsftpd/vsftpd.conf ] && ftpd=vsftpd
   if [ -n "$ftpd" ]; then
-    sed -i -E '/^(pasv_enable|pasv_min_port|pasv_max_port|seccomp_sandbox|write_enable|local_enable)=/d' /etc/vsftpd/vsftpd.conf
-    printf 'local_enable=YES\nwrite_enable=YES\npasv_enable=YES\npasv_min_port=40000\npasv_max_port=40100\nseccomp_sandbox=NO\n' >>/etc/vsftpd/vsftpd.conf
+    # A test-only PAM service: the login is not what is tested, and some CI
+    # images refuse password checks (unix_chkpwd), as for the SSH guard.
+    printf 'auth required pam_permit.so\naccount required pam_permit.so\nsession required pam_permit.so\n' >/etc/pam.d/vsftpd-infrafence-test
+    sed -i -E '/^(pasv_enable|pasv_min_port|pasv_max_port|seccomp_sandbox|write_enable|local_enable|pam_service_name)=/d' /etc/vsftpd/vsftpd.conf
+    printf 'local_enable=YES\nwrite_enable=YES\npasv_enable=YES\npasv_min_port=40000\npasv_max_port=40100\nseccomp_sandbox=NO\npam_service_name=vsftpd-infrafence-test\n' >>/etc/vsftpd/vsftpd.conf
   fi
 fi
 curl_ftp=no
@@ -78,12 +81,21 @@ if [ -n "$ftpd" ] && [ "$curl_ftp" = yes ]; then
   sleep 8
   scan=$(ftp_scan_event)
   ftp_log="ftpd=$ftpd config=$got_conf uploads=$uploaded/20 rc=$up_rc listings=$listings"
+  ftp_why=""
+  [ "$got_conf" = yes ] || ftp_why="$ftp_why,no-config"
+  [ "$uploaded" = 0 ] && ftp_why="$ftp_why,no-ftp-session(curl-rc=$up_rc)"
+  [ -n "$scan" ] && ftp_why="$ftp_why,port_scan-event"
+  ftp_banned && ftp_why="$ftp_why,banned"
   if [ "$got_conf" = yes ] && [ "$up_rc" = 0 ] && [ "$uploaded" = 20 ] && [ "$listings" = 400 ] && [ -z "$scan" ] && ! ftp_banned; then
     R_FTP=ok
   else
-    log "ftp: $ftp_log event=${scan:-none}"; cat /tmp/ftp-up.err /tmp/ftp-list.err 2>/dev/null | tail -5
-    journalctl -u infrafence-agent --no-pager | grep -i portscan | tail -5
-    journalctl -u "$ftpd" --no-pager | tail -5
+    log "ftp: $ftp_log event=${scan:-none} why=${ftp_why#,}"
+    sed 's/^/[ftp] curl: /' /tmp/ftp-up.err /tmp/ftp-list.err 2>/dev/null | tail -5
+    journalctl -u infrafence-agent --no-pager | grep -i portscan | tail -5 | sed 's/^/[ftp] agent: /'
+    journalctl -u "$ftpd" --no-pager | tail -5 | sed 's/^/[ftp] server: /'
+    journalctl --no-pager -n 200 | grep -iE 'pam|vsftpd|pure-ftpd|unix_chkpwd' | tail -8 | sed 's/^/[ftp] journal: /'
+    tail -5 /var/log/vsftpd.log /var/log/xferlog 2>/dev/null | sed 's/^/[ftp] log: /'
+    getent shadow "$FTP_USER" | cut -d: -f1,3- | sed 's/^/[ftp] shadow (no hash): /'
   fi
   log "ftp: $ftp_log"
 
@@ -104,11 +116,13 @@ if [ -n "$ftpd" ] && [ "$curl_ftp" = yes ]; then
 
   ftp_sync '{"config":{"bf_threshold":5,"bf_window":60,"monitor_mode":false}}'
   systemctl disable --now "$ftpd" >/dev/null 2>&1
+  rm -f /etc/pam.d/vsftpd-infrafence-test
 else
   R_FTP=skip R_FTP_SCAN=skip
   log "ftp: no FTP server ($ftpd) or curl without FTP ($curl_ftp)"; tail -3 /tmp/ftp-pkg.log 2>/dev/null
 fi
 
 EXTRA_RESULT="${EXTRA_RESULT:-} ftp=$R_FTP ftp_scan=$R_FTP_SCAN"
+[ -n "${ftp_why:-}" ] && EXTRA_RESULT="$EXTRA_RESULT ftp_why=${ftp_why#,}"
 { [ "$R_FTP" = fail ] || [ "$R_FTP_SCAN" = fail ]; } && EXTRA_FAIL=1
 true
