@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -65,15 +66,27 @@ func (w *Watcher) setRunning(v bool) {
 
 func (w *Watcher) run(ctx context.Context) {
 	a := NewAnalyzer(w.skip)
+	l := NewLocal("/")
+	// Attempts are counted once the TCP table shows nothing answered them
+	// (local.go); the analyzer is fed from this goroutine only.
 	go func() {
-		t := time.NewTicker(30 * time.Second)
+		t := time.NewTicker(250 * time.Millisecond)
 		defer t.Stop()
+		lastPrune := time.Now()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
-				a.Prune(now)
+				for _, at := range l.Due(now) {
+					for _, s := range a.Observe(net.IP(at.src.AsSlice()), at.port, at.at) {
+						w.onScan(s)
+					}
+				}
+				if now.Sub(lastPrune) >= 30*time.Second {
+					a.Prune(now)
+					lastPrune = now
+				}
 			}
 		}
 	}()
@@ -95,8 +108,12 @@ func (w *Watcher) run(ctx context.Context) {
 			return
 		}
 		count++
-		for _, s := range a.Observe(src, port, now) {
-			w.onScan(s)
+		addr, ok := netip.AddrFromSlice(src)
+		if !ok || (w.skip != nil && w.skip(src)) {
+			return
+		}
+		if !l.Add(addr, port, now) {
+			skipped++
 		}
 	})
 	w.setRunning(false)

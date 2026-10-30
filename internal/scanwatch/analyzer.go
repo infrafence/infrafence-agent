@@ -2,8 +2,9 @@
 // SYN packets) the server receives, read-only.
 //
 // Every SYN is seen as it arrives — to open or closed ports — through a
-// kernel filter, as the DNS inspection does. Two kinds of scan are
-// reported:
+// kernel filter, as the DNS inspection does. Only the attempts nothing on
+// the server answered are counted: not open services, not the data
+// connections of FTP clients (local.go). Two kinds of scan are reported:
 //
 //   - one address trying many ports (Threshold distinct ports in Window);
 //   - a network spreading a scan over many of its addresses, each trying a

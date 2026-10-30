@@ -193,6 +193,9 @@ fi
 # ── PHP configuration: detection, verified fix and revert (test/distro/php.sh) ──
 . /distro/php.sh
 
+# ── passive FTP is not a port scan; a sweep from an FTP client is (test/distro/ftp.sh) ──
+. /distro/ftp.sh
+
 # ── dashboard refusing the agent, restart, local expiry (test/distro/offline.sh) ──
 . /distro/offline.sh
 
