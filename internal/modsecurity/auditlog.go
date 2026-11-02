@@ -228,7 +228,10 @@ func (w *AuditLogWatcher) processBuffer(buf *string) {
 		*buf = (*buf)[entryEnd:]
 
 		entry := w.parseEntry(entryText)
-		if entry == nil {
+		// Only entries with rule matches are events. An entry without one (a request logged for
+		// its status alone, like the agent's own virtual-patch probe, whose rule is nolog) must
+		// not use up the address's rate limit either.
+		if entry == nil || len(entry.Rules) == 0 {
 			continue
 		}
 
@@ -253,10 +256,7 @@ func (w *AuditLogWatcher) processBuffer(buf *string) {
 			w.mu.Unlock()
 		}
 
-		// Only emit if there are rule matches
-		if len(entry.Rules) > 0 {
-			w.onEvent(*entry)
-		}
+		w.onEvent(*entry)
 	}
 }
 

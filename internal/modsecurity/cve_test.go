@@ -94,3 +94,31 @@ func TestAuditEntryCVEsIgnoresRequestData(t *testing.T) {
 		t.Errorf("CVEs() = %v, want only the whole tag", cves)
 	}
 }
+
+// A logged request without a rule match (the agent's own nolog probe, answered 403) is no
+// event and does not use up the rate limit of its address.
+func TestAuditEntryWithoutRulesKeepsRateLimit(t *testing.T) {
+	probe := `--aa11bb22-A--
+[02/Nov/2026:10:14:01.000000 +0000] ZRk3a8CoAAIAAAB0 198.51.100.23 51230 192.0.2.10 80
+--aa11bb22-B--
+GET / HTTP/1.1
+Host: 127.0.0.1
+X-InfraFence-Probe: vpatch-check
+
+--aa11bb22-F--
+HTTP/1.1 403 Forbidden
+
+--aa11bb22-H--
+Action: Intercepted (phase 1)
+Engine-Mode: "ENABLED"
+
+--aa11bb22-Z--
+`
+	var got []AuditEntry
+	w := &AuditLogWatcher{onEvent: func(e AuditEntry) { got = append(got, e) }, recentIPs: map[string]time.Time{}, rateLimit: 10 * time.Second}
+	buf := probe + vpatchAuditEntry
+	w.processBuffer(&buf)
+	if len(got) != 1 || got[0].Rules[0].ID != "9920004" {
+		t.Fatalf("got %d events, want the block only", len(got))
+	}
+}

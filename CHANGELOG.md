@@ -4,6 +4,7 @@ All notable changes to the InfraFence Agent.
 
 ## Unreleased
 - **feat: WAF blocks name the CVE they stop.** A ModSecurity block (`modsecurity_block` and the attack types mapped from CRS tags) carries `details.cve` when a matched rule is one of the agent's virtual patches (by rule id, 9920001–9920008) or a rule with a tag that is exactly a CVE id (`CVE-YYYY-NNNN`, any case, or `cve/cve-…`; text inside messages or longer tags never counts, since it can carry request data); with more than one, `cve` is the first (virtual patches first) and `cves` lists them all (comma-separated, at most 10). A dashboard WAF rule matched in the web logs carries `cve` when the dashboard sends one with the rule (optional `cve` field, ignored when malformed). Old dashboards ignore the new fields.
+- **fix: a ModSecurity audit entry without a rule match no longer uses up its address's 10-second rate limit.** Such an entry (a request logged for its 403 status alone, like the agent's own virtual-patch probe) is no event, but it used to hide the next real block from the same address.
 - **tests:** the distribution matrix checks that the block by the Log4Shell virtual patch is reported with `cve=CVE-2021-44228` where the distribution's ModSecurity writes an audit log (`vpatch_cve=ok|skip`).
 
 ## v1.0.36
