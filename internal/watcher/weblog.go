@@ -77,6 +77,7 @@ var defaultScorePoints = map[string]int{
 	"ssrf_attempt":       40,
 	"web_exploit":        40,
 	"honeypot_triggered": 40,
+	"bot_spoofed":        40, // claims a verifiable crawler, FCrDNS says otherwise
 	"path_traversal":     30,
 	"header_injection":   30,
 	"wp_bruteforce":      30,
@@ -1977,10 +1978,23 @@ func (w *WebWatcher) processLine(logPath, line string) {
 				"bot_category": bot.Category,
 				"bot_action":   bot.Action,
 			})
-			if bot.Action == "block" && !w.monitorMode {
+			_, verifiable := knownBotDomains[bot.Slug]
+			allow := bot.Action != "block" && bot.Action != "log" && bot.Action != "monitor"
+			if bot.Action == "block" && !w.monitorMode && searchEngineSlugs[bot.Slug] {
+				// Banned only once FCrDNS shows it is not the real crawler.
+				w.withBotVerdict(ip, bot.Slug, func(v fcrdnsVerdict, hostname string) {
+					w.blockSearchEngineBot(ip, bot.Slug, v, hostname, details)
+				})
+			} else if bot.Action == "block" && !w.monitorMode {
 				w.banned[ip] = true
 				go w.onBan(ip, "bot_blocked", 1)
 				go w.onEvent(ip, "bot_detected", "warning", details)
+			} else if allow && verifiable {
+				// An allowed crawler is trusted only once FCrDNS confirms it;
+				// an impostor is scored like any other bad request.
+				w.withBotVerdict(ip, bot.Slug, func(v fcrdnsVerdict, hostname string) {
+					w.allowVerifiableBot(ip, bot.Slug, v, hostname, logPath, line, details)
+				})
 			} else if !w.botEventDue(ip, bot.Slug) {
 				// already reported this bot from this IP within the hour
 			} else if bot.Action == "log" || (bot.Action == "block" && w.monitorMode) {
@@ -1989,19 +2003,8 @@ func (w *WebWatcher) processLine(logPath, line string) {
 				// monitor — detected and logged but excluded from stats
 				go w.onEvent(ip, "bot_monitor", "info", details)
 			} else {
-				// allow — verify FCrDNS for known bots before trusting
-				go func(ipAddr, slug string, d map[string]string) {
-					verified, hostname := w.checkBotFcrdns(ipAddr, slug)
-					if verified {
-						w.onEvent(ipAddr, "bot_crawl", "info", d)
-					} else {
-						// Bot is spoofing — reclassify
-						d["fcrdns_verified"] = "false"
-						d["fcrdns_hostname"] = hostname
-						d["bot_action"] = "spoofed"
-						w.onEvent(ipAddr, "bot_spoofed", "warning", d)
-					}
-				}(ip, bot.Slug, details)
+				// allow, and no rDNS domains to verify it with
+				go w.onEvent(ip, "bot_crawl", "info", details)
 			}
 			return
 		}
@@ -2413,17 +2416,18 @@ func (w *WebWatcher) getScorePoints(eventType string) int {
 
 // addScore adds points to an IP's cumulative score and takes the appropriate action.
 // Must be called with w.mu held. Uses BotScoreTracker (has its own mutex, so we
-// release w.mu before calling it, then re-acquire).
-func (w *WebWatcher) addScore(ip, eventType, logPath, line string, details map[string]string) {
+// release w.mu before calling it, then re-acquire). Returns whether the event
+// was reported.
+func (w *WebWatcher) addScore(ip, eventType, logPath, line string, details map[string]string) bool {
 	points := w.getScorePoints(eventType)
 	if points == 0 {
-		return
+		return false
 	}
 
 	// ModSecurity dedup: if ModSecurity already reported this IP, skip log-based detection
 	// to avoid duplicate events. ModSecurity's detection is more precise (full CRS rules).
 	if w.modsecDedup != nil && w.modsecDedup.ShouldSkip(ip) {
-		return
+		return false
 	}
 
 	// Dedup: skip if we scored this IP+type within the last 2 seconds
@@ -2431,7 +2435,7 @@ func (w *WebWatcher) addScore(ip, eventType, logPath, line string, details map[s
 	dedupKey := ip + ":" + eventType
 	now := time.Now()
 	if last, ok := w.recentScores[dedupKey]; ok && now.Sub(last) < 2*time.Second {
-		return
+		return false
 	}
 	w.recentScores[dedupKey] = now
 
@@ -2456,9 +2460,11 @@ func (w *WebWatcher) addScore(ip, eventType, logPath, line string, details map[s
 		log.Printf("[webwatcher] %s matched %s (score=%d) — below observe threshold, not reported", ip, eventType, score)
 	}
 
+	reported := score >= thresholdObserve
+
 	// Monitor mode: never ban, just observe everything
 	if w.monitorMode {
-		return
+		return reported
 	}
 
 	// Ban actions: only escalate, never downgrade
@@ -2476,6 +2482,7 @@ func (w *WebWatcher) addScore(ip, eventType, logPath, line string, details map[s
 			go w.onScoredBan(ip, eventType, score, 24*time.Hour)
 		}
 	}
+	return reported
 }
 
 // CleanExpiredScores removes expired IP scores and resets ban state for re-evaluation.

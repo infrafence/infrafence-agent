@@ -3,66 +3,202 @@ package watcher
 import (
 	"io"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
-// MailPattern pairs a compiled regex with the event type and reason it represents.
+// MailPattern pairs a compiled regex with the event type it represents.
+// Named groups: ip (required), and when the line has them user, method,
+// rcpt, proto and auth (an Exim authenticator name). Protocol and MTA are
+// fixed per pattern unless the line names them (proto group, Postfix
+// service name).
 type MailPattern struct {
-	Re     *regexp.Regexp
-	Reason string
+	Re       *regexp.Regexp
+	Reason   string
+	MTA      string // postfix, exim, dovecot, roundcube
+	Protocol string // smtp, imap, ...; "" when it comes from the line or is unknown
+	// DovecotFields: the line carries Dovecot's user=<...> and method=...
+	DovecotFields bool
 }
 
 // mailPatterns contains all mail detection patterns, ordered by frequency.
-// Each regex must have a capture group for the IP address.
 //
 // Postfix SASL:
-//   - "warning: unknown[X.X.X.X]: SASL LOGIN authentication failed"
-//   - "NOQUEUE: reject: RCPT from unknown[X.X.X.X]: 554 5.7.1 Relay access denied"
+//   - "warning: unknown[X.X.X.X]: SASL LOGIN authentication failed: UGFzc3dvcmQ6"
+//     (newer versions add ", sasl_username=user@example.com")
+//   - "NOQUEUE: reject: RCPT from unknown[X.X.X.X]: 554 5.7.1 <a@b>: Relay access denied; from=<...> to=<a@b> ..."
 //   - "too many errors after AUTH from unknown[X.X.X.X]"
 //   - "warning: X.X.X.X: hostname does not resolve"
 //   - "improper command pipelining after ... from unknown[X.X.X.X]"
 //
+// Exim (cPanel /var/log/exim_mainlog, Debian /var/log/exim4/mainlog):
+//   - "dovecot_login authenticator failed for (helo) [X.X.X.X]:1234: 535 Incorrect authentication data (set_id=user@example.com)"
+//   - "H=(helo) [X.X.X.X]:1234 F=<a@b> rejected RCPT <c@d>: relay not permitted"
+//
 // Dovecot:
-//   - "imap-login: Aborted login (auth failed, N attempts): ... rip=X.X.X.X"
-//   - "pop3-login: Aborted login (auth failed): ... rip=X.X.X.X"
-//   - "auth: passwd(user,X.X.X.X): unknown user"
+//   - "imap-login: Disconnected (auth failed, 3 attempts in 12 secs): user=<u>, method=PLAIN, rip=X.X.X.X, ..."
+//   - "imap-login: Login aborted: Connection closed (auth failed, 1 attempts in 2 secs) (auth_failed): user=<u>, method=PLAIN, rip=X.X.X.X"
+//   - "auth: passwd-file(user,X.X.X.X,<session>): unknown user"
 //   - "imap(user,<X.X.X.X>): Too many invalid commands"
 //   - "auth: passwd(user,X.X.X.X): Password mismatch"
 //
 // Roundcube:
-//   - "IMAP Error: Login failed for user against server from X.X.X.X"
+//   - "IMAP Error: Login failed for user against server from X.X.X.X. AUTHENTICATE PLAIN: Authentication failed."
 //   - "Failed login for user from X.X.X.X in session"
 var mailPatterns = []MailPattern{
 	// ── Postfix SASL ──────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`\S+\[([\d.]+)\]: SASL (?:LOGIN|PLAIN|CRAM-MD5|DIGEST-MD5) authentication failed`), Reason: "mail_brute_force"},
-	{Re: regexp.MustCompile(`NOQUEUE: reject:.*from \S+\[([\d.]+)\].*(?:Relay access denied|Client host rejected)`), Reason: "mail_relay_scan"},
-	{Re: regexp.MustCompile(`too many errors after AUTH from \S+\[([\d.]+)\]`), Reason: "mail_brute_force"},
-	{Re: regexp.MustCompile(`warning: ([\d.]+): hostname \S+ does not resolve`), Reason: "mail_suspicious"},
-	{Re: regexp.MustCompile(`improper command pipelining after \S+ from \S+\[([\d.]+)\]`), Reason: "mail_suspicious"},
+	{Re: regexp.MustCompile(`\S+\[(?P<ip>[\d.]+)\]: SASL (?P<method>[A-Z0-9-]+) authentication failed(?:.*sasl_username=(?P<user>[^\s,]+))?`), Reason: "mail_brute_force", MTA: "postfix"},
+	{Re: regexp.MustCompile(`NOQUEUE: reject:.*from \S+\[(?P<ip>[\d.]+)\].*(?:Relay access denied|Client host rejected)(?:.* to=<(?P<rcpt>[^>]*)>)?`), Reason: "mail_relay_scan", MTA: "postfix"},
+	{Re: regexp.MustCompile(`too many errors after AUTH from \S+\[(?P<ip>[\d.]+)\]`), Reason: "mail_brute_force", MTA: "postfix"},
+	{Re: regexp.MustCompile(`warning: (?P<ip>[\d.]+): hostname \S+ does not resolve`), Reason: "mail_suspicious", MTA: "postfix"},
+	{Re: regexp.MustCompile(`improper command pipelining after \S+ from \S+\[(?P<ip>[\d.]+)\]`), Reason: "mail_suspicious", MTA: "postfix"},
+
+	// ── Exim ──────────────────────────────────────────────────────────
+	{Re: regexp.MustCompile(`(?P<auth>[A-Za-z0-9_-]+) authenticator failed for .*?\[(?P<ip>[\d.]+)\](?::\d+)?: 535\b(?:.*\(set_id=(?P<user>[^)\s]+)\))?`), Reason: "mail_brute_force", MTA: "exim", Protocol: "smtp"},
+	{Re: regexp.MustCompile(`H=.*?\[(?P<ip>[\d.]+)\](?::\d+)?.* rejected RCPT <(?P<rcpt>[^>]*)>: (?i:relay(?:ing)? not permitted)`), Reason: "mail_relay_scan", MTA: "exim", Protocol: "smtp"},
 
 	// ── Dovecot ───────────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`(?:imap|pop3|submission|managesieve)-login: (?:Disconnected|Aborted login) \((?:auth failed|tried to use (?:disabled|disallowed)).*rip=([\d.]+)`), Reason: "mail_brute_force"},
-	{Re: regexp.MustCompile(`auth:.*\(\S+,([\d.]+)\):\s+unknown user`), Reason: "mail_brute_force"},
-	{Re: regexp.MustCompile(`(?:imap|pop3)\(\S+,<?([\d.]+)>?\).*Too many invalid`), Reason: "mail_brute_force"},
-	{Re: regexp.MustCompile(`auth:.*\(\S+,([\d.]+)\):\s+[Pp]assword mismatch`), Reason: "mail_brute_force"},
+	{Re: regexp.MustCompile(`(?P<proto>imap|pop3|submission|managesieve)-login: (?:Disconnected|Aborted login|Login aborted)[^(]*\((?:auth failed|tried to use (?:disabled|disallowed)).*rip=(?P<ip>[\d.]+)`), Reason: "mail_brute_force", MTA: "dovecot", DovecotFields: true},
+	{Re: regexp.MustCompile(`auth(?:-worker\(\d+\))?:.*\((?P<user>[^,()\s]*),(?P<ip>[\d.]+)(?:,<[^>]*>)?\):\s+unknown user`), Reason: "mail_brute_force", MTA: "dovecot"},
+	{Re: regexp.MustCompile(`(?P<proto>imap|pop3)\((?P<user>[^,()\s]*),<?(?P<ip>[\d.]+)>?\).*Too many invalid`), Reason: "mail_brute_force", MTA: "dovecot"},
+	{Re: regexp.MustCompile(`auth(?:-worker\(\d+\))?:.*\((?P<user>[^,()\s]*),(?P<ip>[\d.]+)(?:,<[^>]*>)?\):\s+[Pp]assword mismatch`), Reason: "mail_brute_force", MTA: "dovecot"},
 
 	// ── Roundcube ─────────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`IMAP Error: Login failed for \S+ against \S+ from ([\d.]+)`), Reason: "mail_brute_force"},
-	{Re: regexp.MustCompile(`Failed login for \S+ from ([\d.]+) in session`), Reason: "mail_brute_force"},
+	{Re: regexp.MustCompile(`IMAP Error: Login failed for (?P<user>\S+) against \S+ from (?P<ip>[\d.]+)(?:.*AUTHENTICATE (?P<method>[A-Z0-9-]+))?`), Reason: "mail_brute_force", MTA: "roundcube", Protocol: "roundcube"},
+	{Re: regexp.MustCompile(`Failed login for (?P<user>\S+) from (?P<ip>[\d.]+) in session`), Reason: "mail_brute_force", MTA: "roundcube", Protocol: "roundcube"},
+}
+
+var (
+	dovecotUser   = regexp.MustCompile(`\buser=<([^>]*)>`)
+	dovecotMethod = regexp.MustCompile(`\bmethod=([A-Za-z0-9-]+)`)
+)
+
+// Bounds of the details taken from a log line.
+const (
+	maxMailUser      = 128
+	maxMailRecipient = 254
+)
+
+// parseMailLine matches line against the mail patterns: the attacker's
+// address, the event type and the details the line really contains
+// (target_user, protocol, auth_method, recipient, recipient_domain, mta).
+// ip is "" when nothing matches.
+func parseMailLine(line string) (ip, reason string, details map[string]string) {
+	for _, p := range mailPatterns {
+		m := p.Re.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		g := map[string]string{}
+		for i, name := range p.Re.SubexpNames() {
+			if name != "" && m[i] != "" {
+				g[name] = m[i]
+			}
+		}
+		// "from 203.0.113.5. AUTHENTICATE": the sentence's full stop.
+		ip = strings.TrimRight(g["ip"], ".")
+		if net.ParseIP(ip) == nil {
+			return "", "", nil
+		}
+		details = map[string]string{"mta": p.MTA}
+		user := g["user"]
+		method := g["method"]
+		if p.DovecotFields {
+			if u := dovecotUser.FindStringSubmatch(line); u != nil {
+				user = u[1]
+			}
+			if mm := dovecotMethod.FindStringSubmatch(line); mm != nil {
+				method = mm[1]
+			}
+		}
+		if user = cleanMailField(user, maxMailUser); user != "" {
+			details["target_user"] = user
+		}
+		if method == "" && g["auth"] != "" {
+			method = eximAuthMethod(g["auth"])
+		}
+		if method = cleanMailField(method, 32); method != "" {
+			details["auth_method"] = strings.ToLower(method)
+		}
+		proto := p.Protocol
+		if g["proto"] != "" {
+			proto = g["proto"]
+		} else if p.MTA == "postfix" {
+			proto = postfixProtocol(line)
+		}
+		if proto != "" {
+			details["protocol"] = proto
+		}
+		if rcpt := cleanMailField(g["rcpt"], maxMailRecipient); rcpt != "" {
+			details["recipient"] = rcpt
+			if _, domain, ok := strings.Cut(rcpt, "@"); ok && domain != "" {
+				details["recipient_domain"] = strings.ToLower(domain)
+			}
+		}
+		return ip, p.Reason, details
+	}
+	return "", "", nil
+}
+
+// postfixProtocol: the smtpd of the submission (587) and smtps (465)
+// services takes logins from mail clients; plain smtpd is SMTP (25).
+func postfixProtocol(line string) string {
+	if strings.Contains(line, "/submission/smtpd[") || strings.Contains(line, "/smtps/smtpd[") {
+		return "submission"
+	}
+	if strings.Contains(line, "smtpd[") {
+		return "smtp"
+	}
+	return ""
+}
+
+// eximAuthMethod reads the mechanism from an Exim authenticator name
+// (cPanel's dovecot_login / dovecot_plain, Debian's plain_server,
+// login_server, cram_md5_server). "" when the name does not say.
+func eximAuthMethod(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "cram"):
+		return "cram-md5"
+	case strings.Contains(n, "digest"):
+		return "digest-md5"
+	case strings.Contains(n, "plain"):
+		return "plain"
+	case strings.Contains(n, "login"):
+		return "login"
+	}
+	return ""
+}
+
+// cleanMailField drops control characters and bounds the length.
+func cleanMailField(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(s))
+	for len(s) > max {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = s[:len(s)-size]
+	}
+	return s
 }
 
 // MailWatcher tails mail logs and calls onBan when an IP exceeds the threshold.
 type MailWatcher struct {
-	logPath string
-	onBan   BanFunc
-	onEvent EventFunc
-	checkIP CheckIPFunc
+	logPaths []string
+	onBan    BanFunc
+	onEvent  EventFunc
+	checkIP  CheckIPFunc
 
 	mu          sync.Mutex
 	threshold   int
@@ -74,45 +210,55 @@ type MailWatcher struct {
 	monitorMode bool
 }
 
-// detectMailLogPath returns the mail log path, checking env first, then auto-detecting.
-func detectMailLogPath() string {
+// eximLogPaths: cPanel, Debian/Ubuntu (exim4), RHEL family (EPEL exim).
+// Exim writes its own log, not syslog's mail log.
+var eximLogPaths = []string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/main.log"}
+
+// detectMailLogPaths returns the mail logs to watch: MAIL_LOG_PATH when
+// set, otherwise the syslog mail log (Postfix, Dovecot, Roundcube when it
+// logs to syslog) and Exim's main log, those that exist.
+func detectMailLogPaths() []string {
 	if p := os.Getenv("MAIL_LOG_PATH"); p != "" {
-		return p
+		return []string{p}
 	}
-	if _, err := os.Stat("/var/log/mail.log"); err == nil {
-		return "/var/log/mail.log"
+	var paths []string
+	for _, p := range []string{"/var/log/mail.log", "/var/log/maillog", "/var/log/dovecot.log"} {
+		if _, err := os.Stat(p); err == nil {
+			paths = append(paths, p)
+			break // one syslog mail log is enough
+		}
 	}
-	if _, err := os.Stat("/var/log/maillog"); err == nil {
-		return "/var/log/maillog"
+	for _, p := range eximLogPaths {
+		if _, err := os.Stat(p); err == nil {
+			paths = append(paths, p)
+			break
+		}
 	}
-	if _, err := os.Stat("/var/log/dovecot.log"); err == nil {
-		return "/var/log/dovecot.log"
-	}
-	return ""
+	return paths
 }
 
 // HasMailService returns true if a mail server is detected on this system.
 func HasMailService() bool {
-	for _, svc := range []string{"postfix", "dovecot"} {
+	for _, svc := range []string{"postfix", "dovecot", "exim", "exim4"} {
 		if out, err := exec.Command("systemctl", "is-active", svc).Output(); err == nil {
 			if strings.TrimSpace(string(out)) == "active" {
 				return true
 			}
 		}
 	}
-	return detectMailLogPath() != ""
+	return len(detectMailLogPaths()) > 0
 }
 
 // NewMailWatcher creates a watcher for mail server logs.
 // Returns nil if no mail log is found.
 func NewMailWatcher(onBan BanFunc) *MailWatcher {
-	path := detectMailLogPath()
-	if path == "" {
+	paths := detectMailLogPaths()
+	if len(paths) == 0 {
 		return nil
 	}
 
 	return &MailWatcher{
-		logPath:   path,
+		logPaths:  paths,
 		threshold: 5,
 		window:    5 * time.Minute,
 		onBan:     onBan,
@@ -190,18 +336,22 @@ func (w *MailWatcher) isWhitelisted(ip string) bool {
 	return false
 }
 
-// Run starts tailing the mail log. Blocks indefinitely.
+// Run starts tailing the mail logs. Blocks indefinitely.
 func (w *MailWatcher) Run() {
-	log.Printf("[mailwatcher] watching %s (threshold: %d in %s)", w.logPath, w.threshold, w.window)
-
 	go w.cleanupLoop()
 
-	for {
-		if err := w.tail(); err != nil {
-			log.Printf("[mailwatcher] error: %v — retrying in 5s", err)
-			time.Sleep(5 * time.Second)
-		}
+	for _, p := range w.logPaths {
+		log.Printf("[mailwatcher] watching %s (threshold: %d in %s)", p, w.threshold, w.window)
+		go func(path string) {
+			for {
+				if err := w.tail(path); err != nil {
+					log.Printf("[mailwatcher] %s: %v — retrying in 5s", path, err)
+					time.Sleep(5 * time.Second)
+				}
+			}
+		}(p)
 	}
+	select {}
 }
 
 func (w *MailWatcher) cleanupLoop() {
@@ -234,8 +384,8 @@ func (w *MailWatcher) cleanupLoop() {
 	}
 }
 
-func (w *MailWatcher) tail() error {
-	f, err := os.Open(w.logPath)
+func (w *MailWatcher) tail(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
@@ -253,7 +403,7 @@ func (w *MailWatcher) tail() error {
 	var partial string
 
 	for range ticker.C {
-		fi, err = os.Stat(w.logPath)
+		fi, err = os.Stat(path)
 		if err != nil {
 			return err
 		}
@@ -266,7 +416,7 @@ func (w *MailWatcher) tail() error {
 			continue
 		}
 
-		readF, err := os.Open(w.logPath)
+		readF, err := os.Open(path)
 		if err != nil {
 			return err
 		}
@@ -299,15 +449,7 @@ func (w *MailWatcher) tail() error {
 }
 
 func (w *MailWatcher) processLine(line string) {
-	var ip, reason string
-	for _, p := range mailPatterns {
-		m := p.Re.FindStringSubmatch(line)
-		if len(m) >= 2 {
-			ip = m[1]
-			reason = p.Reason
-			break
-		}
-	}
+	ip, reason, details := parseMailLine(line)
 	if ip == "" {
 		return
 	}
@@ -316,10 +458,13 @@ func (w *MailWatcher) processLine(line string) {
 		return
 	}
 
-	w.recordAttempt(ip, reason)
+	w.recordAttempt(ip, reason, details)
 }
 
-func (w *MailWatcher) recordAttempt(ip, reason string) {
+// recordAttempt counts a failure from ip and reports it with details (the
+// fields of the log line, plus attempts: the failures from ip in the
+// window, this one included).
+func (w *MailWatcher) recordAttempt(ip, reason string, details map[string]string) {
 	now := time.Now()
 
 	w.mu.Lock()
@@ -339,9 +484,10 @@ func (w *MailWatcher) recordAttempt(ip, reason string) {
 			w.banned[ip] = true
 			if w.monitorMode {
 				if w.onEvent != nil {
-					go w.onEvent(ip, reason, "critical", map[string]string{
-						"reason": banReason,
-					})
+					d := maps.Clone(details)
+					d["reason"] = banReason
+					d["attempts"] = "1"
+					go w.onEvent(ip, reason, "critical", d)
 				}
 			} else {
 				go w.onBan(ip, banReason, 1)
@@ -350,29 +496,33 @@ func (w *MailWatcher) recordAttempt(ip, reason string) {
 		}
 	}
 
-	// Report event for monitor mode or event tracking
-	if w.onEvent != nil {
-		severity := "warning"
-		if reason == "mail_brute_force" {
-			severity = "critical"
-		}
-		go w.onEvent(ip, reason, severity, map[string]string{})
-	}
-
-	// Threshold check
 	var recent []time.Time
 	for _, t := range w.attempts[ip] {
 		if now.Sub(t) <= w.window {
 			recent = append(recent, t)
 		}
 	}
-
 	recent = append(recent, now)
 	w.attempts[ip] = recent
+	count := len(recent)
 
-	if len(recent) >= w.threshold {
+	// Report event for monitor mode or event tracking
+	if w.onEvent != nil {
+		severity := "warning"
+		if reason == "mail_brute_force" {
+			severity = "critical"
+		}
+		d := maps.Clone(details)
+		if d == nil {
+			d = map[string]string{}
+		}
+		d["attempts"] = strconv.Itoa(count)
+		go w.onEvent(ip, reason, severity, d)
+	}
+
+	// Threshold check
+	if count >= w.threshold {
 		w.banned[ip] = true
-		count := len(recent)
 		if w.monitorMode {
 			// Already reported event above
 		} else {

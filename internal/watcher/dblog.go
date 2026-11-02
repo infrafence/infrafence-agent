@@ -8,9 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/netstate"
 )
 
 // DBPattern pairs a compiled regex with the event reason.
@@ -150,42 +154,88 @@ func HasDBService() bool {
 	return len(detectDBLogPaths()) > 0
 }
 
-// ExposedDBPort is a database port listening on all addresses.
+// ExposedDBPort is a database port reachable from the internet: listening
+// on all addresses (0.0.0.0, [::]) or on a public address of the host.
 type ExposedDBPort struct {
 	Port    int
 	Service string // MySQL/MariaDB, PostgreSQL, MongoDB, Redis
 	Warning string
+	// BindAddress: the exposed listening addresses, "0.0.0.0:3306",
+	// "[::]:3306, 203.0.113.10:3306".
+	BindAddress string
 }
 
+// dbPorts are the database ports checked, in report order.
+var dbPorts = []struct {
+	port int
+	name string
+}{
+	{3306, "MySQL/MariaDB"},
+	{5432, "PostgreSQL"},
+	{6379, "Redis"},
+	{27017, "MongoDB"},
+}
+
+// Replaced in tests.
+var (
+	dbSockets     = netstate.Sockets
+	dbHasPublicV6 = netstate.HasPublicIPv6
+)
+
 // ExposedDBPortList checks which database ports listen on all addresses
-// (0.0.0.0 or *), in port order.
+// (0.0.0.0 or [::]) or on a public address, in port order. Read only: the
+// kernel's socket table (/proc/net/tcp, tcp6), no connection is made.
 func ExposedDBPortList() []ExposedDBPort {
-	dbPorts := map[int]string{
-		3306:  "MySQL/MariaDB",
-		5432:  "PostgreSQL",
-		27017: "MongoDB",
-		6379:  "Redis",
-	}
+	return exposedDBPorts(dbSockets(), dbHasPublicV6())
+}
 
+func exposedDBPorts(socks []netstate.Conn, publicV6 bool) []ExposedDBPort {
+	const listen = 0x0A
 	var exposed []ExposedDBPort
-	for _, port := range []int{3306, 5432, 6379, 27017} {
-		name := dbPorts[port]
-		// Check if port is listening
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("0.0.0.0:%d", port), 2*time.Second)
-		if err != nil {
+	for _, db := range dbPorts {
+		var binds []string
+		seen := map[string]bool{}
+		ipv4 := false
+		for _, c := range socks {
+			if c.State == listen && c.LocalPort == db.port && c.LocalIP.To4() != nil {
+				ipv4 = true
+			}
+		}
+		for _, c := range socks {
+			if c.State != listen || c.LocalPort != db.port {
+				continue
+			}
+			ip := c.LocalIP
+			switch {
+			case ip.IsUnspecified() && ip.To4() == nil:
+				// [::] also takes IPv4 unless the socket is IPv6-only. A
+				// daemon that opens an IPv4 socket too sets IPv6-only; then,
+				// without a public IPv6 address, nothing reaches it.
+				if !publicV6 && ipv4 {
+					continue
+				}
+			case ip.IsUnspecified():
+			case netstate.IsPublic(ip):
+			default:
+				continue // loopback, private, link-local
+			}
+			b := net.JoinHostPort(ip.String(), strconv.Itoa(db.port))
+			if !seen[b] {
+				seen[b] = true
+				binds = append(binds, b)
+			}
+		}
+		if len(binds) == 0 {
 			continue
 		}
-		conn.Close()
-
-		// Port is listening — check if it's bound to 0.0.0.0 (all interfaces)
-		out, err := exec.Command("ss", "-tlnp", fmt.Sprintf("sport = %d", port)).Output()
-		if err != nil {
-			continue
-		}
-		output := string(out)
-		if strings.Contains(output, "0.0.0.0:"+fmt.Sprintf("%d", port)) || strings.Contains(output, "*:"+fmt.Sprintf("%d", port)) {
-			exposed = append(exposed, ExposedDBPort{Port: port, Service: name, Warning: fmt.Sprintf("%s is exposed publicly on port %d", name, port)})
-		}
+		sort.Strings(binds)
+		bind := strings.Join(binds, ", ")
+		exposed = append(exposed, ExposedDBPort{
+			Port:        db.port,
+			Service:     db.name,
+			Warning:     fmt.Sprintf("%s is exposed publicly on port %d", db.name, db.port),
+			BindAddress: bind,
+		})
 	}
 	return exposed
 }

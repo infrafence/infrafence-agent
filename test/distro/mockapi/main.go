@@ -35,6 +35,10 @@ type state struct {
 	GeoIPRequests int               `json:"geoip_requests"`
 	Bans          []json.RawMessage `json:"bans"`
 	Events        []json.RawMessage `json:"events"`
+	// InstallReports are install.sh's progress reports (valid JSON only);
+	// InstallInvalid counts those that were not.
+	InstallReports []json.RawMessage `json:"install_reports"`
+	InstallInvalid int               `json:"install_invalid"`
 	// LastScan is the latest hardening scan result the agent submitted.
 	LastScan json.RawMessage `json:"last_scan,omitempty"`
 	// InfoCalls counts the requests for the attack map ("map:24",
@@ -213,6 +217,17 @@ func main() {
 				c.Close()
 			}
 		}()
+		reply(w, map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("/api/v1/install/status", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+		st.mu.Lock()
+		if json.Valid(body) {
+			st.InstallReports = append(st.InstallReports, json.RawMessage(body))
+		} else {
+			st.InstallInvalid++
+		}
+		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/agent/bans", func(w http.ResponseWriter, r *http.Request) {
