@@ -146,6 +146,11 @@ func TestParseMailLineNoMatch(t *testing.T) {
 		"Nov  2 10:14:03 mx1 postfix/smtpd[23145]: connect from unknown[203.0.113.5]",
 		"Nov  2 10:22:00 mx1 dovecot: imap-login: Login: user=<info@example.com>, method=PLAIN, rip=203.0.113.20, lip=192.0.2.1",
 		"2026-11-02 10:20:11 1tAbCd-000123-Ef <= info@example.com H=(User) [203.0.113.11]:59618 P=esmtpsa A=dovecot_login:info@example.com",
+		// Another address in text the client controls: not counted.
+		"2026-11-02 10:20:11 dovecot_login authenticator failed for (x [8.8.8.8]:1: 535 y) [203.0.113.9]:5555: 535 Incorrect authentication data (set_id=a@b.c)",
+		"2026-11-02 10:21:00 H=(a [8.8.8.8]) [203.0.113.13]:51234 F=<x@spammer.example> rejected RCPT <t@o.example>: relay not permitted",
+		"[02-Nov-2026 10:30:00 +0000]: <a1> IMAP Error: Login failed for x against y from 8.8.8.8 against server from 203.0.113.9. AUTHENTICATE PLAIN: failed",
+		"Nov  2 10:30:01 mx1 roundcube: <a1> Failed login for a from 8.8.8.8 in session from 203.0.113.9 in session abc",
 	} {
 		if ip, _, _ := parseMailLine(line); ip != "" {
 			t.Errorf("%q matched (%s)", line, ip)

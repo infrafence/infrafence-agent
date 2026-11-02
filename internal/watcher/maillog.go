@@ -27,7 +27,17 @@ type MailPattern struct {
 	Protocol string // smtp, imap, ...; "" when it comes from the line or is unknown
 	// DovecotFields: the line carries Dovecot's user=<...> and method=...
 	DovecotFields bool
+	// OneIP, when set, finds every address in the line where the client's
+	// could be: text the client controls (an Exim HELO, a Roundcube user
+	// name) comes before the real one, so a line with two different
+	// addresses there is not counted (it could get another address banned).
+	OneIP *regexp.Regexp
 }
+
+var (
+	bracketIPs = regexp.MustCompile(`\[(\d+\.\d+\.\d+\.\d+)\]`)
+	fromIPs    = regexp.MustCompile(`\bfrom (\d+\.\d+\.\d+\.\d+)`)
+)
 
 // mailPatterns contains all mail detection patterns, ordered by frequency.
 //
@@ -62,8 +72,8 @@ var mailPatterns = []MailPattern{
 	{Re: regexp.MustCompile(`improper command pipelining after \S+ from \S+\[(?P<ip>[\d.]+)\]`), Reason: "mail_suspicious", MTA: "postfix"},
 
 	// ── Exim ──────────────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`(?P<auth>[A-Za-z0-9_-]+) authenticator failed for .*?\[(?P<ip>[\d.]+)\](?::\d+)?: 535\b(?:.*\(set_id=(?P<user>[^)\s]+)\))?`), Reason: "mail_brute_force", MTA: "exim", Protocol: "smtp"},
-	{Re: regexp.MustCompile(`H=.*?\[(?P<ip>[\d.]+)\](?::\d+)?.* rejected RCPT <(?P<rcpt>[^>]*)>: (?i:relay(?:ing)? not permitted)`), Reason: "mail_relay_scan", MTA: "exim", Protocol: "smtp"},
+	{Re: regexp.MustCompile(`(?P<auth>[A-Za-z0-9_-]+) authenticator failed for .*?\[(?P<ip>[\d.]+)\](?::\d+)?: 535\b(?:.*\(set_id=(?P<user>[^)\s]+)\))?`), Reason: "mail_brute_force", MTA: "exim", Protocol: "smtp", OneIP: bracketIPs},
+	{Re: regexp.MustCompile(`H=.*?\[(?P<ip>[\d.]+)\](?::\d+)?.* rejected RCPT <(?P<rcpt>[^>]*)>: (?i:relay(?:ing)? not permitted)`), Reason: "mail_relay_scan", MTA: "exim", Protocol: "smtp", OneIP: bracketIPs},
 
 	// ── Dovecot ───────────────────────────────────────────────────────
 	{Re: regexp.MustCompile(`(?P<proto>imap|pop3|submission|managesieve)-login: (?:Disconnected|Aborted login|Login aborted)[^(]*\((?:auth failed|tried to use (?:disabled|disallowed)).*rip=(?P<ip>[\d.]+)`), Reason: "mail_brute_force", MTA: "dovecot", DovecotFields: true},
@@ -72,8 +82,8 @@ var mailPatterns = []MailPattern{
 	{Re: regexp.MustCompile(`auth(?:-worker\(\d+\))?:.*\((?P<user>[^,()\s]*),(?P<ip>[\d.]+)(?:,<[^>]*>)?\):\s+[Pp]assword mismatch`), Reason: "mail_brute_force", MTA: "dovecot"},
 
 	// ── Roundcube ─────────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`IMAP Error: Login failed for (?P<user>\S+) against \S+ from (?P<ip>[\d.]+)(?:.*AUTHENTICATE (?P<method>[A-Z0-9-]+))?`), Reason: "mail_brute_force", MTA: "roundcube", Protocol: "roundcube"},
-	{Re: regexp.MustCompile(`Failed login for (?P<user>\S+) from (?P<ip>[\d.]+) in session`), Reason: "mail_brute_force", MTA: "roundcube", Protocol: "roundcube"},
+	{Re: regexp.MustCompile(`IMAP Error: Login failed for (?P<user>\S+) against \S+ from (?P<ip>[\d.]+)(?:.*AUTHENTICATE (?P<method>[A-Z0-9-]+))?`), Reason: "mail_brute_force", MTA: "roundcube", Protocol: "roundcube", OneIP: fromIPs},
+	{Re: regexp.MustCompile(`Failed login for (?P<user>\S+) from (?P<ip>[\d.]+) in session`), Reason: "mail_brute_force", MTA: "roundcube", Protocol: "roundcube", OneIP: fromIPs},
 }
 
 var (
@@ -81,8 +91,10 @@ var (
 	dovecotMethod = regexp.MustCompile(`\bmethod=([A-Za-z0-9-]+)`)
 )
 
-// Bounds of the details taken from a log line.
+// Bounds of the details taken from a log line, and of the reads.
 const (
+	maxMailRead      = 1 << 20
+	maxMailLine      = 8192
 	maxMailUser      = 128
 	maxMailRecipient = 254
 )
@@ -107,6 +119,13 @@ func parseMailLine(line string) (ip, reason string, details map[string]string) {
 		ip = strings.TrimRight(g["ip"], ".")
 		if net.ParseIP(ip) == nil {
 			return "", "", nil
+		}
+		if p.OneIP != nil {
+			for _, c := range p.OneIP.FindAllStringSubmatch(line, -1) {
+				if c[1] != ip {
+					return "", "", nil
+				}
+			}
 		}
 		details = map[string]string{"mta": p.MTA}
 		user := g["user"]
@@ -422,7 +441,9 @@ func (w *MailWatcher) tail(path string) error {
 		}
 
 		readF.Seek(offset, io.SeekStart)
-		buf := make([]byte, size-offset)
+		// At most 1 MiB per tick: a large backlog (a log replaced by a
+		// bigger one) is read over several ticks, not into memory at once.
+		buf := make([]byte, min(size-offset, maxMailRead))
 		n, err := io.ReadFull(readF, buf)
 		readF.Close()
 
@@ -435,8 +456,13 @@ func (w *MailWatcher) tail(path string) error {
 				if idx < 0 {
 					break
 				}
-				w.processLine(partial[:idx])
+				if idx <= maxMailLine {
+					w.processLine(partial[:idx])
+				}
 				partial = partial[idx+1:]
+			}
+			if len(partial) > maxMailLine {
+				partial = "" // no mail log line is this long: dropped
 			}
 		}
 

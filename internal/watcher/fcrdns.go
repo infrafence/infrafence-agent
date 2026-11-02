@@ -91,13 +91,20 @@ func (c *fcrdnsCache) storeResult(ip string, verified bool, hostname string, und
 		undecided: undecided,
 	}
 
-	// Prune expired entries if cache is large
+	// Prune expired entries if cache is large; still too large (many
+	// addresses at once): drop entries until under the cap.
 	if len(c.entries) > 5000 {
 		now := time.Now()
 		for k, v := range c.entries {
 			if now.Sub(v.checkedAt) > c.ttl {
 				delete(c.entries, k)
 			}
+		}
+		for k := range c.entries {
+			if len(c.entries) <= 4000 {
+				break
+			}
+			delete(c.entries, k)
 		}
 	}
 }
@@ -165,9 +172,9 @@ var (
 //  4. Verify the original IP is in the forward results
 //
 // Returns (verified, hostname, decided). verified=true means the bot is
-// legitimate; decided=false means a lookup failed for another reason than
-// "no such name" (timeout, DNS server down): neither verified nor an
-// impostor.
+// legitimate; decided=false means the resolver failed (timeout, temporary
+// failure): neither verified nor an impostor. Any answer of the address'
+// DNS (no name, a refusal, malformed records) decides.
 func verifyFcrdns(ip string, expectedSuffixes []string) (bool, string, bool) {
 	// Strip IPv4-mapped IPv6 prefix (::ffff:1.2.3.4 → 1.2.3.4)
 	// PTR lookups fail on mapped addresses but work on the plain IPv4.
@@ -177,44 +184,57 @@ func verifyFcrdns(ip string, expectedSuffixes []string) (bool, string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), fcrdnsTimeout)
 	names, err := lookupAddr(ctx, ip)
 	cancel()
-	if err != nil && !dnsNotFound(err) {
-		return false, "", false
-	}
-	if len(names) == 0 {
-		return false, "", true
+	if err != nil && len(names) == 0 {
+		// Only the resolver failing leaves it undecided; any other answer
+		// (no name, a refusal, malformed records) is not the crawler.
+		return false, "", !dnsTemporary(err)
 	}
 
-	hostname := strings.TrimSuffix(names[0], ".")
-	hostLower := strings.ToLower(hostname)
-
-	// Step 2: Check domain suffix
-	suffixMatch := false
-	for _, suffix := range expectedSuffixes {
-		if strings.HasSuffix(hostLower, suffix) {
-			suffixMatch = true
+	// Step 2: a name under an expected domain suffix
+	hostname := ""
+	for _, n := range names {
+		h := strings.TrimSuffix(n, ".")
+		for _, suffix := range expectedSuffixes {
+			if strings.HasSuffix(strings.ToLower(h), suffix) {
+				hostname = h
+				break
+			}
+		}
+		if hostname != "" {
 			break
 		}
 	}
-	if !suffixMatch {
-		return false, hostname, true
+	if hostname == "" {
+		if len(names) > 0 {
+			return false, strings.TrimSuffix(names[0], "."), true
+		}
+		return false, "", true
 	}
 
-	// Step 3: Forward lookup
+	// Step 3: Forward lookup (fully qualified: no search domains)
 	ctx, cancel = context.WithTimeout(context.Background(), fcrdnsTimeout)
-	addrs, err := lookupHost(ctx, hostname)
+	addrs, err := lookupHost(ctx, hostname+".")
 	cancel()
-	if err != nil && !dnsNotFound(err) {
-		return false, hostname, false
+	if err != nil && len(addrs) == 0 {
+		return false, hostname, !dnsTemporary(err)
 	}
 
 	// Step 4: Verify original IP is in forward results
+	want := net.ParseIP(ip)
 	for _, addr := range addrs {
-		if addr == ip {
+		if a := net.ParseIP(addr); a != nil && a.Equal(want) {
 			return true, hostname, true
 		}
 	}
 
 	return false, hostname, true
+}
+
+// dnsTemporary: the lookup failed for a reason of the resolver (timeout,
+// temporary failure), not because of what the address' DNS answered.
+func dnsTemporary(err error) bool {
+	var de *net.DNSError
+	return errors.As(err, &de) && (de.IsTimeout || de.IsTemporary)
 }
 
 // dnsNotFound: the name does not exist (a definite answer).

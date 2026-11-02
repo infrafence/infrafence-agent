@@ -22,7 +22,7 @@ func fakeDNS(t *testing.T) {
 		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
 	}
 	lookupHost = func(_ context.Context, host string) ([]string, error) {
-		if host == "crawl-66-249-66-1.googlebot.com" {
+		if host == "crawl-66-249-66-1.googlebot.com." {
 			return []string{"66.249.66.1"}, nil
 		}
 		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
@@ -144,5 +144,40 @@ func TestFcrdnsUndecidedNotCachedLong(t *testing.T) {
 	c.end("a")
 	if !c.begin("a") {
 		t.Error("begin after end")
+	}
+}
+
+func TestVerifyFcrdnsAnswers(t *testing.T) {
+	oldAddr, oldHost := lookupAddr, lookupHost
+	t.Cleanup(func() { lookupAddr, lookupHost = oldAddr, oldHost })
+	lookupHost = func(_ context.Context, host string) ([]string, error) {
+		if host == "crawl-66-249-66-1.googlebot.com." {
+			return []string{"66.249.66.1"}, nil
+		}
+		return nil, &net.DNSError{Err: "no such host", IsNotFound: true}
+	}
+	suffixes := knownBotDomains["googlebot"]
+
+	// A second PTR name under the crawler's domain still verifies.
+	lookupAddr = func(context.Context, string) ([]string, error) {
+		return []string{"other.example.net.", "crawl-66-249-66-1.googlebot.com."}, nil
+	}
+	if v, h, d := verifyFcrdns("66.249.66.1", suffixes); !v || !d || h != "crawl-66-249-66-1.googlebot.com" {
+		t.Errorf("two PTR names: %v %q %v", v, h, d)
+	}
+	// A refusal or malformed records from the address' DNS: an impostor,
+	// not undecided.
+	lookupAddr = func(context.Context, string) ([]string, error) {
+		return nil, &net.DNSError{Err: "server misbehaving"}
+	}
+	if v, _, d := verifyFcrdns("203.0.113.70", suffixes); v || !d {
+		t.Errorf("refused: verified=%v decided=%v", v, d)
+	}
+	// The resolver timing out: undecided.
+	lookupAddr = func(context.Context, string) ([]string, error) {
+		return nil, &net.DNSError{Err: "i/o timeout", IsTimeout: true}
+	}
+	if _, _, d := verifyFcrdns("203.0.113.71", suffixes); d {
+		t.Error("timeout decided")
 	}
 }
