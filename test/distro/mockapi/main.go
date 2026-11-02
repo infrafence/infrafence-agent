@@ -37,6 +37,10 @@ type state struct {
 	Events        []json.RawMessage `json:"events"`
 	// LastScan is the latest hardening scan result the agent submitted.
 	LastScan json.RawMessage `json:"last_scan,omitempty"`
+	// MalwareChunks and MalwareCompletes are the malware scan chunks and
+	// completions the agent sent (the last 200 of each).
+	MalwareChunks    []json.RawMessage `json:"malware_chunks"`
+	MalwareCompletes []json.RawMessage `json:"malware_completes"`
 	// InfoCalls counts the requests for the attack map ("map:24",
 	// "map:168") and the security score ("score").
 	InfoCalls map[string]int `json:"info_calls"`
@@ -298,6 +302,26 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(data)
+	})
+	keep := func(list *[]json.RawMessage, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		if !json.Valid(body) {
+			return
+		}
+		st.mu.Lock()
+		*list = append(*list, body)
+		if len(*list) > 200 {
+			*list = (*list)[len(*list)-200:]
+		}
+		st.mu.Unlock()
+	}
+	mux.HandleFunc("/api/v1/agent/malware-scan-results/chunk", func(w http.ResponseWriter, r *http.Request) {
+		keep(&st.MalwareChunks, r)
+		reply(w, map[string]any{"status": "ok", "scan_id": 1, "roots_received": 1})
+	})
+	mux.HandleFunc("/api/v1/agent/malware-scan-results/complete", func(w http.ResponseWriter, r *http.Request) {
+		keep(&st.MalwareCompletes, r)
+		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()

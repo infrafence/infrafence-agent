@@ -98,6 +98,10 @@ Cerca de 1.500 bots conhecidos, a partir de listas públicas atualizadas diariam
 - **Quarentena e ignorar** — com um clique, mova um arquivo malicioso para `/var/lib/infrafence/quarantine/` (restaurável) ou marque um falso positivo, que as próximas varreduras ignoram
 - **Varreduras agendadas** a cada 3, 6, 12 ou 24 horas, além de "Verificar agora" no painel
 - **Verificação em tempo real** — a cada 30 segundos verifica as pastas de upload em busca de novos arquivos PHP
+- **A raiz de documentos de cada site** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, subdomínios, domínios adicionais) e cada host virtual ativo na configuração do Apache (seguindo `Include`/`IncludeOptional`, também o `/etc/apache2/conf/httpd.conf` do cPanel), nginx e OpenLiteSpeed/LiteSpeed, somente leitura e com limites
+- **Caminhos e exclusões por servidor** — pastas extras e pastas ou padrões nunca verificados, definidos no painel; cada varredura tem seu id, um limite de tempo (6 horas por padrão, depois termina como `timed_out` com as pastas já feitas) e dá notícias a cada 10 minutos
+- **Menos falsos positivos** — checksums do WordPress só para os arquivos do núcleo (não `wp-content/`); arquivos de fontes para PDF (TCPDF/FPDF) e `index.php` vazios não são relatados como PHP nos uploads, mas as assinaturas e o YARA continuam a lê-los
+- **Versões de PHP que atendem os sites** — o inventário de software lista cada pool PHP-FPM, mod_php e CGI com os sites associados, além da versão de linha de comando
 
 ### WAF inline ModSecurity (opcional)
 - Apenas se você permitir alterações no servidor web nas configurações do painel — desativado por padrão

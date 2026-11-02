@@ -196,6 +196,9 @@ fi
 # ── passive FTP is not a port scan; a sweep from an FTP client is (test/distro/ftp.sh) ──
 . /distro/ftp.sh
 
+# ── malware scan: every vhost's document root, exclusions, one scan id (test/distro/malware.sh) ──
+. /distro/malware.sh
+
 # ── dashboard refusing the agent, restart, local expiry (test/distro/offline.sh) ──
 . /distro/offline.sh
 

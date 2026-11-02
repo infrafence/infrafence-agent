@@ -98,6 +98,10 @@ Unos 1.500 bots conocidos, a partir de listas públicas actualizadas a diario ([
 - **Cuarentena e ignorar** — con un clic mueves un archivo malicioso a `/var/lib/infrafence/quarantine/` (restaurable) o marcas un falso positivo, que los siguientes escaneos omiten
 - **Escaneos programados** cada 3, 6, 12 o 24 horas, además de "Escanear ahora" desde el panel
 - **Comprobación en tiempo real** — revisa cada 30 segundos las carpetas de subida en busca de nuevos archivos PHP
+- **La raíz de documentos de cada sitio** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, subdominios, dominios adicionales) y cada host virtual activo en la configuración de Apache (siguiendo `Include`/`IncludeOptional`, también `/etc/apache2/conf/httpd.conf` de cPanel), nginx y OpenLiteSpeed/LiteSpeed, solo lectura y con límites
+- **Rutas y exclusiones por servidor** — carpetas adicionales y carpetas o patrones que nunca se escanean, desde el panel; cada escaneo tiene su id, un límite de tiempo (6 horas por defecto, luego termina como `timed_out` con las carpetas hechas) e informa cada 10 minutos
+- **Menos falsos positivos** — checksums de WordPress solo para los archivos del núcleo (no `wp-content/`); los archivos de fuentes para PDF (TCPDF/FPDF) y los `index.php` vacíos no se informan como PHP en las subidas, pero las firmas y YARA los siguen leyendo
+- **Versiones de PHP que sirven los sitios** — el inventario de software lista cada pool PHP-FPM, mod_php y CGI con los sitios asociados, además de la versión de línea de comandos
 
 ### WAF en línea ModSecurity (opcional)
 - Solo si permites cambios en el servidor web en los ajustes del panel — desactivado por defecto

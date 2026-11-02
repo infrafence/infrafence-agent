@@ -106,7 +106,12 @@ var (
 // expand returns file's lines with every include replaced by the files it
 // names, at most maxIncludes files.
 func expand(env Env, file, root string, inc *regexp.Regexp, seen map[string]bool, depth int) []string {
-	if seen[file] || len(seen) >= maxIncludes || depth > 8 {
+	return expandLimit(env, file, root, inc, seen, depth, maxIncludes)
+}
+
+// expandLimit is expand reading at most limit files (seen counts them).
+func expandLimit(env Env, file, root string, inc *regexp.Regexp, seen map[string]bool, depth, limit int) []string {
+	if seen[file] || len(seen) >= limit || depth > 8 {
 		return nil
 	}
 	seen[file] = true
@@ -128,7 +133,7 @@ func expand(env Env, file, root string, inc *regexp.Regexp, seen map[string]bool
 				pat = strings.TrimSuffix(pat, "/") + "/*"
 			}
 			for _, f := range env.Glob(pat) {
-				out = append(out, expand(env, f, root, inc, seen, depth+1)...)
+				out = append(out, expandLimit(env, f, root, inc, seen, depth+1, limit)...)
 			}
 			continue
 		}

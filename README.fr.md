@@ -98,6 +98,10 @@ Environ 1 500 bots connus, issus de listes publiques mises à jour chaque jour (
 - **Quarantaine et ignorer** — en un clic, déplacez un fichier malveillant vers `/var/lib/infrafence/quarantine/` (restaurable) ou marquez un faux positif, que les analyses suivantes ignorent
 - **Analyses planifiées** toutes les 3, 6, 12 ou 24 heures, plus « Analyser maintenant » depuis le tableau de bord
 - **Contrôle en temps réel** — vérifie toutes les 30 secondes les dossiers d'upload à la recherche de nouveaux fichiers PHP
+- **La racine de chaque site** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, sous-domaines, domaines supplémentaires) et chaque hôte virtuel actif de la configuration d'Apache (en suivant `Include`/`IncludeOptional`, aussi `/etc/apache2/conf/httpd.conf` de cPanel), nginx et OpenLiteSpeed/LiteSpeed, en lecture seule et bornée
+- **Chemins et exclusions par serveur** — dossiers supplémentaires et dossiers ou motifs jamais analysés, depuis le tableau de bord ; chaque analyse a son identifiant, une limite de durée (6 heures par défaut, puis elle se termine en `timed_out` avec les dossiers déjà faits) et se manifeste toutes les 10 minutes
+- **Moins de faux positifs** — sommes de contrôle WordPress pour les fichiers du cœur seulement (pas `wp-content/`) ; les fichiers de polices PDF (TCPDF/FPDF) et les `index.php` vides ne sont pas signalés comme PHP dans les téléversements, mais les signatures et YARA les lisent toujours
+- **Versions de PHP qui servent les sites** — l'inventaire logiciel liste chaque pool PHP-FPM, mod_php et CGI avec les sites associés, en plus de la version en ligne de commande
 
 ### WAF en ligne ModSecurity (optionnel)
 - Uniquement si vous autorisez les modifications du serveur web dans les réglages du tableau de bord — désactivé par défaut
