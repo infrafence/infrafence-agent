@@ -104,6 +104,7 @@ Environ 1 500 bots connus, issus de listes publiques mises à jour chaque jour (
 - Jamais sur les serveurs dont la configuration est gérée par un panneau d'hébergement ou un outil de gestion de configuration
 - Pour Apache avec mod_security2 : 13 règles (injection SQL, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, blocage des scanners), blocage dès la première requête
 - Sûr : si le test de configuration d'Apache échoue, la modification est annulée
+- Un blocage par un correctif virtuel, ou par une règle dont les tags ou le message citent une CVE, est signalé avec cette CVE (`cve`, et `cves` s'il y en a plusieurs), pour que le tableau de bord sache quelles vulnérabilités sont attaquées
 
 ### Menaces sortantes et DNS
 - **Connexions sortantes** vers des IP figurant dans des listes publiques de threat intelligence, téléchargées par chaque serveur une fois par jour (réseaux connus pour avoir été détournés, liste des hôtes compromis d'Emerging Threats)

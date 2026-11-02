@@ -63,3 +63,31 @@ func TestDisabledBuiltinPattern(t *testing.T) {
 		t.Error("disabling a different pattern must not affect this one")
 	}
 }
+
+// A dashboard WAF rule with a CVE puts it on the event; a malformed one is dropped.
+func TestDynamicWafRuleCVE(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{{"cve-2023-22527", "CVE-2023-22527"}, {"not-a-cve", ""}} {
+		var mu sync.Mutex
+		var got map[string]string
+		w := NewWebWatcher(nil, nil, func(string, string, int) {}, func(ip, eventType, severity string, d map[string]string) {
+			mu.Lock()
+			defer mu.Unlock()
+			if d["waf_rule"] == "7" {
+				got = d
+			}
+		})
+		w.UpdateWafRules([]WafRuleInput{{ID: 7, Category: "rce_attempt", Pattern: "/template/aui/text-inline.vm", CVE: tc.in}})
+		line := fmt.Sprintf(`203.0.113.9 - - [%s] "POST /template/aui/text-inline.vm HTTP/1.1" 200 512 "-" "Mozilla/5.0"`,
+			time.Now().Format("02/Jan/2006:15:04:05 -0700"))
+		w.processLine("/var/log/nginx/access.log", line)
+		time.Sleep(200 * time.Millisecond)
+		mu.Lock()
+		if got == nil {
+			t.Fatalf("%s: no event", tc.in)
+		}
+		if got["cve"] != tc.want {
+			t.Errorf("%s: cve = %q, want %q", tc.in, got["cve"], tc.want)
+		}
+		mu.Unlock()
+	}
+}

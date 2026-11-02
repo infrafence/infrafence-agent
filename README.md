@@ -104,6 +104,7 @@ About 1,500 bots recognized from public lists updated daily ([crawler-user-agent
 - Never on servers whose configuration is managed by a hosting panel or a configuration-management tool
 - For Apache with mod_security2: 13 rules (SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, scanner blocking), blocking on the first request
 - Safe: if Apache's configuration test fails, the change is rolled back
+- A block by a virtual patch, or by a rule whose tags or message name a CVE, is reported with that CVE (`cve`, and `cves` when several), so the dashboard can tell which vulnerabilities are being attacked
 
 ### Outbound and DNS threat detection
 - **Outbound connections** to IPs on public threat-intelligence lists, downloaded by each server once a day (known-hijacked netblocks, the Emerging Threats compromised-hosts list)

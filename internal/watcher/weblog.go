@@ -61,6 +61,7 @@ type compiledWafRule struct {
 	Pattern  string         // original pattern for substring match
 	IsRegex  bool
 	Re       *regexp.Regexp // non-nil only when IsRegex is true
+	CVE      string         // CVE the rule targets, "" when not known
 }
 
 // ScoredBanFunc is called when an IP's score crosses a ban threshold.
@@ -1925,7 +1926,7 @@ func (w *WebWatcher) processLine(logPath, line string) {
 			matched = strings.Contains(haystack, rule.Pattern)
 		}
 		if matched {
-			w.addScore(ip, rule.Category, logPath, line, map[string]string{
+			details := map[string]string{
 				"domain":     entry.domain,
 				"uri":        entry.uri,
 				"method":     entry.method,
@@ -1933,7 +1934,11 @@ func (w *WebWatcher) processLine(logPath, line string) {
 				"waf_rule":   fmt.Sprintf("%d", rule.ID),
 				"target":     rule.Target,
 				"pattern":    rule.Pattern,
-			})
+			}
+			if rule.CVE != "" {
+				details["cve"] = rule.CVE
+			}
+			w.addScore(ip, rule.Category, logPath, line, details)
 			return
 		}
 	}
@@ -2616,6 +2621,18 @@ type WafRuleInput struct {
 	Pattern  string `json:"pattern"`
 	Target   string `json:"target"`
 	IsRegex  bool   `json:"is_regex"`
+	CVE      string `json:"cve,omitempty"`
+}
+
+var wafCVERe = regexp.MustCompile(`^CVE-\d{4}-\d{4,7}$`)
+
+// wafRuleCVE keeps the rule's CVE only when it is a well-formed CVE id.
+func wafRuleCVE(cve string) string {
+	cve = strings.ToUpper(strings.TrimSpace(cve))
+	if wafCVERe.MatchString(cve) {
+		return cve
+	}
+	return ""
 }
 
 // UpdateWafRules compiles and stores dynamic WAF rules from the panel.
@@ -2636,6 +2653,7 @@ func (w *WebWatcher) UpdateWafRules(rules []WafRuleInput) {
 			Target:   target,
 			Pattern:  strings.ToLower(r.Pattern),
 			IsRegex:  r.IsRegex,
+			CVE:      wafRuleCVE(r.CVE),
 		}
 		if r.IsRegex {
 			re, err := regexp.Compile("(?i)" + r.Pattern)

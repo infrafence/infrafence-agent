@@ -447,6 +447,8 @@ type WafRule struct {
 	Pattern  string `json:"pattern"`
 	Target   string `json:"target"`
 	IsRegex  bool   `json:"is_regex"`
+	// CVE the rule is written against, if the dashboard knows it (optional).
+	CVE string `json:"cve,omitempty"`
 }
 
 // BotFingerprint describes a known bot pattern synced from the panel.

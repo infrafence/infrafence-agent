@@ -333,6 +333,13 @@ func runAgent() {
 		if entry.UserAgent != "" {
 			details["user_agent"] = entry.UserAgent
 		}
+		// The CVE the request tried to exploit, when a matched rule is about one.
+		if cves := entry.CVEs(); len(cves) > 0 {
+			details["cve"] = cves[0]
+			if len(cves) > 1 {
+				details["cves"] = strings.Join(cves, ",")
+			}
+		}
 
 		log.Printf("[modsec-audit] %s from %s: %s (rules: %s)", eventType, entry.SourceIP, attackCat, strings.Join(ruleIDs, ","))
 
@@ -1352,6 +1359,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 				Pattern:  r.Pattern,
 				Target:   r.Target,
 				IsRegex:  r.IsRegex,
+				CVE:      r.CVE,
 			}
 		}
 		webW.UpdateWafRules(rules)

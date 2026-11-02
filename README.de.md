@@ -104,6 +104,7 @@ Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([craw
 - Niemals auf Servern, deren Konfiguration von einem Hosting-Panel oder einem Konfigurationsmanagement-Werkzeug verwaltet wird
 - Für Apache mit mod_security2: 13 Regeln (SQL-Injection, XSS, RCE, SSRF, Path Traversal, Shellshock, Log4Shell, Spring4Shell, Scanner-Sperre), Blockierung bei der ersten Anfrage
 - Sicher: Schlägt der Apache-Konfigurationstest fehl, wird die Änderung rückgängig gemacht
+- Eine Sperre durch einen virtuellen Patch oder durch eine Regel, deren Tags oder Meldung eine CVE nennen, wird mit dieser CVE gemeldet (`cve`, bei mehreren auch `cves`), damit das Dashboard weiß, welche Schwachstellen angegriffen werden
 
 ### Ausgehende und DNS-Bedrohungen
 - **Ausgehende Verbindungen** zu IPs aus öffentlichen Threat-Intelligence-Listen, die jeder Server einmal täglich herunterlädt (als gekapert bekannte Netze, die Liste kompromittierter Hosts von Emerging Threats)

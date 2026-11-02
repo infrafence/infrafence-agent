@@ -481,6 +481,39 @@ func (e *AuditEntry) AttackCategory() string {
 	return "unknown"
 }
 
+// CVEPattern matches a CVE id in rule tags and messages (CRS and vendor
+// rule sets tag CVE-specific rules with it).
+var CVEPattern = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d{4,7}\b`)
+
+// CVEs returns the CVEs the matched rules are about, in match order and
+// without duplicates: our virtual patches by rule id, any other rule when
+// its tags or message name a CVE.
+func (e *AuditEntry) CVEs() []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(cve string) {
+		cve = strings.ToUpper(cve)
+		if !seen[cve] && len(out) < 10 {
+			seen[cve] = true
+			out = append(out, cve)
+		}
+	}
+	for _, r := range e.Rules {
+		if cve, ok := VirtualPatchCVE(r.ID); ok {
+			add(cve)
+		}
+		for _, tag := range r.Tags {
+			for _, m := range CVEPattern.FindAllString(tag, -1) {
+				add(m)
+			}
+		}
+		for _, m := range CVEPattern.FindAllString(r.Msg, -1) {
+			add(m)
+		}
+	}
+	return out
+}
+
 // MapSeverityToInfraFence converts ModSecurity severity to InfraFence severity.
 func MapSeverityToInfraFence(modSecSeverity string) string {
 	switch strings.ToUpper(modSecSeverity) {
