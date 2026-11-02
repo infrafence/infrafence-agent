@@ -4,7 +4,7 @@
 # syslog mail log and Exim's main log, created when missing, as on a mail
 # server); each must give an event with the mailbox, protocol, method or
 # recipient. A listener on [::]:5432 and one on a public address
-# (203.0.113.1:27017) must give db_exposed events with bind_address.
+# (203.0.113.1:3306) must give db_exposed events with bind_address.
 # Adds "mail=... db_bind=..." to EXTRA_RESULT and sets EXTRA_FAIL on a
 # failure.
 
@@ -24,7 +24,7 @@ mkdir -p /var/log/exim4
 # outside the mock country database's blocked range) (the mock dashboard
 # holds the sockets).
 curl -s "$MAIL_API/listen?addr=%5B::%5D:5432&net=tcp6" >/dev/null
-curl -s "$MAIL_API/listen?addr=203.0.113.1:27017&net=tcp4" >/dev/null
+curl -s "$MAIL_API/listen?addr=203.0.113.1:3306&net=tcp4" >/dev/null
 
 # The agent looks for mail logs and exposed databases when it starts.
 since=$(date '+%Y-%m-%d %H:%M:%S')
@@ -77,16 +77,16 @@ fi
 db6="" dbp=""
 for _ in $(seq 1 30); do
   db6=$(curl -s "$MAIL_API/state" | grep -o '{"type":"db_exposed"[^}]*' | grep -F '"bind_address":"[::]:5432"' | tail -1)
-  dbp=$(curl -s "$MAIL_API/state" | grep -o '{"type":"db_exposed"[^}]*' | grep -F '"bind_address":"203.0.113.1:27017"' | tail -1)
+  dbp=$(curl -s "$MAIL_API/state" | grep -o '{"type":"db_exposed"[^}]*' | grep -F '"bind_address":"203.0.113.1:3306"' | tail -1)
   [ -n "$db6" ] && [ -n "$dbp" ] && break
   sleep 1
 done
 if [ -n "$db6" ] && [ -n "$dbp" ]; then
   R_DBBIND=ok
 else
-  log "db_exposed: [::]:5432=${db6:-none} 203.0.113.1:27017=${dbp:-none}"
+  log "db_exposed: [::]:5432=${db6:-none} 203.0.113.1:3306=${dbp:-none}"
   curl -s "$MAIL_API/state" | grep -o '{"type":"db_exposed"[^}]*' | sed 's/^/[mail] db event: /'
-  grep -E ':(1538|6989) ' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sed 's/^/[mail] socket: /'
+  grep -E ':(1538|0CEA) ' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sed 's/^/[mail] socket: /'
 fi
 
 EXTRA_RESULT="${EXTRA_RESULT:-} mail=${R_MAIL} db_bind=${R_DBBIND}"
