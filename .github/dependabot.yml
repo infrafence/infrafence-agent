@@ -1,15 +1,26 @@
 version: 2
+# Monthly, one grouped pull request per ecosystem, ready for the monthly
+# release (RELEASING.md).
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns: ["*"]
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      docker-images:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
