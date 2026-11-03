@@ -385,19 +385,41 @@ func (s *scanner) scanAuthFile(path string) error {
 	return nil
 }
 
-// scanLines reads syslog lines; ref dates those without a year.
+// scanLines reads syslog lines; ref dates those without a year. A line
+// over 1 MiB is skipped, not the rest of the file.
 func (s *scanner) scanLines(r io.Reader, ref time.Time, source string) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	br := bufio.NewReaderSize(r, 64*1024)
 	accepted := []byte("Accepted ")
-	for sc.Scan() {
-		b := sc.Bytes()
-		s.throttle(len(b) + 1)
-		if !bytes.Contains(b, accepted) {
+	var long []byte
+	skipping := false
+	for {
+		chunk, err := br.ReadSlice('\n')
+		s.throttle(len(chunk))
+		switch {
+		case err == bufio.ErrBufferFull:
+			if !skipping {
+				long = append(long, chunk...)
+				if len(long) > 1<<20 {
+					long, skipping = nil, true
+				}
+			}
 			continue
+		case skipping:
+			skipping = false
+		default:
+			line := chunk
+			if len(long) > 0 {
+				line = append(long, chunk...)
+				long = long[:0]
+			}
+			if bytes.Contains(line, accepted) {
+				if l, ok := ParseLine(strings.TrimRight(string(line), "\r\n"), ref); ok {
+					s.add(l, source)
+				}
+			}
 		}
-		if l, ok := ParseLine(string(b), ref); ok {
-			s.add(l, source)
+		if err != nil {
+			return
 		}
 	}
 }
@@ -533,12 +555,21 @@ func parseUtmp(rec []byte) (Login, bool) {
 	if ip == "" {
 		return Login{}, false
 	}
+	if !sshTTY(cstr(rec[utOffLine : utOffLine+utLineLen])) {
+		return Login{}, false // ftpd, a console...
+	}
 	user := cleanUser(cstr(rec[utOffUser : utOffUser+utUserLen]))
 	if user == "" {
 		return Login{}, false
 	}
 	sec := binary.NativeEndian.Uint32(rec[utOffSec : utOffSec+4])
 	return Login{IP: ip, User: user, Time: time.Unix(int64(sec), 0)}, true
+}
+
+// sshTTY: the terminal of an SSH login record, a pseudo-terminal ("pts/3")
+// or sshd's "ssh:notty". FTP servers write "ftp<pid>", consoles "tty1".
+func sshTTY(line string) bool {
+	return strings.HasPrefix(line, "pts/") || strings.HasPrefix(line, "ssh")
 }
 
 func allZero(b []byte) bool {
@@ -580,7 +611,7 @@ func lastOutput(ctx context.Context) string {
 func (s *scanner) scanLast(out string) {
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) < 3 || f[0] == "reboot" || f[0] == "wtmp" || f[0] == "wtmpdb" {
+		if len(f) < 3 || f[0] == "reboot" || f[0] == "wtmp" || f[0] == "wtmpdb" || !sshTTY(f[1]) {
 			continue
 		}
 		ip := normIP(f[2])

@@ -419,6 +419,7 @@ func runAgent() {
 	// Successful logins feed the login history; an address with one in the
 	// last 30 days is not banned (sshlogins.go).
 	w.SetLoginGuard(noteLoginLine, guardReason)
+	guessedLogin = w.GuessedLogin
 	// The SSH logins of the last 30 days, before the first sync and the
 	// detectors start (on the first run; later runs read the saved list).
 	startSSHLoginHistory(apiClient)

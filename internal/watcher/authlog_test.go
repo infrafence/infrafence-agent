@@ -98,3 +98,17 @@ func TestBruteForceLoginGuard(t *testing.T) {
 		t.Errorf("the other address's ban event is missing: %#v", byAction)
 	}
 }
+
+func TestGuessedLogin(t *testing.T) {
+	w := New(func(string, string, int) {})
+	for i := 0; i < 4; i++ {
+		w.recordAttempt("203.0.113.9", "brute_force_ssh")
+	}
+	if w.GuessedLogin("203.0.113.9") {
+		t.Error("4 failures is below the threshold")
+	}
+	w.recordAttempt("203.0.113.9", "brute_force_ssh")
+	if !w.GuessedLogin("203.0.113.9") || w.GuessedLogin("203.0.113.10") {
+		t.Error("threshold")
+	}
+}

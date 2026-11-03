@@ -486,6 +486,22 @@ func (w *Watcher) recordAttempt(ip, reason string) {
 	}
 }
 
+// GuessedLogin reports whether ip reached the brute-force threshold of
+// failed attempts within the window: a login from it right after is a
+// guess that worked, not an administrator's address.
+func (w *Watcher) GuessedLogin(ip string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := 0
+	now := time.Now()
+	for _, t := range w.attempts[ip] {
+		if now.Sub(t) <= w.window {
+			n++
+		}
+	}
+	return n >= w.threshold
+}
+
 // guarded reports the attack of an address the login guard protects, which
 // is not banned. Caller must hold w.mu.
 func (w *Watcher) guarded(ip, reason string, attempts int) bool {

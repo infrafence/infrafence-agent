@@ -107,6 +107,8 @@ func TestScanFiles(t *testing.T) {
 		"Nov  2 08:00:00 web1 sshd[10]: Failed password for root from 203.0.113.50 port 1 ssh2",
 		"Nov  2 08:00:01 web1 sshd[11]: Accepted publickey for root from 198.51.100.7 port 52113 ssh2: ED25519 SHA256:x",
 		"Nov  3 08:00:01 web1 sshd[12]: Accepted password for deploy from 198.51.100.7 port 52114 ssh2",
+		"Nov  3 08:00:02 web1 sshd[13]: Invalid user " + strings.Repeat("x", 2<<20) + " from 203.0.113.50 port 1",
+		"Nov  3 08:00:03 web1 sshd[14]: Accepted publickey for after from 198.51.100.8 port 1 ssh2",
 		"",
 	}, "\n"), now)
 	// Rotated, gzipped, 12 days old.
@@ -129,7 +131,8 @@ func TestScanFiles(t *testing.T) {
 	wtmp = append(wtmp, utmpRecord(7, "pts/1", "ops", "2001:db8::7", net.ParseIP("2001:db8::7"), now.Add(-time.Hour))...)
 	wtmp = append(wtmp, utmpRecord(7, "pts/2", "dns", "198.51.100.31", nil, now.Add(-2*time.Hour))...) // address only in ut_host
 	wtmp = append(wtmp, utmpRecord(7, "pts/3", "old", "198.51.100.32", net.ParseIP("198.51.100.32"), now.AddDate(0, 0, -31))...)
-	wtmp = append(wtmp, 1, 2, 3) // a partial last record
+	wtmp = append(wtmp, utmpRecord(7, "ftp4242", "web", "198.51.100.33", net.ParseIP("198.51.100.33"), now.Add(-time.Hour))...) // an FTP login
+	wtmp = append(wtmp, 1, 2, 3)                                                                                                // a partial last record
 	writeFile(t, filepath.Join(dir, "wtmp"), string(wtmp), now)
 	writeFile(t, filepath.Join(dir, "btmp"), string(utmpRecord(6, "ssh:notty", "x", "203.0.113.50", net.ParseIP("203.0.113.50"), now)), now)
 
@@ -150,6 +153,7 @@ func TestScanFiles(t *testing.T) {
 	}
 	want := map[string]string{
 		"198.51.100.7":  "root@auth_log,deploy@auth_log",
+		"198.51.100.8":  "after@auth_log",
 		"192.0.2.10":    "backup@auth_log",
 		"192.0.2.20":    "rhel@auth_log",
 		"203.0.113.77":  "root@journal",
@@ -218,6 +222,7 @@ func TestScanLast(t *testing.T) {
 		"ops      pts/1        0.0.0.0          2026-11-02T10:00:00+01:00 - crash\n" +
 		"reboot   system boot  6.8.0            2026-11-01T10:00:00+01:00 - still running\n" +
 		"deploy   pts/2        203.0.113.9      Mon Nov  2 10:00 - 11:00  (01:00)\n" +
+		"web      ftpd4242     203.0.113.10     2026-11-02T10:00:00+01:00 - 2026-11-02T10:01:00+01:00\n" +
 		"\nwtmp begins Sun Nov  1 00:00:00 2026\n"
 	r := Scan(context.Background(), now, Options{Last: func(context.Context) string { return out }})
 	if len(r.Logins) != 2 || r.Logins[0].IP != "198.51.100.7" || !r.Logins[0].Time.Equal(time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)) ||

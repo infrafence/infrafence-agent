@@ -125,3 +125,30 @@ func TestScanSSHLogins(t *testing.T) {
 		t.Errorf("log: %s", logs.String())
 	}
 }
+
+// A login right after the brute-force threshold is a guess that worked: not
+// added. New live addresses are capped per hour.
+func TestLiveLoginLimits(t *testing.T) {
+	withLoginStore(t)
+	oldGuess := guessedLogin
+	t.Cleanup(func() { guessedLogin = oldGuess })
+	guessedLogin = func(ip string) bool { return ip == "203.0.113.66" }
+	noteLiveLogin("203.0.113.66", "root", time.Time{})
+	if _, ok := sshLoginStore.LastLogin("203.0.113.66"); ok {
+		t.Error("guessed login added")
+	}
+	liveLoginMu.Lock()
+	liveLoginWindow, liveLoginNew = time.Now(), 0
+	liveLoginMu.Unlock()
+	for i := 0; i < liveLoginNewMax+5; i++ {
+		noteLiveLogin("198.18.1."+strconv.Itoa(i+1), "u", time.Time{})
+	}
+	if n := len(sshLoginStore.IPs()); n != liveLoginNewMax {
+		t.Errorf("%d live addresses", n)
+	}
+	// A known address is always updated.
+	noteLiveLogin("198.18.1.1", "u", time.Time{})
+	if e := sshLoginStore.Entries(0); e[0].IP != "198.18.1.1" {
+		t.Errorf("known address not updated: %+v", e[0])
+	}
+}

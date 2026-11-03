@@ -52,6 +52,7 @@ const (
 	sshLoginReportMax = 500
 	// sshLoginReportGap: live logins are sent at most this often.
 	sshLoginReportGap = 10 * time.Minute
+	liveLoginNewMax   = 50
 	guardLogEvery     = time.Hour
 )
 
@@ -63,6 +64,15 @@ var (
 	// onSSHLoginsAdded is set by main: rebuild what depends on the list.
 	onSSHLoginsAdded atomic.Pointer[func()]
 	sshLoginReport   = make(chan struct{}, 1)
+	// guessedLogin: the address reached the brute-force threshold just
+	// before (set by main from the auth watcher).
+	guessedLogin = func(string) bool { return false }
+	// At most liveLoginNewMax new addresses an hour from live logins (a
+	// local account able to write fake log lines cannot push the real
+	// administrators out of the list).
+	liveLoginMu     sync.Mutex
+	liveLoginWindow time.Time
+	liveLoginNew    int
 	// Replaced in tests.
 	sshLoginScan = func(ctx context.Context, now time.Time) loginhistory.Result {
 		return loginhistory.Scan(ctx, now, loginhistory.Default())
@@ -142,6 +152,14 @@ func noteLiveLogin(ip, user string, at time.Time) {
 	if sshLoginStore == nil {
 		return
 	}
+	if guessedLogin(ip) {
+		log.Printf("[ssh-logins] %s logged in right after failing the brute-force threshold: not added (it stays bannable)", ip)
+		return
+	}
+	if _, known := sshLoginStore.LastLogin(ip); !known && !liveLoginAllowed() {
+		log.Printf("[ssh-logins] more than %d new addresses logged in within an hour: %s not added", liveLoginNewMax, ip)
+		return
+	}
 	if sshLoginStore.Note(ip, user, at) {
 		log.Printf("[ssh-logins] %s logged in over SSH: never banned for 30 days", ip)
 		if err := sshLoginStore.Save(); err != nil {
@@ -150,6 +168,19 @@ func noteLiveLogin(ip, user string, at time.Time) {
 		loginsAdded()
 	}
 	requestSSHLoginReport()
+}
+
+func liveLoginAllowed() bool {
+	liveLoginMu.Lock()
+	defer liveLoginMu.Unlock()
+	if time.Since(liveLoginWindow) >= time.Hour {
+		liveLoginWindow, liveLoginNew = time.Now(), 0
+	}
+	if liveLoginNew >= liveLoginNewMax {
+		return false
+	}
+	liveLoginNew++
+	return true
 }
 
 // noteLoginLine is the auth watcher's hook for "Accepted ..." lines.
