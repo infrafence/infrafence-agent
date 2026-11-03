@@ -119,6 +119,7 @@ func runSoftwareAudit(client *api.Client, auditID int64) {
 		Summary:     result.Summary,
 		KeySoftware: result.KeySoftware,
 		Packages:    result.Packages,
+		PHPRuntimes: result.PHPRuntimes,
 	}); err != nil {
 		log.Printf("[collector] failed to submit audit: %v", err)
 		return

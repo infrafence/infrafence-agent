@@ -314,6 +314,9 @@ func runAgent() {
 			"action":      entry.Action,
 			"engine_mode": entry.EngineMode,
 		}
+		if rs := entry.Ruleset(); rs != "" {
+			details["waf_ruleset"] = rs
+		}
 		if entry.Host != "" {
 			details["domain"] = entry.Host
 		}
@@ -538,7 +541,7 @@ func runAgent() {
 	// Web-server UA blocking is set up from the sync, only when allowed
 	// (dashboard setting + preflight), see applyWebserverChanges.
 
-	// Start mail log watcher (if Postfix/Dovecot detected)
+	// Start mail log watcher (if Postfix/Dovecot/Exim detected)
 	var mailW *watcher.MailWatcher
 	if watcher.HasMailService() {
 		mailW = watcher.NewMailWatcher(func(ip, reason string, count int) {
@@ -716,27 +719,11 @@ func runAgent() {
 		}
 	})
 
-	// Check for exposed database ports (runs once at startup, once the
-	// observer above sees the events: the panel lists them). A port the
-	// agent's firewall closes to the public is not exposed: reporting it
-	// again would reopen the problem it resolved (resolution.go).
-	go func() {
-		for _, x := range watcher.ExposedDBPortList() {
-			if portClosedByAgent(x.Port) {
-				log.Printf("[dbwatcher] %s listens on all addresses on port %d; the firewall closes it to the public", x.Service, x.Port)
-				continue
-			}
-			log.Printf("[dbwatcher] WARNING: %s", x.Warning)
-			apiClient.ReportEvents([]api.EventRequest{{
-				Type:     "db_exposed",
-				Severity: "critical",
-				Details: map[string]string{
-					"warning": x.Warning, "port": strconv.Itoa(x.Port), "proto": "tcp", "service": x.Service,
-				},
-				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
-		}
-	}()
+	// Check for exposed database ports at startup (once the observer above
+	// sees the events: the panel lists them), then every 10 minutes,
+	// reporting a port again only when what it listens on changes
+	// (dbexposed.go).
+	go watchExposedDBPorts(apiClient, 10*time.Minute)
 
 	// The allow list, monitor mode and country blocks of the last successful
 	// sync, before any watcher runs: the first sync may fail.
@@ -1403,6 +1390,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 				Type:     s.Type,
 				IsRegex:  s.IsRegex,
 				PHPOnly:  s.PHPOnly,
+				Priority: s.Priority,
 			}
 		}
 		malwareScanner.LoadDynamicSignatures(dynSigs)
@@ -1501,6 +1489,7 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		cfg := sync.Config.MalwareScanConfig
 		malwareScheduler.UpdateConfig(cfg.Enabled, cfg.IntervalHours, cfg.Intensity)
 		malwareCustomPaths = cfg.CustomScanPaths
+		applyMalwareScanLimits(cfg)
 
 		// Start/stop realtime watcher based on malware scan being enabled
 		if cfg.Enabled && malwareRTWatcher != nil {
@@ -2301,7 +2290,11 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 	malwareScanCancel.Store(false)
 	log.Printf("[malware] starting scan (intensity=%s)", intensityStr)
 
-	startDetails := map[string]string{"intensity": intensityStr}
+	// One id for every event, chunk and the completion of this scan: the
+	// dashboard keeps it as one row, and can tell an abandoned one by its
+	// last update.
+	scanID := newMalwareScanID()
+	startDetails := map[string]string{"intensity": intensityStr, "scan_id": scanID}
 	if roots != nil {
 		// One document root, asked from the hosting panel: not the whole
 		// server's scan.
@@ -2342,6 +2335,7 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 				"stage":      "detecting_roots",
 				"roots":      fmt.Sprintf("%d", len(webRoots)),
 				"root_paths": strings.Join(rootPaths, ", "),
+				"scan_id":    scanID,
 			},
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		}}); err != nil {
@@ -2354,7 +2348,7 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 		if err := client.ReportEvents([]api.EventRequest{{
 			Type:       "malware_scan_completed",
 			Severity:   "info",
-			Details:    map[string]string{"result": "no_web_roots"},
+			Details:    map[string]string{"result": "no_web_roots", "scan_id": scanID},
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		}}); err != nil {
 			log.Printf("[malware] failed to report malware_scan_completed (no_web_roots): %v", err)
@@ -2371,7 +2365,16 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 	}
 
 	scanStart := time.Now()
-	var scanID int64
+	deadline := scanStart.Add(malwareScanMaxDuration())
+	status := "completed"
+	stopWatch := watchMalwareScan(client, scanner, scanID, deadline)
+	defer stopWatch()
+	if _, err := client.SubmitMalwareScanChunk(api.MalwareScanChunkRequest{
+		ScanID: scanID, Stage: "started", RootsTotal: len(webRoots),
+	}); err != nil {
+		log.Printf("[malware] failed to announce scan %s: %v", scanID, err)
+	}
+	rootsScanned, cutShort := 0, false
 	var totalFiles, totalSkipped int64
 	var allFindings []malware.Finding
 	var allFwFindings []malware.FrameworkFinding
@@ -2379,14 +2382,27 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 
 	// Scan each root individually and submit results incrementally
 	for i, root := range webRoots {
+		if !malwareScanCancel.Load() && time.Now().After(deadline) {
+			status = "timed_out"
+			log.Printf("[malware] scan %s reached its time limit (%s) after %d/%d roots", scanID, malwareScanMaxDuration(), i, len(webRoots))
+			break
+		}
 		if malwareScanCancel.Load() {
 			log.Printf("[malware] scan cancelled by user after %d/%d roots", i, len(webRoots))
+			stopWatch()
+			if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
+				ScanID: scanID, Status: "cancelled", DurationSeconds: time.Since(scanStart).Seconds(),
+				FilesScanned: totalFiles, RootsScanned: i, RootsTotal: len(webRoots),
+			}); err != nil {
+				log.Printf("[malware] failed to complete cancelled scan: %v", err)
+			}
 			if err := client.ReportEvents([]api.EventRequest{{
 				Type: "malware_scan_completed", Severity: "info",
 				Details: map[string]string{
 					"result":        "cancelled",
 					"files_scanned": fmt.Sprintf("%d", totalFiles),
 					"web_roots":     fmt.Sprintf("%d/%d", i, len(webRoots)),
+					"scan_id":       scanID,
 				},
 				OccurredAt: time.Now().UTC().Format(time.RFC3339),
 			}}); err != nil {
@@ -2401,6 +2417,12 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 		if err != nil {
 			log.Printf("[malware] error scanning %s: %v", root.Path, err)
 			continue
+		}
+		if malwareScanCancel.Load() || time.Now().After(deadline) {
+			// Stopped in the middle of this root: what it found so far is
+			// still sent, then the scan ends.
+			log.Printf("[malware] %s stopped before its end", root.Path)
+			cutShort = true
 		}
 		for _, why := range rootResult.RootsSkipped {
 			reportEvent(client, "malware_root_skipped", "warning", map[string]string{"web_root": root.Path, "reason": why})
@@ -2444,7 +2466,10 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 			wpInventories = append(wpInventories, api.WpSite{WebRoot: inv.WebRoot, Domain: inv.Domain, WpVersion: inv.WpVersion, Components: comps})
 		}
 
-		// Filter findings
+		// Filter findings (the dashboard's scan exclusions apply to YARA and
+		// the framework checks too)
+		rootResult.Findings = excludeFindings(scanner, rootResult.Findings)
+		rootFwFindings = excludeFrameworkFindings(scanner, rootFwFindings)
 		var chunkFindings []api.MalwareScanFinding
 		for _, f := range rootResult.Findings {
 			if f.SignatureID == "ROOTKIT_EXEC_IN_TMP" {
@@ -2471,6 +2496,7 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 
 		// Submit this root's results as a chunk
 		resp, err := client.SubmitMalwareScanChunk(api.MalwareScanChunkRequest{
+			ScanID: scanID, RootsTotal: len(webRoots),
 			WebRoot: api.MalwareScanWebRoot{
 				Path: root.Path, Domain: root.Domain,
 				FrameworkName: root.Framework.Name, FrameworkVersion: root.Framework.Version,
@@ -2483,10 +2509,10 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 		if err != nil {
 			log.Printf("[malware] failed to submit chunk for %s: %v", root.Path, err)
 		} else {
-			scanID = resp.ScanID
-			log.Printf("[malware] chunk %d/%d submitted (scan_id=%d, roots=%d)", i+1, len(webRoots), scanID, resp.RootsReceived)
+			log.Printf("[malware] chunk %d/%d submitted (scan_id=%s, roots=%d)", i+1, len(webRoots), scanID, resp.RootsReceived)
 		}
 
+		rootsScanned = i + 1
 		totalFiles += rootResult.FilesScanned
 		totalSkipped += rootResult.FilesSkipped
 
@@ -2497,6 +2523,7 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 			Details: map[string]string{
 				"stage": "scanning_files", "percent": fmt.Sprintf("%d", pct),
 				"current_root": root.Path, "files_scanned": fmt.Sprintf("%d", totalFiles),
+				"scan_id": scanID,
 			},
 			OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		}}); err != nil {
@@ -2508,7 +2535,25 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 	// not for a scan of one document root from the panel, whose partial
 	// results must not replace the server's score.
 	var score *api.MalwareSecurityScore
-	if roots == nil {
+	if status == "completed" && cutShort {
+		if malwareScanCancel.Load() {
+			// Cancelled while the last root was scanned.
+			stopWatch()
+			if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
+				ScanID: scanID, Status: "cancelled", DurationSeconds: time.Since(scanStart).Seconds(),
+				FilesScanned: totalFiles, RootsScanned: rootsScanned, RootsTotal: len(webRoots),
+			}); err != nil {
+				log.Printf("[malware] failed to complete cancelled scan: %v", err)
+			}
+			reportEvent(client, "malware_scan_completed", "info", map[string]string{
+				"result": "cancelled", "files_scanned": fmt.Sprintf("%d", totalFiles),
+				"web_roots": fmt.Sprintf("%d/%d", rootsScanned, len(webRoots)), "scan_id": scanID,
+			})
+			return
+		}
+		status = "timed_out" // the time limit stopped the last root
+	}
+	if roots == nil && status == "completed" {
 		procFindings := malware.CheckMaliciousProcesses()
 		allFindings = append(allFindings, procFindings...)
 		sysResult := malware.CheckSystemIntegrity()
@@ -2525,13 +2570,18 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 		}
 	}
 
-	// Complete the scan. Always sent: it carries the security score, and the
-	// dashboard's chunk endpoint didn't return a scan id before 2026-09-27,
-	// which silently dropped the score.
+	// Complete the scan. Always sent: it carries the security score (only
+	// for a whole scan that reached its end: a partial one must not replace
+	// the server's score).
 	duration := time.Since(scanStart)
+	stopWatch()
 	if err := client.CompleteMalwareScan(api.MalwareScanCompleteRequest{
 		ScanID:          scanID,
+		Status:          status,
 		DurationSeconds: duration.Seconds(),
+		FilesScanned:    totalFiles,
+		RootsScanned:    rootsScanned,
+		RootsTotal:      len(webRoots),
 		SecurityScore:   score,
 	}); err != nil {
 		log.Printf("[malware] failed to complete scan: %v", err)
@@ -2564,13 +2614,18 @@ func malwareScan(client *api.Client, intensityStr string, roots []malware.WebRoo
 	log.Printf("[malware] scan complete — %d files scanned, %d malware findings, %d framework issues in %s",
 		totalFiles, malwareCount, len(allFwFindings), duration.Round(time.Second))
 
+	completedDetails := map[string]string{
+		"files_scanned": fmt.Sprintf("%d", totalFiles), "malware_findings": fmt.Sprintf("%d", malwareCount),
+		"framework_findings": fmt.Sprintf("%d", len(allFwFindings)), "web_roots": fmt.Sprintf("%d", len(webRoots)),
+		"duration_seconds": fmt.Sprintf("%.1f", duration.Seconds()), "scan_id": scanID,
+	}
+	if status == "timed_out" {
+		completedDetails["result"] = "timed_out"
+		completedDetails["web_roots"] = fmt.Sprintf("%d/%d", rootsScanned, len(webRoots))
+	}
 	if err := client.ReportEvents([]api.EventRequest{{
 		Type: "malware_scan_completed", Severity: "info",
-		Details: map[string]string{
-			"files_scanned": fmt.Sprintf("%d", totalFiles), "malware_findings": fmt.Sprintf("%d", malwareCount),
-			"framework_findings": fmt.Sprintf("%d", len(allFwFindings)), "web_roots": fmt.Sprintf("%d", len(webRoots)),
-			"duration_seconds": fmt.Sprintf("%.1f", duration.Seconds()),
-		},
+		Details:    completedDetails,
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 	}}); err != nil {
 		log.Printf("[malware] failed to report malware_scan_completed: %v", err)

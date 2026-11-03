@@ -469,12 +469,21 @@ func (e *AuditEntry) HighestSeverity() string {
 }
 
 // AttackCategory extracts the primary attack category from rule tags.
-// Returns tags like "attack-sqli", "attack-xss", etc.
+// Returns tags like "attack-sqli", "attack-xss", etc. Comodo WAF rules have
+// no attack-* tags: their category comes from the rule message
+// (comodoCategory).
 func (e *AuditEntry) AttackCategory() string {
 	for _, r := range e.Rules {
 		for _, tag := range r.Tags {
 			if strings.HasPrefix(tag, "attack-") {
 				return tag
+			}
+		}
+	}
+	for _, r := range e.Rules {
+		if isComodoRule(r) {
+			if c := comodoCategory(r.Msg); c != "" {
+				return c
 			}
 		}
 	}
@@ -511,6 +520,65 @@ func (e *AuditEntry) CVEs() []string {
 		}
 	}
 	return out
+}
+
+// Ruleset names the rule set that matched: "comodo" for Comodo WAF rules,
+// "" otherwise (OWASP CRS, custom rules).
+func (e *AuditEntry) Ruleset() string {
+	for _, r := range e.Rules {
+		if isComodoRule(r) {
+			return "comodo"
+		}
+	}
+	return ""
+}
+
+// isComodoRule: Comodo WAF (CWAF) messages start with "COMODO WAF:" and
+// its rules carry the CWAF tag.
+func isComodoRule(r RuleMatch) bool {
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(r.Msg)), "COMODO WAF") {
+		return true
+	}
+	for _, t := range r.Tags {
+		if strings.EqualFold(t, "CWAF") {
+			return true
+		}
+	}
+	return false
+}
+
+// comodoCategories maps words of a Comodo WAF rule message to the CRS
+// attack tag of the same kind, first match wins. A message that names none
+// of them stays unclassified.
+var comodoCategories = []struct {
+	words []string
+	tag   string
+}{
+	{[]string{"sql injection", "sqli", "blind sql", "sql attack"}, "attack-sqli"},
+	{[]string{"xss", "cross site scripting", "cross-site scripting"}, "attack-xss"},
+	{[]string{"remote file inclusion", "remote file injection", "rfi attack"}, "attack-rfi"},
+	{[]string{"local file inclusion", "lfi attack", "directory traversal", "path traversal", "traversal attack"}, "attack-lfi"},
+	{[]string{"php injection", "php code injection"}, "attack-injection-php"},
+	{[]string{"command injection", "remote command execution", "os command", "code injection", "code execution", "shellshock", "backdoor", "web shell", "webshell"}, "attack-rce"},
+	{[]string{"session fixation"}, "attack-fixation"},
+	{[]string{"information leakage", "information disclosure", "source code leakage", "leakage"}, "attack-disclosure"},
+}
+
+// comodoCategory classifies a Comodo WAF rule message
+// ("COMODO WAF: SQLi Attack Detected||example.com|F|2"), "" when unknown.
+func comodoCategory(msg string) string {
+	m := strings.ToLower(msg)
+	if i := strings.Index(m, "||"); i >= 0 {
+		m = m[:i] // "||host|F|2": the request's host, not the rule
+	}
+	for _, c := range comodoCategories {
+		for _, w := range c.words {
+			if strings.Contains(m, w) {
+				return c.tag
+			}
+		}
+	}
+	return ""
 }
 
 // MapSeverityToInfraFence converts ModSecurity severity to InfraFence severity.

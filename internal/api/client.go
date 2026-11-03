@@ -650,6 +650,9 @@ type MalwareSyncSignature struct {
 	Type        string `json:"type"`
 	IsRegex     bool   `json:"is_regex"`
 	PHPOnly     bool   `json:"php_only"`
+	// Priority: higher is more relevant to this server (absent from older
+	// dashboards: the order sent is kept).
+	Priority int `json:"priority,omitempty"`
 }
 
 // MalwareIgnoreEntry is a user-ignored malware finding synced from the backend.
@@ -725,6 +728,11 @@ type MalwareScanConfig struct {
 	IntervalHours   int      `json:"interval_hours"`    // 3, 6, 12, or 24
 	Intensity       string   `json:"intensity"`         // "low", "medium", "high"
 	CustomScanPaths []string `json:"custom_scan_paths"` // additional paths to scan (e.g. "/home/*/public_html")
+	// ExcludePaths are never scanned: absolute paths or glob patterns, a
+	// directory with everything under it (absent from older dashboards).
+	ExcludePaths []string `json:"exclude_paths,omitempty"`
+	// MaxScanHours bounds a whole scan; 0 = the agent's default (6).
+	MaxScanHours int `json:"max_scan_hours,omitempty"`
 }
 
 type WAFConfig struct {
@@ -922,6 +930,9 @@ type SoftwareAuditRequest struct {
 	Summary     interface{} `json:"summary"`
 	KeySoftware interface{} `json:"key_software"`
 	Packages    interface{} `json:"packages,omitempty"`
+	// PHPRuntimes: the PHP versions serving the sites (dashboards that
+	// don't know the field ignore it).
+	PHPRuntimes interface{} `json:"php_runtimes,omitempty"`
 }
 
 // SubmitSoftwareAudit sends software audit results to the server.
@@ -991,7 +1002,13 @@ func (c *Client) SubmitMalwareScanResults(req MalwareScanResultRequest) error {
 }
 
 // MalwareScanChunkRequest sends results for a single web root (incremental).
+// ScanID, made by the agent, is the same in every chunk and in the
+// completion of one scan, so the dashboard keeps it as one scan. A chunk
+// with Stage "started" carries no web root: it announces the scan.
 type MalwareScanChunkRequest struct {
+	ScanID            string                  `json:"scan_id,omitempty"`
+	Stage             string                  `json:"stage,omitempty"`
+	RootsTotal        int                     `json:"roots_total,omitempty"`
 	WebRoot           MalwareScanWebRoot      `json:"web_root"`
 	Findings          []MalwareScanFinding    `json:"findings"`
 	FrameworkFindings []MalwareFrameworkIssue `json:"framework_findings"`
@@ -1013,10 +1030,16 @@ func (c *Client) SubmitMalwareScanChunk(req MalwareScanChunkRequest) (*MalwareSc
 	return &resp, nil
 }
 
-// MalwareScanCompleteRequest finalizes an incremental scan.
+// MalwareScanCompleteRequest finalizes an incremental scan. Status is
+// "completed", "timed_out" (the scan's time limit was reached: the roots
+// scanned so far are reported) or "cancelled".
 type MalwareScanCompleteRequest struct {
-	ScanID          int64                 `json:"scan_id"`
+	ScanID          string                `json:"scan_id"`
+	Status          string                `json:"status,omitempty"`
 	DurationSeconds float64               `json:"duration_seconds"`
+	FilesScanned    int64                 `json:"files_scanned"`
+	RootsScanned    int                   `json:"roots_scanned"`
+	RootsTotal      int                   `json:"roots_total"`
 	SecurityScore   *MalwareSecurityScore `json:"security_score,omitempty"`
 }
 

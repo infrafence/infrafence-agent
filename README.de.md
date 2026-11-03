@@ -82,7 +82,7 @@ Liest die Access-Logs deiner Webserver und vergibt für jede besuchende IP einen
 Der Punktwert sinkt um 5 Punkte pro Minute. Aktionsstufen: **beobachten** (30) → **drosseln** (60) → **blockieren** (80) → **Firewall-Sperre** (100). Im Dashboard siehst du jede eingebaute Regel, änderst Gewichte, Schwellenwerte und Modus pro Typ, deaktivierst einzelne Muster und fügst eigene Regeln hinzu (URL, User-Agent oder Referer, Text oder Regex). Jedes Release veröffentlicht den Katalog der eingebauten Regeln als `waf-catalog.json`.
 
 ### Bot-Verwaltung
-Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), beide MIT) — Suchmaschinen, KI-Crawler, SEO-Tools, Scanner, Monitoring, Link-Vorschauen und mehr. Gefälschte Suchmaschinen-Bots werden per Reverse-DNS entlarvt. Für jede Kategorie oder jeden einzelnen Bot wählst du im Dashboard: **erlauben**, **nur protokollieren** oder **blockieren**. Blockierte Bots werden in der Firewall gesperrt; wenn du Änderungen am Webserver erlaubst, weisen auch nginx/Apache sie ab.
+Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), beide MIT) — Suchmaschinen, KI-Crawler, SEO-Tools, Scanner, Monitoring, Link-Vorschauen und mehr. Gefälschte Suchmaschinen-Bots werden per vorwärts bestätigtem Reverse-DNS entlarvt: Eine Anfrage, die sich als Googlebot oder Bingbot ausgibt, aber nicht von Google oder Bing kommt, wird wie jede andere schädliche Anfrage bewertet und gesperrt, wenn sie weitermacht; die echten Crawler von Google, Bing, Yahoo, DuckDuckGo und Apple werden von einer Bot-Sperrregel nie gesperrt. Für jede Kategorie oder jeden einzelnen Bot wählst du im Dashboard: **erlauben**, **nur protokollieren** oder **blockieren**. Blockierte Bots werden in der Firewall gesperrt; wenn du Änderungen am Webserver erlaubst, weisen auch nginx/Apache sie ab.
 
 ### Malware-Scanner
 - **Signatur-Scan** — 28 eingebaute Muster für Web-Shells, Backdoors, Krypto-Miner und Phishing-Kits
@@ -98,6 +98,10 @@ Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([craw
 - **Quarantäne und Ignorieren** — mit einem Klick verschiebst du eine schädliche Datei nach `/var/lib/infrafence/quarantine/` (wiederherstellbar) oder markierst einen Fehlalarm, den spätere Scans überspringen
 - **Geplante Scans** alle 3, 6, 12 oder 24 Stunden, dazu „Jetzt scannen" im Dashboard
 - **Echtzeit-Prüfung** — prüft Upload-Ordner alle 30 Sekunden auf neue PHP-Dateien
+- **Das Document Root jeder Website** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, Subdomains, zusätzliche Domains) und jeder aktive virtuelle Host in der Konfiguration von Apache (`Include`/`IncludeOptional` folgend, auch cPanels `/etc/apache2/conf/httpd.conf`), nginx und OpenLiteSpeed/LiteSpeed, nur lesend und begrenzt
+- **Pfade und Ausschlüsse pro Server** — zusätzliche Ordner und Ordner oder Muster, die nie gescannt werden, im Dashboard festgelegt; jeder Scan hat eine eigene ID, ein Zeitlimit (standardmäßig 6 Stunden, dann endet er als `timed_out` mit den bis dahin geprüften Ordnern) und meldet sich alle 10 Minuten
+- **Weniger Fehlalarme** — WordPress-Prüfsummen nur für Core-Dateien (nicht `wp-content/`); PDF-Schriftdateien (TCPDF/FPDF) und leere `index.php` werden nicht als PHP in Uploads gemeldet, Signaturen und YARA lesen sie aber weiterhin
+- **PHP-Versionen, die die Websites ausliefern** — das Software-Inventar listet jeden PHP-FPM-Pool, mod_php und CGI mit den zugeordneten Websites, neben der Version der Kommandozeile
 
 ### ModSecurity-Inline-WAF (optional)
 - Nur wenn du Änderungen am Webserver in den Dashboard-Einstellungen erlaubst — standardmäßig aus
@@ -105,6 +109,7 @@ Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([craw
 - Für Apache mit mod_security2: 13 Regeln (SQL-Injection, XSS, RCE, SSRF, Path Traversal, Shellshock, Log4Shell, Spring4Shell, Scanner-Sperre), Blockierung bei der ersten Anfrage
 - Sicher: Schlägt der Apache-Konfigurationstest fehl, wird die Änderung rückgängig gemacht
 - Eine Sperre durch einen virtuellen Patch oder durch eine Regel mit dem Tag einer CVE, wird mit dieser CVE gemeldet (`cve`, bei mehreren auch `cves`), damit das Dashboard weiß, welche Schwachstellen angegriffen werden
+- Ein vorhandenes ModSecurity-Audit-Log wird ebenfalls gelesen: Treffer von OWASP CRS und Comodo WAF (cPanel) werden nach Angriffsart gemeldet (SQL-Injection, XSS, RCE, Path Traversal...); eine Comodo-Regel, deren Meldung keinen bekannten Angriff nennt, bleibt `unknown`
 
 ### Ausgehende und DNS-Bedrohungen
 - **Ausgehende Verbindungen** zu IPs aus öffentlichen Threat-Intelligence-Listen, die jeder Server einmal täglich herunterlädt (als gekapert bekannte Netze, die Liste kompromittierter Hosts von Emerging Threats)
@@ -124,7 +129,8 @@ Verfolgt jede SSH-Sitzung von Anfang bis Ende — Authentifizierungsmethode, Rep
 
 ### Und mehr
 - **Portscans** — jeder eingehende Verbindungsversuch wird gesehen (TCP SYN, Kernel-Filter, nur lesend): 15 oder mehr Ports von einer Adresse in 10 Minuten oder 30 oder mehr von mindestens 3 Adressen eines Netzes sind ein Portscan. Es zählen nur Ports, auf die nichts geantwortet hat: nie offene Dienste und nie die Datenverbindungen eines FTP-Clients im Passivmodus (FileZilla) zum Passiv-Portbereich von Pure-FTPd, ProFTPD oder vsftpd, den der Agent aus deren Konfiguration liest (auch bei cPanel); probiert derselbe Client andere Ports, wird er trotzdem gemeldet. Das Sperren von Portscannern ist standardmäßig aus
-- **Mail, Datenbanken und FTP** — Brute-Force-Erkennung für Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD und vsftpd
+- **Mail, Datenbanken und FTP** — Brute-Force-Erkennung für Postfix, Exim (`exim_mainlog` bei cPanel, `exim4/mainlog` bei Debian), Dovecot, Roundcube, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD und vsftpd. Mail-Ereignisse enthalten, was in der Logzeile steht: das angegriffene Postfach, das Protokoll (SMTP, Submission, IMAP, POP3, ManageSieve, Roundcube), die Anmeldemethode, die Versuche von der Adresse und bei Relay-Tests den Empfänger und seine Domain
+- **Offene Datenbanken** — MySQL/MariaDB, PostgreSQL, Redis und MongoDB, die auf allen Adressen (`0.0.0.0`, `[::]`) oder auf einer öffentlichen Adresse lauschen, gelesen aus der Socket-Tabelle des Kernels beim Start und alle 10 Minuten; das Ereignis nennt die Adresse und wird nur bei einer Änderung erneut gesendet
 - **Docker-fähig** — findet die Logs von Web-Containern und schützt veröffentlichte Ports (`DOCKER-USER`)
 - **Länder-Sperre** im Dashboard (benötigt `ipset`). Der Agent lädt die Länderdatenbank von deinem Dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0), nur solange ein Land gesperrt ist und höchstens einmal am Tag. Die Erlaubt-Liste, die eigenen Adressen des Servers und SSH-Sitzungen, die beim Sperren eines Landes angemeldet sind, werden nie gesperrt (eine Verbindung, die sich noch anzumelden versucht, etwa ein Brute-Force-Angriff, zählt nicht). [Ländersperre](https://infrafence.com/de/dokumentation/laendersperre)
 - **Erkannte Hosting-Panels** (24, z. B. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) und **LiteSpeed / OpenLiteSpeed** — InfraFence ändert nie eine Konfiguration, die von einem Panel oder von LiteSpeed verwaltet wird
