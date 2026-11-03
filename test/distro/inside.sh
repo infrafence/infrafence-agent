@@ -110,6 +110,10 @@ INFRAFENCE_SERVER_URL=http://127.0.0.1:8080 RELEASE_BASE=http://127.0.0.1:8080/r
 curl -s "http://127.0.0.1:8080/checksum?mode=ok" >/dev/null
 rep_fail=$(reports IF-REPORTTEST000)
 
+# ── the administrator logged in over SSH before the install (test/distro/loginhist.sh) ──
+. /distro/loginhist.sh
+loginhist_before
+
 # ── install with the real installer ──
 if INFRAFENCE_SERVER_URL=http://127.0.0.1:8080 RELEASE_BASE=http://127.0.0.1:8080/releases \
    INFRAFENCE_AGENT_NAME=distro-test bash /distro/install.sh --token distro-test >/tmp/install.log 2>&1; then
@@ -195,6 +199,9 @@ if [ "$R_BAN" = ok ] && ! ip netns exec cl timeout 3 bash -c '</dev/tcp/203.0.11
   R_BLOCK=ok
 fi
 
+# ── that login is known: its brute force is not banned (test/distro/loginhist.sh) ──
+loginhist_check
+
 # ── preflight (read only) for the record ──
 /usr/local/bin/infrafence-agent preflight 2>/dev/null | head -25 | sed 's/^/[preflight] /'
 
@@ -249,6 +256,7 @@ ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/egress-destinations.json ] && left="$left egress-destinations"
 [ -e /var/lib/infrafence/db-clients.json ] && left="$left db-clients"
 [ -e /var/lib/infrafence/ssh-automation.json ] && left="$left ssh-automation"
+[ -e /var/lib/infrafence/ssh-logins.json ] && left="$left ssh-logins"
 [ -e /var/lib/infrafence/panel-state.json ] && left="$left panel-state"
 [ -e /var/lib/infrafence/protection-state.json ] && left="$left protection-state"
 [ -e /var/lib/infrafence/trust-state.json ] && left="$left trust-state"

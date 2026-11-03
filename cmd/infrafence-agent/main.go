@@ -267,10 +267,10 @@ func runAgent() {
 	go watchDashboardAddrs(cfg.ServerURL)
 	loadFirewallState()
 	egressDestinations.Store(monitor.NewDestinationLog(egressDestPath))
+	loadSSHLoginHistory()
 	// Regular clients of the database/admin ports, before any close request
 	// is checked (dbclients.go).
 	startDBClients(currentAPIClient.Load, version)
-	go watchSSHLogins()
 
 	// Bans and allow list as last known (protstate.go), so the first setup
 	// keeps them while the dashboard is unreachable or refuses the agent.
@@ -380,7 +380,17 @@ func runAgent() {
 	geoBlocker := firewall.NewGeoBlocker(func(cc string) ([]string, error) {
 		return geo.ExtractCIDRs(cc)
 	}, cfg.ServerURL)
-	geoBlocker.SetExempt(sshSessionAddrs)
+	// Left out of every country set: the SSH sessions open now and the
+	// addresses with an SSH login in the last 30 days (sshlogins.go).
+	geoBlocker.SetExempt(func() []string { return append(sshSessionAddrs(), sshLoginExempt()...) })
+	rebuild := func() {
+		if active := geoBlocker.ActiveCountries(); len(active) > 0 {
+			geoBlocker.Reload()
+			geoBlocker.ApplyCountryBlocks(active)
+		}
+		applyThreatIntel()
+	}
+	onSSHLoginsAdded.Store(&rebuild)
 
 	// Initialize Kubernetes client (nil if not running in K8s)
 	k8sClient := kubernetes.NewClient()
@@ -409,6 +419,13 @@ func runAgent() {
 	w := watcher.New(func(ip, reason string, count int) {
 		banAndReport(apiClient, "watcher", ip, reason, count)
 	})
+	// Successful logins feed the login history; an address with one in the
+	// last 30 days is not banned (sshlogins.go).
+	w.SetLoginGuard(noteLoginLine, guardReason)
+	guessedLogin = w.GuessedLogin
+	// The SSH logins of the last 30 days, before the first sync and the
+	// detectors start (on the first run; later runs read the saved list).
+	startSSHLoginHistory(apiClient)
 
 	// Detections: in monitor mode instead of a ban, otherwise alongside it
 	w.SetOnEvent(func(ip, eventType, severity string, details map[string]string) {
@@ -795,6 +812,9 @@ func runAgent() {
 	reverbHandlers := ws.Handlers{
 		OnBanCreated: func(p ws.BanCreatedPayload) {
 			log.Printf("[reverb] ban.created: %s", p.IPAddress)
+			if guarded(p.IPAddress, "applying the dashboard's ban of") {
+				return
+			}
 			var expires time.Time
 			if p.ExpiresAt != nil {
 				expires, _ = parseBanExpiry(*p.ExpiresAt)
@@ -1243,6 +1263,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Bans already expired here are not applied again (they were lifted
 	// locally, see runBanExpiry).
 	sync.Bans = unexpiredBans(sync.Bans, time.Now())
+	// Never an address with an SSH login in the last 30 days (sshlogins.go).
+	sync.Bans = guardBans(sync.Bans)
 	activeBanIPs := make(map[string]bool, len(sync.Bans))
 	banIPs := make([]string, 0, len(sync.Bans))
 	for _, b := range sync.Bans {
@@ -2180,8 +2202,8 @@ func applyThreatIntel() {
 	defer intelState.Unlock()
 
 	all := append(append([]api.ThreatEntry{}, intelState.downloaded...), intelState.dashboardFeed...)
-	key := fmt.Sprintf("%d|%d|%v|%v|%s", len(intelState.downloaded), len(intelState.dashboardFeed),
-		intelState.monitorMode, intelState.blockInbound, strings.Join(intelState.whitelist, ","))
+	key := fmt.Sprintf("%d|%d|%v|%v|%s|%d", len(intelState.downloaded), len(intelState.dashboardFeed),
+		intelState.monitorMode, intelState.blockInbound, strings.Join(intelState.whitelist, ","), sshLoginGen.Load())
 	if key == intelState.appliedKey {
 		return
 	}
@@ -2205,7 +2227,9 @@ func applyThreatIntel() {
 			nets = append(nets, *e.CIDR)
 		}
 	}
-	applied, skipped, err := firewall.ApplyThreatSet(nets, intelState.whitelist)
+	// Entries covering an address with an SSH login are left out too.
+	keep := append(append([]string{}, intelState.whitelist...), sshLoginExempt()...)
+	applied, skipped, err := firewall.ApplyThreatSet(nets, keep)
 	switch {
 	case errors.Is(err, firewall.ErrDisabled):
 		log.Printf("[threat-feed] %d entries loaded for egress/DNS detection; protection is switched off", len(all))
@@ -2683,6 +2707,9 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 	if panelAllowed(ip) {
 		log.Printf("[%s] %s is allowed from the hosting panel — not banned (%s)", source, ip, reason)
 		return
+	}
+	if guarded(ip, "banning") {
+		return // an SSH login in the last 30 days (sshlogins.go)
 	}
 	added, err := firewall.BanIPOnceUntil(ip, time.Now().Add(localBanFor))
 	if !added {

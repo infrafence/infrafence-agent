@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/infrafence/infrafence-agent/internal/loginhistory"
 )
 
 // LineType identifies the kind of auth.log event parsed.
@@ -83,10 +85,28 @@ var (
 	)
 )
 
+// sshLoginMatch matches reSSHLogin on sshd's own message only: a client
+// controls the text of many sshd messages (the user name of "Invalid user
+// NAME from ..."), so an "Accepted ..." elsewhere in the line is no login.
+func sshLoginMatch(line string) []string {
+	if !strings.Contains(line, "Accepted ") {
+		return nil
+	}
+	tag, msg, ok := loginhistory.SyslogMessage(line)
+	if !ok || !strings.HasPrefix(msg, "Accepted ") {
+		return nil
+	}
+	m := reSSHLogin.FindStringSubmatchIndex(tag + ": " + msg)
+	if m == nil || m[0] != 0 {
+		return nil
+	}
+	return reSSHLogin.FindStringSubmatch(tag + ": " + msg)
+}
+
 // ParseLine tries each regex in order and returns the first match.
 // Returns nil if no pattern matches.
 func ParseLine(line string) *ParsedLine {
-	if m := reSSHLogin.FindStringSubmatch(line); m != nil {
+	if m := sshLoginMatch(line); m != nil {
 		port, _ := strconv.Atoi(m[5])
 		return &ParsedLine{
 			Type:    SSHLogin,

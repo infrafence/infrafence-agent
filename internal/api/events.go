@@ -694,6 +694,12 @@ func IsHeld(err error) bool {
 	return errors.As(err, &se) && se.held
 }
 
+// IsNotFound reports a 404 reply (an endpoint an older dashboard lacks).
+func IsNotFound(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && !se.held && se.code == http.StatusNotFound
+}
+
 func newStatusError(resp *http.Response) *statusError {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	e := &statusError{code: resp.StatusCode, body: string(b)}

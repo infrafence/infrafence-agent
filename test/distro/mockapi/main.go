@@ -51,6 +51,8 @@ type state struct {
 	// InfoCalls counts the requests for the attack map ("map:24",
 	// "map:168") and the security score ("score").
 	InfoCalls map[string]int `json:"info_calls"`
+	// SSHLogins is the latest login history the agent sent.
+	SSHLogins json.RawMessage `json:"ssh_logins,omitempty"`
 	// extra holds fields set through /set-sync, merged into every sync
 	// reply; version bumps on each change so the agent syncs again.
 	extra   map[string]json.RawMessage
@@ -279,6 +281,15 @@ func main() {
 		st.Bans = append(st.Bans, body)
 		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok", "id": len(st.Bans)})
+	})
+	mux.HandleFunc("/api/v1/agent/ssh-logins", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if json.Valid(body) {
+			st.mu.Lock()
+			st.SSHLogins = body
+			st.mu.Unlock()
+		}
+		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/agent/db-clients", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
