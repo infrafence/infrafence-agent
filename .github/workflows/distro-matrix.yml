@@ -8,6 +8,8 @@ on:
       - "install.sh"
       - "cmd/**"
       - "internal/**"
+      - "go.mod"
+      - "go.sum"
       - "test/distro/**"
       - ".github/workflows/distro-matrix.yml"
   workflow_dispatch:
