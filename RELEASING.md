@@ -29,4 +29,4 @@ One release a month, plus security fixes as soon as they are ready. Every change
 
 ## Security fixes
 
-Same steps, without waiting for the end of the month: a pull request with the fix and its test, the matrix on all distributions, a patch release.
+Dependabot alerts and security updates are on for this repository: a vulnerable dependency gets its own pull request as soon as an advisory is published, outside the monthly schedule. Same steps, without waiting for the end of the month: a pull request with the fix and its test, the matrix on all distributions, a patch release.
