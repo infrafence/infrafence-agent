@@ -2,6 +2,11 @@
 
 All notable changes to the InfraFence Agent.
 
+## v1.0.39
+- **security: Go dependencies updated.** golang.org/x/net 0.47.0 → 0.62.0, golang.org/x/sys 0.38.0 → 0.49.0, k8s.io/client-go and k8s.io/apimachinery 0.35.3 → 0.37.2 (Kubernetes build). No behaviour change.
+- **build: release workflow actions updated** (docker/build-push-action 7, docker/login-action, setup-buildx-action and setup-qemu-action 4, actions/attest-build-provenance 4). The binaries, checksums, cosign signatures and provenance attestations are published as before.
+- **tests:** the distribution matrix also runs when only `go.mod` or `go.sum` change, so dependency updates are tested on all 15 distributions before merge.
+
 ## v1.0.38
 - **feat: mail attacks from the systemd journal.** Where there is no syslog mail log (`/var/log/mail.log`, `/var/log/maillog`), as on Debian 12+, Fedora and Amazon Linux without rsyslog, Postfix and Dovecot log only to the journal; the mail watcher now follows the journal's mail messages there (`journalctl --follow` in the `short` format, the mail syslog facility plus the `dovecot`, `exim` and `exim4` identifiers, new messages only, read only), with the same events and details as the log file and the same bounds (1 MiB per half second, lines over 8 KiB skipped). journalctl is restarted when it exits, after 5 s doubling up to 5 minutes. The journal is also used when the syslog mail log has not been written for 24 hours while the journal has mail messages in that time; never both, so no line is counted twice. Exim's main log and `/var/log/dovecot.log` are still read as files, and journal messages from Exim or Dovecot are skipped while their own file is read (they can log to both); `MAIL_LOG_PATH` still overrides everything. Messages logged while journalctl is down are not read. The agent logs `[mailwatcher] watching the systemd journal (mail)`. A journal alone does not make a host a mail server: a mail service or a mail log file is still needed.
 - **tests:** the distribution mail case waits up to 60 s (was 30 s) for the agent to start watching the mail logs and for the events; a new case stops rsyslog where present, sets the mail log files aside and checks that Postfix (mail facility) and Dovecot (by name) messages in the journal give the same events and details, each exactly once (`mail_journal=ok|skip|fail`).
