@@ -146,6 +146,118 @@ func PublicInbound(port int) []string {
 	return out
 }
 
+// InboundClients is PublicInbound for several ports at once, reading the
+// socket table and the conntrack table once: for each port, the public
+// addresses with an established connection to it. The conntrack table is
+// /proc/net/nf_conntrack (read up to 16 MB, no process started); withTool
+// also runs `conntrack -L` when that file does not exist (bounded by a
+// timeout and the same read limit), so callers sampling often pass it only
+// now and then.
+func InboundClients(ports []int, withTool bool) map[int][]string {
+	return inboundClients(Sockets(), ports, boundedConntrack(withTool), localAddrs())
+}
+
+func inboundClients(socks []Conn, ports []int, table string, local map[string]bool) map[int][]string {
+	want := map[int]bool{}
+	out := map[int][]string{}
+	for _, p := range ports {
+		want[p] = true
+		if ips := publicInbound(socks, p); len(ips) > 0 {
+			out[p] = ips
+		}
+	}
+	if table == "" {
+		return out
+	}
+	for p, ips := range parseConntrackInboundPorts(table, want, local) {
+		seen := map[string]bool{}
+		for _, ip := range out[p] {
+			seen[ip] = true
+		}
+		for _, ip := range ips {
+			if !seen[ip] {
+				seen[ip] = true
+				out[p] = append(out[p], ip)
+			}
+		}
+		sort.Strings(out[p])
+	}
+	return out
+}
+
+// maxConntrackRead bounds what InboundClients reads of the conntrack table.
+const maxConntrackRead = 16 << 20
+
+// boundedConntrack is replaced in tests.
+var boundedConntrack = func(withTool bool) string {
+	if f, err := os.Open(procRoot + "/net/nf_conntrack"); err == nil {
+		defer f.Close()
+		b, _ := io.ReadAll(io.LimitReader(f, maxConntrackRead))
+		return string(b)
+	}
+	if !withTool {
+		return ""
+	}
+	if _, err := exec.LookPath("conntrack"); err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "conntrack", "-L", "-p", "tcp", "--state", "ESTABLISHED")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return ""
+	}
+	if err := cmd.Start(); err != nil {
+		return ""
+	}
+	b, _ := io.ReadAll(io.LimitReader(stdout, maxConntrackRead))
+	_, _ = io.Copy(io.Discard, stdout) // let it finish (the context bounds it)
+	_ = cmd.Wait()
+	return string(b)
+}
+
+// parseConntrackInboundPorts is parseConntrackInbound for a set of ports.
+func parseConntrackInboundPorts(table string, ports map[int]bool, local map[string]bool) map[int][]string {
+	out := map[int][]string{}
+	seen := map[int]map[string]bool{}
+	for _, line := range strings.Split(table, "\n") {
+		f := strings.Fields(line)
+		established := false
+		var src, dport string
+		for _, w := range f {
+			switch {
+			case w == "ESTABLISHED":
+				established = true
+			case strings.HasPrefix(w, "src=") && src == "":
+				src = w[4:]
+			case strings.HasPrefix(w, "dport=") && dport == "":
+				dport = w[6:]
+			}
+		}
+		if !established || !containsField(f, "tcp") {
+			continue
+		}
+		p, err := strconv.Atoi(dport)
+		if err != nil || !ports[p] {
+			continue
+		}
+		ip := net.ParseIP(src)
+		if ip == nil || !IsPublic(ip) || local[ip.String()] {
+			continue
+		}
+		if seen[p] == nil {
+			seen[p] = map[string]bool{}
+		}
+		if seen[p][ip.String()] {
+			continue
+		}
+		seen[p][ip.String()] = true
+		out[p] = append(out[p], ip.String())
+	}
+	return out
+}
+
 // conntrackTable is replaced in tests: the established TCP entries as
 // /proc/net/nf_conntrack or `conntrack -L` prints them ("" when neither is
 // available).

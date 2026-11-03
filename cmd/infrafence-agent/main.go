@@ -267,6 +267,9 @@ func runAgent() {
 	go watchDashboardAddrs(cfg.ServerURL)
 	loadFirewallState()
 	egressDestinations.Store(monitor.NewDestinationLog(egressDestPath))
+	// Regular clients of the database/admin ports, before any close request
+	// is checked (dbclients.go).
+	startDBClients(currentAPIClient.Load, version)
 	go watchSSHLogins()
 
 	// Bans and allow list as last known (protstate.go), so the first setup
@@ -1060,6 +1063,7 @@ func runAgent() {
 	log.Println("Shutting down...")
 	closePanel()
 	saveProtectionState()
+	dbClientLog.Load().Save()
 	ctx, cancel := context.WithTimeout(context.Background(), eventFlushTimeout)
 	defer cancel()
 	if err := apiClient.CloseEvents(ctx); err != nil {

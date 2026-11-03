@@ -46,6 +46,8 @@ type state struct {
 	// completions the agent sent (the last 200 of each).
 	MalwareChunks    []json.RawMessage `json:"malware_chunks"`
 	MalwareCompletes []json.RawMessage `json:"malware_completes"`
+	// DBClients are the bodies of /api/v1/agent/db-clients (the last 200).
+	DBClients []json.RawMessage `json:"db_clients"`
 	// InfoCalls counts the requests for the attack map ("map:24",
 	// "map:168") and the security score ("score").
 	InfoCalls map[string]int `json:"info_calls"`
@@ -93,6 +95,8 @@ func main() {
 	var checksum atomic.Value
 	checksum.Store("ok")
 	mux := http.NewServeMux()
+	var listenersMu sync.Mutex
+	listeners := map[string]net.Listener{}
 	mux.HandleFunc("/checksum", func(w http.ResponseWriter, r *http.Request) {
 		checksum.Store(r.URL.Query().Get("mode"))
 		reply(w, map[string]any{"status": "ok"})
@@ -202,7 +206,8 @@ func main() {
 	})
 	// Test control: listen on a TCP port (accept and close), for the
 	// close_port / block_egress cases. net=tcp4: IPv4 only (default "tcp":
-	// a wildcard address is a dual-stack IPv6 socket).
+	// a wildcard address is a dual-stack IPv6 socket). hold=1 keeps each
+	// connection open until the client closes it (a database client).
 	mux.HandleFunc("/listen", func(w http.ResponseWriter, r *http.Request) {
 		network := "tcp"
 		if n := r.URL.Query().Get("net"); n == "tcp4" || n == "tcp6" {
@@ -213,15 +218,32 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		listenersMu.Lock()
+		listeners[r.URL.Query().Get("addr")] = ln
+		listenersMu.Unlock()
 		go func() {
 			for {
 				c, err := ln.Accept()
 				if err != nil {
 					return
 				}
+				if r.URL.Query().Get("hold") == "1" {
+					go func() { _, _ = io.Copy(io.Discard, c); c.Close() }()
+					continue
+				}
 				c.Close()
 			}
 		}()
+		reply(w, map[string]any{"status": "ok"})
+	})
+	// Test control: stop listening on addr (as given to /listen).
+	mux.HandleFunc("/unlisten", func(w http.ResponseWriter, r *http.Request) {
+		listenersMu.Lock()
+		if ln := listeners[r.URL.Query().Get("addr")]; ln != nil {
+			ln.Close()
+			delete(listeners, r.URL.Query().Get("addr"))
+		}
+		listenersMu.Unlock()
 		reply(w, map[string]any{"status": "ok"})
 	})
 	// Test control: send msg to the local syslog socket (journald) with the
@@ -257,6 +279,18 @@ func main() {
 		st.Bans = append(st.Bans, body)
 		st.mu.Unlock()
 		reply(w, map[string]any{"status": "ok", "id": len(st.Bans)})
+	})
+	mux.HandleFunc("/api/v1/agent/db-clients", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		st.mu.Lock()
+		if json.Valid(body) {
+			st.DBClients = append(st.DBClients, body)
+			if len(st.DBClients) > 200 {
+				st.DBClients = st.DBClients[len(st.DBClients)-200:]
+			}
+		}
+		st.mu.Unlock()
+		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/agent/scan-results", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
