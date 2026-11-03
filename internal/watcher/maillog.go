@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/infrafence/infrafence-agent/internal/authlog"
 )
 
 // MailPattern pairs a compiled regex with the event type it represents.
@@ -215,6 +217,7 @@ func cleanMailField(s string, max int) string {
 // MailWatcher tails mail logs and calls onBan when an IP exceeds the threshold.
 type MailWatcher struct {
 	logPaths []string
+	journal  bool // also the systemd journal's mail messages
 	onBan    BanFunc
 	onEvent  EventFunc
 	checkIP  CheckIPFunc
@@ -233,30 +236,84 @@ type MailWatcher struct {
 // Exim writes its own log, not syslog's mail log.
 var eximLogPaths = []string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/main.log"}
 
-// detectMailLogPaths returns the mail logs to watch: MAIL_LOG_PATH when
+// syslogMailLogs: the mail log rsyslog writes (Debian/Ubuntu, RHEL family).
+var syslogMailLogs = []string{"/var/log/mail.log", "/var/log/maillog"}
+
+// mailLogStale: a syslog mail log not written for this long is replaced by
+// the journal when the journal has mail messages in that time (rsyslog
+// removed or stopped, the old file left behind).
+const mailLogStale = 24 * time.Hour
+
+// Replaced in tests.
+var (
+	mailStat             = os.Stat
+	mailNow              = time.Now
+	mailJournalAvailable = authlog.JournalAvailable
+	mailJournalHasSince  = journalHasMail
+)
+
+// mailSources is what the mail watcher reads: log files, and the systemd
+// journal's mail messages when journal is true.
+type mailSources struct {
+	paths   []string
+	journal bool
+}
+
+// detectMailSources returns the mail logs to watch: MAIL_LOG_PATH when
 // set, otherwise the syslog mail log (Postfix, Dovecot, Roundcube when it
 // logs to syslog) and Exim's main log, those that exist.
-func detectMailLogPaths() []string {
+//
+// With useJournal, the systemd journal takes the syslog mail log's place
+// when there is no such file (Debian 12+, Fedora, Amazon Linux: no rsyslog,
+// Postfix and Dovecot log to the journal only), or when the file has not
+// been written for mailLogStale while the journal has mail messages. Only
+// one of the two is read, so no line is counted twice. Dovecot's own
+// /var/log/dovecot.log is read when there is no syslog mail log file, next
+// to the journal too: Dovecot logs either to that file or to syslog.
+func detectMailSources(useJournal bool) mailSources {
 	if p := os.Getenv("MAIL_LOG_PATH"); p != "" {
-		return []string{p}
+		return mailSources{paths: []string{p}}
 	}
-	var paths []string
-	for _, p := range []string{"/var/log/mail.log", "/var/log/maillog", "/var/log/dovecot.log"} {
-		if _, err := os.Stat(p); err == nil {
-			paths = append(paths, p)
+	var s mailSources
+	syslog := ""
+	var modified time.Time
+	for _, p := range syslogMailLogs {
+		if fi, err := mailStat(p); err == nil {
+			syslog, modified = p, fi.ModTime()
 			break // one syslog mail log is enough
 		}
 	}
+	journal := useJournal && mailJournalAvailable()
+	if syslog != "" && journal {
+		since := mailNow().Add(-mailLogStale)
+		if modified.Before(since) && mailJournalHasSince(since) {
+			log.Printf("[mailwatcher] %s not written since %s, the journal has mail messages: reading the journal", syslog, modified.Format(time.RFC3339))
+			syslog = ""
+		}
+	}
+	switch {
+	case syslog != "":
+		s.paths = append(s.paths, syslog)
+	case journal:
+		s.journal = true
+	}
+	if syslog == "" {
+		if _, err := mailStat("/var/log/dovecot.log"); err == nil {
+			s.paths = append(s.paths, "/var/log/dovecot.log")
+		}
+	}
 	for _, p := range eximLogPaths {
-		if _, err := os.Stat(p); err == nil {
-			paths = append(paths, p)
+		if _, err := mailStat(p); err == nil {
+			s.paths = append(s.paths, p)
 			break
 		}
 	}
-	return paths
+	return s
 }
 
-// HasMailService returns true if a mail server is detected on this system.
+// HasMailService returns true if a mail server is detected on this system:
+// a mail service running, or a mail log file. The journal alone does not
+// count (every systemd host has one).
 func HasMailService() bool {
 	for _, svc := range []string{"postfix", "dovecot", "exim", "exim4"} {
 		if out, err := exec.Command("systemctl", "is-active", svc).Output(); err == nil {
@@ -265,19 +322,20 @@ func HasMailService() bool {
 			}
 		}
 	}
-	return len(detectMailLogPaths()) > 0
+	return len(detectMailSources(false).paths) > 0
 }
 
 // NewMailWatcher creates a watcher for mail server logs.
 // Returns nil if no mail log is found.
 func NewMailWatcher(onBan BanFunc) *MailWatcher {
-	paths := detectMailLogPaths()
-	if len(paths) == 0 {
+	src := detectMailSources(true)
+	if len(src.paths) == 0 && !src.journal {
 		return nil
 	}
 
 	return &MailWatcher{
-		logPaths:  paths,
+		logPaths:  src.paths,
+		journal:   src.journal,
 		threshold: 5,
 		window:    5 * time.Minute,
 		onBan:     onBan,
@@ -369,6 +427,10 @@ func (w *MailWatcher) Run() {
 				}
 			}
 		}(p)
+	}
+	if w.journal {
+		log.Printf("[mailwatcher] watching the systemd journal (mail) (threshold: %d in %s)", w.threshold, w.window)
+		go w.followJournal()
 	}
 	select {}
 }
