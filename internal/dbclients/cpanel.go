@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,6 +54,13 @@ var Resolver = func(ctx context.Context, host string) []string {
 	return addrs
 }
 
+// The last good answer per host name (at most maxResolve names are looked
+// up per read, so the cache stays small).
+var (
+	resolvedMu    sync.Mutex
+	resolvedCache = map[string][]string{}
+)
+
 // ReadCPanelAccessHosts reads the declared MySQL clients of WHM. ok is
 // false when the file does not exist (not cPanel, or no access hosts).
 func ReadCPanelAccessHosts() (out []Declared, ok bool) {
@@ -95,6 +103,15 @@ func ParseAccessHosts(data, source string) []Declared {
 		ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
 		addrs := Resolver(ctx, host)
 		cancel()
+		// A failed lookup keeps the last good answer for that name: a DNS
+		// outage must not drop a declared client.
+		resolvedMu.Lock()
+		if len(addrs) > 0 {
+			resolvedCache[host] = addrs
+		} else {
+			addrs = resolvedCache[host]
+		}
+		resolvedMu.Unlock()
 		for _, a := range addrs {
 			add(normIP(a), host)
 		}

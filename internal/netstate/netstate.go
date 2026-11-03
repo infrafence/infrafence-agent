@@ -5,6 +5,7 @@
 package netstate
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"io"
@@ -146,96 +147,131 @@ func PublicInbound(port int) []string {
 	return out
 }
 
-// InboundClients is PublicInbound for several ports at once, reading the
-// socket table and the conntrack table once: for each port, the public
-// addresses with an established connection to it. The conntrack table is
-// /proc/net/nf_conntrack (read up to 16 MB, no process started); withTool
-// also runs `conntrack -L` when that file does not exist (bounded by a
-// timeout and the same read limit), so callers sampling often pass it only
-// now and then.
+// InboundClients is PublicInbound for several ports at once, for sampling
+// the clients of a service: for each port, the public addresses connected
+// to it, read once from the socket table and the conntrack table. A
+// connection closing or just closed counts too (CLOSE_WAIT, LAST_ACK,
+// TIME_WAIT...), so a client that queries for a second and leaves is still
+// seen by a sample a minute apart. The conntrack table is
+// /proc/net/nf_conntrack (no process started); withTool also runs
+// `conntrack -L` when that file does not exist (timeout of 10 s). Either is
+// read line by line, keeping only the lines for these ports, at most
+// maxConntrackLines lines.
 func InboundClients(ports []int, withTool bool) map[int][]string {
-	return inboundClients(Sockets(), ports, boundedConntrack(withTool), localAddrs())
-}
-
-func inboundClients(socks []Conn, ports []int, table string, local map[string]bool) map[int][]string {
 	want := map[int]bool{}
-	out := map[int][]string{}
 	for _, p := range ports {
 		want[p] = true
-		if ips := publicInbound(socks, p); len(ips) > 0 {
-			out[p] = ips
+	}
+	var ct map[int][]string
+	if r, done := conntrackReader(withTool); r != nil {
+		ct = parseConntrackClients(r, want, localAddrs())
+		done()
+	}
+	return inboundClients(Sockets(), ports, ct)
+}
+
+// Socket and conntrack states of a connection to a service: established, or
+// closing / just closed.
+var clientSockStates = map[int]bool{0x01: true, 0x04: true, 0x05: true, 0x06: true, 0x07: true, 0x08: true, 0x09: true, 0x0B: true}
+var clientCTStates = map[string]bool{"ESTABLISHED": true, "FIN_WAIT": true, "CLOSE_WAIT": true, "LAST_ACK": true, "TIME_WAIT": true, "CLOSE": true}
+
+func inboundClients(socks []Conn, ports []int, ct map[int][]string) map[int][]string {
+	listening := map[int]bool{}
+	for _, c := range socks {
+		if c.State == stateListen {
+			listening[c.LocalPort] = true
 		}
 	}
-	if table == "" {
-		return out
+	want := map[int]bool{}
+	for _, p := range ports {
+		want[p] = true
 	}
-	for p, ips := range parseConntrackInboundPorts(table, want, local) {
-		seen := map[string]bool{}
-		for _, ip := range out[p] {
-			seen[ip] = true
+	set := map[int]map[string]bool{}
+	add := func(p int, ip string) {
+		if set[p] == nil {
+			set[p] = map[string]bool{}
 		}
-		for _, ip := range ips {
-			if !seen[ip] {
-				seen[ip] = true
-				out[p] = append(out[p], ip)
+		set[p][ip] = true
+	}
+	for _, c := range socks {
+		if want[c.LocalPort] && listening[c.LocalPort] && clientSockStates[c.State] && IsPublic(c.RemoteIP) {
+			add(c.LocalPort, c.RemoteIP.String())
+		}
+	}
+	for p, ips := range ct {
+		if want[p] {
+			for _, ip := range ips {
+				add(p, ip)
 			}
+		}
+	}
+	out := map[int][]string{}
+	for p, ips := range set {
+		for ip := range ips {
+			out[p] = append(out[p], ip)
 		}
 		sort.Strings(out[p])
 	}
 	return out
 }
 
-// maxConntrackRead bounds what InboundClients reads of the conntrack table.
-const maxConntrackRead = 16 << 20
+// maxConntrackLines bounds what InboundClients reads of the conntrack table.
+const maxConntrackLines = 1 << 20
 
-// boundedConntrack is replaced in tests.
-var boundedConntrack = func(withTool bool) string {
+// conntrackReader is replaced in tests: the conntrack table as a stream,
+// and what to call when done with it (nil without one).
+var conntrackReader = func(withTool bool) (io.Reader, func()) {
 	if f, err := os.Open(procRoot + "/net/nf_conntrack"); err == nil {
-		defer f.Close()
-		b, _ := io.ReadAll(io.LimitReader(f, maxConntrackRead))
-		return string(b)
+		return f, func() { f.Close() }
 	}
 	if !withTool {
-		return ""
+		return nil, nil
 	}
 	if _, err := exec.LookPath("conntrack"); err != nil {
-		return ""
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "conntrack", "-L", "-p", "tcp", "--state", "ESTABLISHED")
+	cmd := exec.CommandContext(ctx, "conntrack", "-L", "-p", "tcp")
 	stdout, err := cmd.StdoutPipe()
+	if err == nil {
+		err = cmd.Start()
+	}
 	if err != nil {
-		return ""
+		cancel()
+		return nil, nil
 	}
-	if err := cmd.Start(); err != nil {
-		return ""
+	return stdout, func() {
+		_, _ = io.Copy(io.Discard, stdout) // let it finish (the context bounds it)
+		_ = cmd.Wait()
+		cancel()
 	}
-	b, _ := io.ReadAll(io.LimitReader(stdout, maxConntrackRead))
-	_, _ = io.Copy(io.Discard, stdout) // let it finish (the context bounds it)
-	_ = cmd.Wait()
-	return string(b)
 }
 
-// parseConntrackInboundPorts is parseConntrackInbound for a set of ports.
-func parseConntrackInboundPorts(table string, ports map[int]bool, local map[string]bool) map[int][]string {
+// parseConntrackClients reads a conntrack table line by line: the public
+// sources of TCP flows (established or closing) whose original destination
+// port is one of ports. Flows the host started itself are not inbound.
+func parseConntrackClients(r io.Reader, ports map[int]bool, local map[string]bool) map[int][]string {
 	out := map[int][]string{}
 	seen := map[int]map[string]bool{}
-	for _, line := range strings.Split(table, "\n") {
-		f := strings.Fields(line)
-		established := false
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 4096), 64*1024)
+	for n := 0; n < maxConntrackLines && sc.Scan(); n++ {
+		f := strings.Fields(sc.Text())
+		state, isTCP := false, false
 		var src, dport string
 		for _, w := range f {
 			switch {
-			case w == "ESTABLISHED":
-				established = true
+			case w == "tcp":
+				isTCP = true
+			case clientCTStates[w]:
+				state = true
 			case strings.HasPrefix(w, "src=") && src == "":
 				src = w[4:]
 			case strings.HasPrefix(w, "dport=") && dport == "":
 				dport = w[6:]
 			}
 		}
-		if !established || !containsField(f, "tcp") {
+		if !state || !isTCP {
 			continue
 		}
 		p, err := strconv.Atoi(dport)
@@ -246,14 +282,16 @@ func parseConntrackInboundPorts(table string, ports map[int]bool, local map[stri
 		if ip == nil || !IsPublic(ip) || local[ip.String()] {
 			continue
 		}
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
 		if seen[p] == nil {
 			seen[p] = map[string]bool{}
 		}
-		if seen[p][ip.String()] {
-			continue
+		if !seen[p][ip.String()] {
+			seen[p][ip.String()] = true
+			out[p] = append(out[p], ip.String())
 		}
-		seen[p][ip.String()] = true
-		out[p] = append(out[p], ip.String())
 	}
 	return out
 }

@@ -73,3 +73,17 @@ func TestReadCPanelAccessHosts(t *testing.T) {
 		t.Fatalf("got %+v %v", got, ok)
 	}
 }
+
+// A host name that fails to resolve keeps its last good addresses.
+func TestResolveFailureKeepsLastAnswer(t *testing.T) {
+	old := Resolver
+	t.Cleanup(func() { Resolver = old })
+	Resolver = func(context.Context, string) []string { return []string{"198.51.200.9"} }
+	if got := ParseAccessHosts("replica.example.org\n", "x"); len(got) != 1 {
+		t.Fatalf("first: %+v", got)
+	}
+	Resolver = func(context.Context, string) []string { return nil }
+	if got := ParseAccessHosts("replica.example.org\n", "x"); len(got) != 1 || got[0].Entry != "198.51.200.9" {
+		t.Fatalf("after failure: %+v", got)
+	}
+}

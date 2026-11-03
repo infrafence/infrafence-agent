@@ -134,7 +134,13 @@ func (l *Log) Observe(seen map[int][]string) {
 			days := byIP[ip]
 			e := days[today]
 			if e == nil {
-				if l.countDayLocked(port, today) >= maxPerPortDay || (days == nil && len(byIP) >= maxPerPort) {
+				// An address already seen on another day is always counted: a
+				// flood of new addresses must not keep a known client from
+				// becoming regular. New addresses are bounded per day, and per
+				// port a new one replaces the least seen one-day address.
+				full := days == nil && (l.countDayLocked(port, today) >= maxPerPortDay ||
+					len(byIP) >= maxPerPort && !l.evictLocked(port, today))
+				if full {
 					if l.full[port] != today {
 						l.full[port] = today
 						log.Printf("[dbclients] port %d: more than %d client addresses today, the others are not counted", port, maxPerPortDay)
@@ -157,6 +163,28 @@ func (l *Log) Observe(seen map[int][]string) {
 	if l.dirty && l.path != "" && now.Sub(l.saved) >= saveEvery {
 		l.saveLocked()
 	}
+}
+
+// evictLocked drops, to make room on port, the address seen on a single
+// day (not today) with the fewest samples. It reports whether one was
+// dropped.
+func (l *Log) evictLocked(port int, today int64) bool {
+	victim, least := "", 0
+	for ip, days := range l.ports[port] {
+		if len(days) != 1 || days[today] != nil {
+			continue
+		}
+		for _, e := range days {
+			if victim == "" || e.Samples < least || e.Samples == least && ip < victim {
+				victim, least = ip, e.Samples
+			}
+		}
+	}
+	if victim == "" {
+		return false
+	}
+	delete(l.ports[port], victim)
+	return true
 }
 
 func (l *Log) countDayLocked(port int, day int64) int {

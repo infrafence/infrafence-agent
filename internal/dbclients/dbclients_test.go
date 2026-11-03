@@ -11,7 +11,7 @@ import (
 
 type clock struct{ t time.Time }
 
-var base = time.Now().UTC().Truncate(24*time.Hour).Add(-5*24*time.Hour + 10*time.Hour)
+var base = time.Now().UTC().Truncate(24 * time.Hour).Add(-5*24*time.Hour + 10*time.Hour)
 
 func (c *clock) now() time.Time { return c.t }
 
@@ -132,5 +132,41 @@ func TestShortDayForTests(t *testing.T) {
 	c.t = c.t.Add(-time.Second)
 	if got := l.Regular(6379); !reflect.DeepEqual(len(got), 1) {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// A flood of new addresses never keeps a known client from being counted.
+func TestKnownClientCountedDuringFlood(t *testing.T) {
+	l, c := newTestLog(t, "")
+	l.Observe(map[int][]string{3306: {"203.0.113.7"}})
+	c.t = c.t.Add(24 * time.Hour)
+	var flood []string
+	for i := 0; i < maxPerPortDay+10; i++ {
+		flood = append(flood, "198.51."+strconv.Itoa(i/250)+"."+strconv.Itoa(i%250+1))
+	}
+	l.Observe(map[int][]string{3306: flood})
+	l.Observe(map[int][]string{3306: {"203.0.113.7"}})
+	c.t = c.t.Add(24 * time.Hour)
+	l.Observe(map[int][]string{3306: append(flood, "203.0.113.7")})
+	got := l.Regular(3306)
+	if len(got) != 1 || got[0].IP != "203.0.113.7" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// Past the per-port bound, a one-day address of an earlier day makes room.
+func TestEvictOneDayAddress(t *testing.T) {
+	l, c := newTestLog(t, "")
+	for d := 0; d < maxPerPort/maxPerPortDay; d++ {
+		var ips []string
+		for i := 0; i < maxPerPortDay; i++ {
+			ips = append(ips, "198."+strconv.Itoa(51+d)+"."+strconv.Itoa(i/250)+"."+strconv.Itoa(i%250+1))
+		}
+		l.Observe(map[int][]string{6379: ips})
+		c.t = c.t.Add(24 * time.Hour)
+	}
+	l.Observe(map[int][]string{6379: {"203.0.113.9"}})
+	if l.ports[6379]["203.0.113.9"] == nil || len(l.ports[6379]) != maxPerPort {
+		t.Fatalf("not admitted: %d addresses", len(l.ports[6379]))
 	}
 }
