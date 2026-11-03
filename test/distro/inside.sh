@@ -100,6 +100,16 @@ curl -s "http://127.0.0.1:8080/checksum?mode=ok" >/dev/null
 EXTRA_RESULT="${EXTRA_RESULT:-} dryrun=${R_DRYRUN}"
 [ "$R_DRYRUN" = ok ] || EXTRA_FAIL=1
 
+# ── install progress reports (to the dashboard's /api/v1/install/status):
+# a failed run reports the step it stopped in, once; never the whole token ──
+R_REPORT=fail
+reports() { curl -s http://127.0.0.1:8080/state | grep -o "{\"token_prefix\":\"$1\"[^}]*}"; }
+curl -s "http://127.0.0.1:8080/checksum?mode=bad" >/dev/null
+INFRAFENCE_SERVER_URL=http://127.0.0.1:8080 RELEASE_BASE=http://127.0.0.1:8080/releases \
+  bash /distro/install.sh --dry-run --token IF-REPORTTEST0001SECRETPART >/tmp/dryrun-report.log 2>&1
+curl -s "http://127.0.0.1:8080/checksum?mode=ok" >/dev/null
+rep_fail=$(reports IF-REPORTTEST000)
+
 # ── install with the real installer ──
 if INFRAFENCE_SERVER_URL=http://127.0.0.1:8080 RELEASE_BASE=http://127.0.0.1:8080/releases \
    INFRAFENCE_AGENT_NAME=distro-test bash /distro/install.sh --token distro-test >/tmp/install.log 2>&1; then
@@ -113,6 +123,22 @@ for _ in $(seq 1 15); do
   sleep 1
 done
 [ "$R_SERVICE" = ok ] || { log "service not active"; journalctl -u infrafence-agent --no-pager -n 30; }
+
+rep_ok=$(reports distro-test)
+invalid=$(curl -s http://127.0.0.1:8080/state | grep -o '"install_invalid":[0-9]*' | cut -d: -f2)
+if grep -q '"step":"started","phase":"start"' <<<"$rep_fail" \
+   && grep -q '"step":"download_failed","phase":"download","error":"Checksum mismatch"' <<<"$rep_fail" \
+   && [ "$(grep -c '"step":"failed"' <<<"$rep_fail")" = 0 ] \
+   && ! curl -s http://127.0.0.1:8080/state | grep -q SECRETPART \
+   && grep -q '"step":"register_ok","phase":"register"' <<<"$rep_ok" \
+   && grep -q '"step":"service_started","phase":"service"' <<<"$rep_ok" \
+   && [ "${invalid:-1}" = 0 ]; then
+  R_REPORT=ok
+else
+  log "install reports: invalid=${invalid:-?}"; printf '%s\n' "$rep_fail" "$rep_ok" | sed 's/^/[report] /'
+fi
+EXTRA_RESULT="${EXTRA_RESULT:-} install_report=${R_REPORT}"
+[ "$R_REPORT" = ok ] || EXTRA_FAIL=1
 
 # Let the agent start its watchers and first sync.
 sleep 12
@@ -198,6 +224,9 @@ fi
 
 # ── malware scan: every vhost's document root, exclusions, one scan id (test/distro/malware.sh) ──
 . /distro/malware.sh
+
+# ── mail attacks with their details, exposed databases (test/distro/mail.sh) ──
+. /distro/mail.sh
 
 # ── dashboard refusing the agent, restart, local expiry (test/distro/offline.sh) ──
 . /distro/offline.sh

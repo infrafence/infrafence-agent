@@ -82,7 +82,7 @@ Reads your web servers' access logs and scores every visitor IP:
 Scores decay by 5 points per minute. Action levels: **observe** (30) → **slow down** (60) → **block** (80) → **firewall ban** (100). From the dashboard you can see every built-in rule, change weights, thresholds and per-type mode, turn off single patterns, and add your own rules (URL, User-Agent or Referer, plain text or regex). Each release publishes the built-in catalog as `waf-catalog.json`.
 
 ### Bot management
-About 1,500 bots recognized from public lists updated daily ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), both MIT) — search engines, AI crawlers, SEO tools, scanners, monitoring, link previews and more. Fake search-engine bots are unmasked through reverse DNS. For each category, or each single bot, you choose in the dashboard: **allow**, **log only** or **block**. Blocked bots are banned at the firewall; if you allow web server changes, they are also refused by nginx/Apache.
+About 1,500 bots recognized from public lists updated daily ([crawler-user-agents](https://github.com/monperrus/crawler-user-agents), [ai.robots.txt](https://github.com/ai-robots-txt/ai.robots.txt), both MIT) — search engines, AI crawlers, SEO tools, scanners, monitoring, link previews and more. Fake search-engine bots are unmasked through forward-confirmed reverse DNS: a request that claims to be Googlebot or Bingbot but does not come from Google or Bing is scored like any other bad request and banned when it keeps going, while the real Google, Bing, Yahoo, DuckDuckGo and Apple crawlers are never banned by a bot block rule. For each category, or each single bot, you choose in the dashboard: **allow**, **log only** or **block**. Blocked bots are banned at the firewall; if you allow web server changes, they are also refused by nginx/Apache.
 
 ### Malware scanner
 - **Signature scanning** — 28 built-in patterns for web shells, backdoors, crypto miners and phishing kits
@@ -108,6 +108,7 @@ About 1,500 bots recognized from public lists updated daily ([crawler-user-agent
 - Never on servers whose configuration is managed by a hosting panel or a configuration-management tool
 - For Apache with mod_security2: 13 rules (SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, scanner blocking), blocking on the first request
 - Safe: if Apache's configuration test fails, the change is rolled back
+- An existing ModSecurity audit log is read too: OWASP CRS and Comodo WAF (cPanel) matches are reported by attack type (SQL injection, XSS, RCE, path traversal...); a Comodo rule whose message names no known attack stays `unknown`
 
 ### Outbound and DNS threat detection
 - **Outbound connections** to IPs on public threat-intelligence lists, downloaded by each server once a day (known-hijacked netblocks, the Emerging Threats compromised-hosts list)
@@ -127,7 +128,8 @@ Tracks every SSH session end-to-end — auth method, source IP reputation, login
 
 ### And more
 - **Port scans** — every incoming connection attempt is seen (TCP SYN, read-only kernel filter): 15 or more ports from one address in 10 minutes, or 30 or more from 3 or more addresses of one network, is a port scan. Only ports nothing answered count: never open services, nor the data connections of a passive-mode FTP client (FileZilla) to the passive range of Pure-FTPd, ProFTPD or vsftpd, read from their configuration (cPanel included); the same client trying other ports is still reported. Banning port scanners is off by default
-- **Mail, database and FTP** — brute force detection for Postfix, Dovecot, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD and vsftpd
+- **Mail, database and FTP** — brute force detection for Postfix, Exim (cPanel `exim_mainlog`, Debian `exim4/mainlog`), Dovecot, Roundcube, MySQL, PostgreSQL, MongoDB, Pure-FTPd, ProFTPD and vsftpd. Mail events say what the log line says: the targeted mailbox, the protocol (SMTP, submission, IMAP, POP3, ManageSieve, Roundcube), the login method, the attempts from the address, and for relay probes the recipient and its domain
+- **Exposed databases** — MySQL/MariaDB, PostgreSQL, Redis and MongoDB listening on all addresses (`0.0.0.0`, `[::]`) or on a public address, read from the kernel's socket table at start and every 10 minutes; the event names the address and is sent again only when it changes
 - **Docker-aware** — finds web containers' logs and protects published container ports (`DOCKER-USER`)
 - **Country blocking** from the dashboard (needs `ipset`). The agent downloads the country database from your dashboard ([DB-IP](https://db-ip.com) IP to Country Lite, CC BY 4.0) only while a country is blocked, at most once a day. The allow list, the server's own addresses and the SSH sessions logged in when a country is blocked are never blocked (a connection still trying to log in, such as a brute force, does not count). [Country blocking](https://infrafence.com/docs/country-blocking)
 - **Hosting panels recognized** (24, e.g. cPanel/WHM, Plesk, DirectAdmin, CyberPanel, HestiaCP, Coolify, Easypanel) and **LiteSpeed / OpenLiteSpeed** — InfraFence never edits a configuration a panel or LiteSpeed manages
