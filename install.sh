@@ -43,26 +43,64 @@ success() { echo -e "${GREEN}[infrafence]${NC} ✓ $*"; }
 warn()    { echo -e "${YELLOW}[infrafence]${NC} ! $*"; }
 error()   { echo -e "${RED}[infrafence]${NC} ✗ $*" >&2; exit 1; }
 
-# Report install progress to the panel (best-effort, never blocks)
+# json_escape prints $1 (at most 500 characters) as the inside of a JSON
+# string: backslashes, quotes and control characters escaped or dropped.
+json_escape() {
+    local s="${1:0:500}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s" | tr -d '\000-\010\013\014\016-\037'
+}
+
+# The installer's current phase (start, ssl, deps, download, preflight,
+# ipset, install, register, service), sent with every report so a failure
+# says where it stopped.
+INSTALL_PHASE="start"
+FAILURE_REPORTED=false
+# Temporary files removed on exit (on_exit), whatever the exit status.
+CLEANUP_PATHS=()
+
+# Report install progress to the panel (best-effort, never blocks). Only
+# the token's first 16 characters are sent, never the token itself, and
+# nothing else from the host but the OS name and the architecture.
 report_status() {
     local step="$1"
     local err="${2:-}"
     [[ -z "${INSTALL_TOKEN:-}" ]] && return 0
+    command -v curl &>/dev/null || return 0
+    case "$step" in *_failed|failed) FAILURE_REPORTED=true ;; esac
     local prefix="${INSTALL_TOKEN:0:16}"
     local os_info
     os_info="$(collect_system_info 2>/dev/null || echo unknown)"
     local arch
     arch="$(uname -m 2>/dev/null || echo unknown)"
     local api_url="${INFRAFENCE_SERVER_URL:-https://infrafence.com}"
-    # Escape double quotes in error string for JSON safety
     local err_json="null"
     if [[ -n "$err" ]]; then
-        err_json="\"$(echo "$err" | sed 's/"/\\"/g' | head -c 500)\""
+        err_json="\"$(json_escape "$err")\""
     fi
     curl -fsSL --max-time 5 -X POST "${api_url}/api/v1/install/status" \
         -H 'Content-Type: application/json' \
-        -d "{\"token_prefix\":\"${prefix}\",\"step\":\"${step}\",\"error\":${err_json},\"os\":\"${os_info}\",\"arch\":\"${arch}\"}" \
+        -d "{\"token_prefix\":\"$(json_escape "$prefix")\",\"step\":\"${step}\",\"phase\":\"${INSTALL_PHASE}\",\"error\":${err_json},\"os\":\"$(json_escape "$os_info")\",\"arch\":\"$(json_escape "$arch")\"}" \
         >/dev/null 2>&1 || true
+}
+
+# on_exit (EXIT trap): removes the temporary files and, when the installer
+# stops with an error that was not reported yet (a failed command under
+# set -e, an error() call), reports the phase it stopped in. The command
+# itself is not sent: it can hold the token.
+on_exit() {
+    local rc=$?
+    if [[ ${#CLEANUP_PATHS[@]} -gt 0 ]]; then
+        rm -rf -- "${CLEANUP_PATHS[@]}" 2>/dev/null || true
+    fi
+    if [[ $rc -ne 0 ]] && [[ "$FAILURE_REPORTED" != true ]]; then
+        report_status "failed" "installer stopped with exit status ${rc} during the ${INSTALL_PHASE} step"
+    fi
+    return $rc
 }
 
 # ─── Parse args ───────────────────────────────────────────────────────────────
@@ -241,7 +279,10 @@ check_deps() {
     fi
 
     warn "Installing/updating dependencies: ${missing[*]}"
-    install_packages "${missing[@]}" || dep_install_failed "$PKG_ERROR"
+    if ! install_packages "${missing[@]}"; then
+        report_status "deps_failed" "Could not install ${missing[*]}: ${PKG_ERROR}"
+        dep_install_failed "$PKG_ERROR"
+    fi
 }
 
 # package_operation_running: a package manager process, or a dpkg/apt lock
@@ -357,8 +398,7 @@ bootstrap_ssl() {
         # run) and elsewhere the root alone is still better than nothing.
         local dry_dir dry_sys=""
         dry_dir="$(mktemp -d /tmp/infrafence-ca-XXXXXX 2>/dev/null)" || return 0
-        # shellcheck disable=SC2064
-        trap "rm -rf '$dry_dir'" EXIT
+        CLEANUP_PATHS+=("$dry_dir")
         write_isrg_root "${dry_dir}/isrg.pem" || return 0
         for f in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/ssl/ca-bundle.pem; do
             [[ -f "$f" ]] && dry_sys="$f" && break
@@ -377,8 +417,7 @@ bootstrap_ssl() {
         warn "Could not create temp file — install may fail if SSL issues persist."
         return 0
     }
-    # shellcheck disable=SC2064
-    trap "rm -f '$ca_tmp'" EXIT
+    CLEANUP_PATHS+=("$ca_tmp")
     write_isrg_root "$ca_tmp" || { rm -f "$ca_tmp"; return 0; }
 
     # Build a permanent merged bundle (system CAs + ISRG Root X1).
@@ -1077,16 +1116,19 @@ main() {
     echo    "  ─────────────────────────"
     echo ""
 
+    trap on_exit EXIT
     check_root
     check_os
     detect_init
     report_status "started"
+    INSTALL_PHASE="ssl"
     bootstrap_ssl
 
     local arch
     arch="$(detect_arch)"
     info "Detected: Linux ${arch}"
 
+    INSTALL_PHASE="deps"
     check_deps
 
     # Create config directory
@@ -1096,7 +1138,9 @@ main() {
     fi
 
     # Download binary (to a temp file) and scan the host before changing it
+    INSTALL_PHASE="download"
     download_binary "$arch"
+    INSTALL_PHASE="preflight"
     run_preflight
 
     if [[ "$DRY_RUN" == true ]]; then
@@ -1123,7 +1167,9 @@ main() {
         exit 0
     fi
 
+    INSTALL_PHASE="ipset"
     maybe_install_ipset
+    INSTALL_PHASE="install"
     install_binary
 
     # --install-only: install binary + systemd service, skip registration
@@ -1152,6 +1198,7 @@ main() {
     # reasoning). Re-registering requires an explicit --force-register flag.
     if [[ -f "${CONFIG_DIR}/config.json" ]] && [[ "$FORCE_REGISTER" != true ]]; then
         warn "Existing config found at ${CONFIG_DIR}/config.json — keeping current registration (pass --force-register to re-register)."
+        INSTALL_PHASE="service"
         install_service
         check_service
         exit 0
@@ -1165,9 +1212,11 @@ main() {
     agent_name="$(echo "$config" | tail -1)"
 
     # Register with install token
+    INSTALL_PHASE="register"
     register_agent "$server_url" "$agent_name" "$INSTALL_TOKEN"
 
     # Install systemd service
+    INSTALL_PHASE="service"
     install_service
 
     # Verify

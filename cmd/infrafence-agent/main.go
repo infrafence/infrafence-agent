@@ -314,6 +314,9 @@ func runAgent() {
 			"action":      entry.Action,
 			"engine_mode": entry.EngineMode,
 		}
+		if rs := entry.Ruleset(); rs != "" {
+			details["waf_ruleset"] = rs
+		}
 		if entry.Host != "" {
 			details["domain"] = entry.Host
 		}
@@ -531,7 +534,7 @@ func runAgent() {
 	// Web-server UA blocking is set up from the sync, only when allowed
 	// (dashboard setting + preflight), see applyWebserverChanges.
 
-	// Start mail log watcher (if Postfix/Dovecot detected)
+	// Start mail log watcher (if Postfix/Dovecot/Exim detected)
 	var mailW *watcher.MailWatcher
 	if watcher.HasMailService() {
 		mailW = watcher.NewMailWatcher(func(ip, reason string, count int) {
@@ -709,27 +712,11 @@ func runAgent() {
 		}
 	})
 
-	// Check for exposed database ports (runs once at startup, once the
-	// observer above sees the events: the panel lists them). A port the
-	// agent's firewall closes to the public is not exposed: reporting it
-	// again would reopen the problem it resolved (resolution.go).
-	go func() {
-		for _, x := range watcher.ExposedDBPortList() {
-			if portClosedByAgent(x.Port) {
-				log.Printf("[dbwatcher] %s listens on all addresses on port %d; the firewall closes it to the public", x.Service, x.Port)
-				continue
-			}
-			log.Printf("[dbwatcher] WARNING: %s", x.Warning)
-			apiClient.ReportEvents([]api.EventRequest{{
-				Type:     "db_exposed",
-				Severity: "critical",
-				Details: map[string]string{
-					"warning": x.Warning, "port": strconv.Itoa(x.Port), "proto": "tcp", "service": x.Service,
-				},
-				OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			}})
-		}
-	}()
+	// Check for exposed database ports at startup (once the observer above
+	// sees the events: the panel lists them), then every 10 minutes,
+	// reporting a port again only when what it listens on changes
+	// (dbexposed.go).
+	go watchExposedDBPorts(apiClient, 10*time.Minute)
 
 	// The allow list, monitor mode and country blocks of the last successful
 	// sync, before any watcher runs: the first sync may fail.

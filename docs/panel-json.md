@@ -615,7 +615,9 @@ problem came back). `resolved_how`: `port_closed`, `fix_applied`, `rescan_clean`
 dashboard (show it as it is).
 
 A database port the agent's firewall closes is no longer reported as `db_exposed` when the agent starts,
-even though the database still listens on all addresses.
+even though the database still listens on all addresses. The ports are checked at start and every 10
+minutes; an open port is reported again only when the addresses it listens on change (`bind_address` in
+the dashboard's event) or the firewall no longer closes it.
 
 ### `coexistence`
 
