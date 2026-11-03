@@ -11,6 +11,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"log/syslog"
 	"maps"
 	"net"
 	"net/http"
@@ -221,6 +222,22 @@ func main() {
 				c.Close()
 			}
 		}()
+		reply(w, map[string]any{"status": "ok"})
+	})
+	// Test control: send msg to the local syslog socket (journald) with the
+	// mail facility and tag as the program name, as Postfix does
+	// (mail_journal case: no rsyslog, no mail log file).
+	mux.HandleFunc("/syslog", func(w http.ResponseWriter, r *http.Request) {
+		sl, err := syslog.New(syslog.LOG_MAIL|syslog.LOG_INFO, r.URL.Query().Get("tag"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer sl.Close()
+		if err := sl.Info(r.URL.Query().Get("msg")); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		reply(w, map[string]any{"status": "ok"})
 	})
 	mux.HandleFunc("/api/v1/install/status", func(w http.ResponseWriter, r *http.Request) {

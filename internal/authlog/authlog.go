@@ -60,6 +60,10 @@ func journalAvailable() bool {
 	return journalReady()
 }
 
+// JournalAvailable reports whether journalctl is installed and journald is
+// running (other watchers that read the journal use it too).
+func JournalAvailable() bool { return journalAvailable() }
+
 // Detect picks the source. On systemd hosts the journal comes first: sshd
 // and PAM log to it (/dev/log is journald's socket) and rsyslog only copies
 // from it, so the journal has every message even when rsyslog is stopped or
