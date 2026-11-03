@@ -98,6 +98,10 @@ About 1,500 bots recognized from public lists updated daily ([crawler-user-agent
 - **Quarantine and ignore** — one click moves a malicious file to `/var/lib/infrafence/quarantine/` (restorable) or marks a false positive so future scans skip it
 - **Scheduled scans** every 3, 6, 12 or 24 hours, plus "Scan now" from the dashboard
 - **Real-time watcher** — checks upload directories every 30 seconds for new PHP files
+- **Every site's document root** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, subdomains, additional domains) and every enabled virtual host in the Apache (following `Include`/`IncludeOptional`, cPanel's `/etc/apache2/conf/httpd.conf`), nginx and OpenLiteSpeed/LiteSpeed configuration, read only and bounded
+- **Scan paths and exclusions per server** — extra folders and folders or patterns never scanned, set in the dashboard; each scan has its own id, a time limit (6 hours by default, then it ends as `timed_out` with the folders done so far) and reports every 10 minutes while it runs
+- **Fewer false positives** — WordPress checksums compared for core files only (not `wp-content/`); PDF font definition files (TCPDF/FPDF) and empty `index.php` stubs are not reported as PHP in uploads, but are still read by the signatures and YARA
+- **PHP versions serving the sites** — the software inventory lists every PHP-FPM pool, mod_php and CGI runtime with the sites mapped to it, besides the CLI version
 
 ### ModSecurity inline WAF (optional)
 - Only when you allow web server changes in the dashboard settings — off by default

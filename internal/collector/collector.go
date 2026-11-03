@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/monitor"
+	"github.com/infrafence/infrafence-agent/internal/phpconf"
 )
 
 // AuditResult is the payload sent to the server.
@@ -20,6 +21,9 @@ type AuditResult struct {
 	Summary     Summary       `json:"summary"`
 	KeySoftware []KeySoftware `json:"key_software"`
 	Packages    []Package     `json:"packages,omitempty"`
+	// PHPRuntimes are the PHP versions that serve the sites (PHP-FPM
+	// pools, mod_php), with which sites use which.
+	PHPRuntimes []PHPRuntime `json:"php_runtimes"`
 }
 
 // Summary holds aggregate software inventory stats.
@@ -59,6 +63,7 @@ func Collect() AuditResult {
 	result.Summary.SecurityUpdates = countSecurityUpdates()
 	result.Summary.LastSystemUpdate = getLastUpdateTime()
 	result.KeySoftware = collectKeySoftware()
+	result.PHPRuntimes = collectPHPRuntimes(phpconf.System)
 
 	return result
 }

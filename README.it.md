@@ -98,6 +98,10 @@ Circa 1.500 bot riconosciuti da liste pubbliche aggiornate ogni giorno ([crawler
 - **Quarantena e ignora** — con un clic sposti un file malevolo in `/var/lib/infrafence/quarantine/` (ripristinabile) o segni un falso positivo, che le scansioni successive saltano
 - **Scansioni pianificate** ogni 3, 6, 12 o 24 ore, più "Scansiona ora" dalla dashboard
 - **Controllo in tempo reale** — verifica ogni 30 secondi le cartelle di upload in cerca di nuovi file PHP
+- **La document root di ogni sito** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, sottodomini, domini aggiuntivi) e ogni virtual host attivo nella configurazione di Apache (seguendo `Include`/`IncludeOptional`, anche `/etc/apache2/conf/httpd.conf` di cPanel), nginx e OpenLiteSpeed/LiteSpeed, in sola lettura e con limiti
+- **Percorsi ed esclusioni per server** — cartelle in più e cartelle o modelli da non controllare mai, impostati dalla dashboard; ogni scansione ha un suo id, un limite di tempo (6 ore di base, poi termina come `timed_out` con le cartelle già fatte) e si fa sentire ogni 10 minuti
+- **Meno falsi positivi** — checksum di WordPress confrontati solo per i file del core (non `wp-content/`); i file di font per PDF (TCPDF/FPDF) e gli `index.php` vuoti non sono segnalati come PHP negli upload, ma firme e YARA li leggono comunque
+- **Versioni di PHP che servono i siti** — l'inventario software elenca ogni pool PHP-FPM, mod_php e CGI con i siti associati, oltre alla versione da riga di comando
 
 ### WAF inline ModSecurity (opzionale)
 - Solo se consenti le modifiche al web server nelle impostazioni della dashboard — disattivato per impostazione predefinita

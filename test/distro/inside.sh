@@ -222,6 +222,9 @@ fi
 # ── passive FTP is not a port scan; a sweep from an FTP client is (test/distro/ftp.sh) ──
 . /distro/ftp.sh
 
+# ── malware scan: every vhost's document root, exclusions, one scan id (test/distro/malware.sh) ──
+. /distro/malware.sh
+
 # ── mail attacks with their details, exposed databases (test/distro/mail.sh) ──
 . /distro/mail.sh
 

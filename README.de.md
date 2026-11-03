@@ -98,6 +98,10 @@ Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([craw
 - **Quarantäne und Ignorieren** — mit einem Klick verschiebst du eine schädliche Datei nach `/var/lib/infrafence/quarantine/` (wiederherstellbar) oder markierst einen Fehlalarm, den spätere Scans überspringen
 - **Geplante Scans** alle 3, 6, 12 oder 24 Stunden, dazu „Jetzt scannen" im Dashboard
 - **Echtzeit-Prüfung** — prüft Upload-Ordner alle 30 Sekunden auf neue PHP-Dateien
+- **Das Document Root jeder Website** — cPanel, HestiaCP/VestaCP, Plesk (`httpdocs`, Subdomains, zusätzliche Domains) und jeder aktive virtuelle Host in der Konfiguration von Apache (`Include`/`IncludeOptional` folgend, auch cPanels `/etc/apache2/conf/httpd.conf`), nginx und OpenLiteSpeed/LiteSpeed, nur lesend und begrenzt
+- **Pfade und Ausschlüsse pro Server** — zusätzliche Ordner und Ordner oder Muster, die nie gescannt werden, im Dashboard festgelegt; jeder Scan hat eine eigene ID, ein Zeitlimit (standardmäßig 6 Stunden, dann endet er als `timed_out` mit den bis dahin geprüften Ordnern) und meldet sich alle 10 Minuten
+- **Weniger Fehlalarme** — WordPress-Prüfsummen nur für Core-Dateien (nicht `wp-content/`); PDF-Schriftdateien (TCPDF/FPDF) und leere `index.php` werden nicht als PHP in Uploads gemeldet, Signaturen und YARA lesen sie aber weiterhin
+- **PHP-Versionen, die die Websites ausliefern** — das Software-Inventar listet jeden PHP-FPM-Pool, mod_php und CGI mit den zugeordneten Websites, neben der Version der Kommandozeile
 
 ### ModSecurity-Inline-WAF (optional)
 - Nur wenn du Änderungen am Webserver in den Dashboard-Einstellungen erlaubst — standardmäßig aus
