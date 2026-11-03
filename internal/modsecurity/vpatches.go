@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -416,3 +417,26 @@ func probeLocal(withHeader bool) int {
 	}
 	return -1
 }
+
+var (
+	patchCVEOnce sync.Once
+	patchCVE     map[string]string
+)
+
+// VirtualPatchCVE maps a numeric ModSecurity rule id of one of our virtual
+// patches (992xxxx) to its CVE, so a block by that rule is attributed.
+func VirtualPatchCVE(numericID string) (string, bool) {
+	patchCVEOnce.Do(func() {
+		patchCVE = map[string]string{}
+		all, _ := VirtualPatches()
+		for _, p := range all {
+			for _, m := range secRuleIDRe.FindAllStringSubmatch(p.Rule, -1) {
+				patchCVE[m[1]] = p.CVE
+			}
+		}
+	})
+	cve, ok := patchCVE[numericID]
+	return cve, ok
+}
+
+var secRuleIDRe = regexp.MustCompile(`\bid:(\d+)`)

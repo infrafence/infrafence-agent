@@ -4,7 +4,7 @@
 # patch case is reported as skip. Adds "vpatch=... restore=..." to
 # EXTRA_RESULT and sets EXTRA_FAIL on a failure.
 
-R_VPATCH=fail R_INEFFECTIVE=fail R_RESTORE=fail
+R_VPATCH=fail R_VPATCH_CVE=skip R_INEFFECTIVE=fail R_RESTORE=fail
 api=http://127.0.0.1:8080
 
 set_sync() { curl -s -X POST -d "$1" "$api/set-sync" >/dev/null; }
@@ -55,6 +55,19 @@ if [ "$modsec" = yes ]; then
     grep -q '^# vpatch vp-cve-2021-44228' /etc/modsecurity/infrafence/infrafence-dynamic.conf || applied="missing-rule"
     grep -q 'id "9920004"' "$errlog" || applied="$applied/no-log"
     log "vpatch: before=$before applied=$applied"
+    # The block is reported with the CVE of the patch (from the audit log, when
+    # the distribution's ModSecurity writes one the agent watches).
+    if journalctl -u infrafence-agent --no-pager | grep -q '\[modsec-audit\] watching'; then
+      R_VPATCH_CVE=fail
+      for _ in $(seq 1 30); do
+        curl -s "$api/state" | grep -o '"details":{[^}]*' | grep -F '"source":"modsecurity"' | grep -qF '"cve":"CVE-2021-44228"' &&
+          { R_VPATCH_CVE=ok; break; }
+        sleep 1
+      done
+      [ "$R_VPATCH_CVE" = ok ] || { curl -s "$api/state" | grep -o '"details":{[^}]*"source":"modsecurity"[^}]*' | tail -3; journalctl -u infrafence-agent --no-pager | grep modsec-audit | tail -5; }
+    else
+      log "vpatch cve: no ModSecurity audit log watched"
+    fi
     # Remove it again (and quarantine a file for the restore case below).
     set_sync '{"virtual_patches":[{"id":2,"rule_id":"vp-cve-2021-44228","action":"remove"}]}'
     grep -qxF "$owner_line" "$dyn" || applied="$applied/owner-line-lost"
@@ -112,6 +125,6 @@ if wait_event quarantine_completed file "$f" 90 && [ ! -e "$f" ]; then
 fi
 [ "$R_RESTORE" = ok ] || { show_events; journalctl -u infrafence-agent --no-pager | grep -i quarantine | tail -5; }
 
-EXTRA_RESULT="${EXTRA_RESULT:-} vpatch=$R_VPATCH vpatch_ineffective=$R_INEFFECTIVE restore=$R_RESTORE"
-{ [ "$R_VPATCH" = fail ] || [ "$R_INEFFECTIVE" = fail ] || [ "$R_RESTORE" = fail ]; } && EXTRA_FAIL=1
+EXTRA_RESULT="${EXTRA_RESULT:-} vpatch=$R_VPATCH vpatch_cve=$R_VPATCH_CVE vpatch_ineffective=$R_INEFFECTIVE restore=$R_RESTORE"
+{ [ "$R_VPATCH" = fail ] || [ "$R_VPATCH_CVE" = fail ] || [ "$R_INEFFECTIVE" = fail ] || [ "$R_RESTORE" = fail ]; } && EXTRA_FAIL=1
 true

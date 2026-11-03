@@ -108,6 +108,7 @@ About 1,500 bots recognized from public lists updated daily ([crawler-user-agent
 - Never on servers whose configuration is managed by a hosting panel or a configuration-management tool
 - For Apache with mod_security2: 13 rules (SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, scanner blocking), blocking on the first request
 - Safe: if Apache's configuration test fails, the change is rolled back
+- A block by a virtual patch, or by a rule tagged with a CVE, is reported with that CVE (`cve`, and `cves` when several), so the dashboard can tell which vulnerabilities are being attacked
 - An existing ModSecurity audit log is read too: OWASP CRS and Comodo WAF (cPanel) matches are reported by attack type (SQL injection, XSS, RCE, path traversal...); a Comodo rule whose message names no known attack stays `unknown`
 
 ### Outbound and DNS threat detection

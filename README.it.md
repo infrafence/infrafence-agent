@@ -108,6 +108,7 @@ Circa 1.500 bot riconosciuti da liste pubbliche aggiornate ogni giorno ([crawler
 - Mai sui server la cui configurazione è gestita da un pannello di hosting o da uno strumento di gestione della configurazione
 - Per Apache con mod_security2: 13 regole (SQL injection, XSS, RCE, SSRF, path traversal, Shellshock, Log4Shell, Spring4Shell, blocco degli scanner), blocco alla prima richiesta
 - Sicuro: se il test di configurazione di Apache fallisce, la modifica viene annullata
+- Un blocco di una virtual patch, o di una regola con il tag di una CVE, viene segnalato con quella CVE (`cve`, e `cves` se sono più di una), così la dashboard sa quali vulnerabilità vengono attaccate
 - Viene letto anche un audit log di ModSecurity già presente: le corrispondenze OWASP CRS e Comodo WAF (cPanel) vengono riportate per tipo di attacco (SQL injection, XSS, RCE, path traversal...); una regola Comodo il cui messaggio non nomina un attacco noto resta `unknown`
 
 ### Minacce in uscita e DNS

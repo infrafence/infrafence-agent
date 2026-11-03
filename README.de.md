@@ -108,6 +108,7 @@ Rund 1.500 bekannte Bots aus täglich aktualisierten öffentlichen Listen ([craw
 - Niemals auf Servern, deren Konfiguration von einem Hosting-Panel oder einem Konfigurationsmanagement-Werkzeug verwaltet wird
 - Für Apache mit mod_security2: 13 Regeln (SQL-Injection, XSS, RCE, SSRF, Path Traversal, Shellshock, Log4Shell, Spring4Shell, Scanner-Sperre), Blockierung bei der ersten Anfrage
 - Sicher: Schlägt der Apache-Konfigurationstest fehl, wird die Änderung rückgängig gemacht
+- Eine Sperre durch einen virtuellen Patch oder durch eine Regel mit dem Tag einer CVE, wird mit dieser CVE gemeldet (`cve`, bei mehreren auch `cves`), damit das Dashboard weiß, welche Schwachstellen angegriffen werden
 - Ein vorhandenes ModSecurity-Audit-Log wird ebenfalls gelesen: Treffer von OWASP CRS und Comodo WAF (cPanel) werden nach Angriffsart gemeldet (SQL-Injection, XSS, RCE, Path Traversal...); eine Comodo-Regel, deren Meldung keinen bekannten Angriff nennt, bleibt `unknown`
 
 ### Ausgehende und DNS-Bedrohungen
