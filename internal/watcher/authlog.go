@@ -85,6 +85,10 @@ type Watcher struct {
 	onBan   BanFunc
 	onEvent EventFunc
 	checkIP CheckIPFunc
+	// onLogin sees every successful SSH login line; neverBan says why an
+	// address must not be banned ("" : it may be). See SetLoginGuard.
+	onLogin  func(line string)
+	neverBan func(ip string) string
 
 	mu          sync.Mutex
 	threshold   int
@@ -117,6 +121,16 @@ func (w *Watcher) SetCheckIP(fn CheckIPFunc) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.checkIP = fn
+}
+
+// SetLoginGuard sets the successful-login hook (onLogin, called with every
+// "Accepted ..." line, also while the session tracker is off) and the guard
+// consulted before a ban: an address neverBan names a reason for is not
+// banned; its attack is still reported, with action "not_banned".
+func (w *Watcher) SetLoginGuard(onLogin func(line string), neverBan func(ip string) string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.onLogin, w.neverBan = onLogin, neverBan
 }
 
 // SetOnEvent sets the callback used to report detection events (e.g. in monitor mode).
@@ -386,6 +400,14 @@ func isPrivateIP(ip string) bool {
 }
 
 func (w *Watcher) processLine(line string) {
+	if strings.Contains(line, "Accepted ") {
+		w.mu.Lock()
+		onLogin := w.onLogin
+		w.mu.Unlock()
+		if onLogin != nil {
+			onLogin(line)
+		}
+	}
 	ip, reason := matchSSH(line)
 	if ip == "" {
 		return
@@ -417,6 +439,9 @@ func (w *Watcher) recordAttempt(ip, reason string) {
 	if w.checkIP != nil {
 		if banReason := w.checkIP(ip); banReason != "" {
 			w.banned[ip] = true
+			if w.guarded(ip, banReason, 1) {
+				return
+			}
 			if w.monitorMode {
 				if w.onEvent != nil {
 					go w.onEvent(ip, "brute_force", "critical", map[string]string{
@@ -445,6 +470,9 @@ func (w *Watcher) recordAttempt(ip, reason string) {
 	if len(recent) >= w.threshold {
 		w.banned[ip] = true
 		count := len(recent)
+		if w.guarded(ip, reason, count) {
+			return
+		}
 		if w.monitorMode {
 			if w.onEvent != nil {
 				go w.onEvent(ip, "brute_force", "critical", map[string]string{
@@ -456,6 +484,27 @@ func (w *Watcher) recordAttempt(ip, reason string) {
 			w.emitBanEvent(ip, reason, count)
 		}
 	}
+}
+
+// guarded reports the attack of an address the login guard protects, which
+// is not banned. Caller must hold w.mu.
+func (w *Watcher) guarded(ip, reason string, attempts int) bool {
+	if w.neverBan == nil || w.monitorMode {
+		return false
+	}
+	why := w.neverBan(ip)
+	if why == "" {
+		return false
+	}
+	if w.onEvent != nil {
+		go w.onEvent(ip, "brute_force", "critical", map[string]string{
+			"reason":     reason,
+			"attempts":   strconv.Itoa(attempts),
+			"action":     "not_banned",
+			"not_banned": why,
+		})
+	}
+	return true
 }
 
 // emitBanEvent reports the attack behind a ban as an event too. Without it,

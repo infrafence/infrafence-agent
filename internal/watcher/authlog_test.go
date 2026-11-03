@@ -52,3 +52,49 @@ func TestBruteForceMonitorModeEventOnly(t *testing.T) {
 		t.Fatalf("monitor mode: got %d bans, %d events; want 0 and 1", len(bans), len(events))
 	}
 }
+
+// An address the login guard names is not banned; its attack is reported as
+// not banned, and every successful login line reaches the login hook.
+func TestBruteForceLoginGuard(t *testing.T) {
+	banCh := make(chan string, 4)
+	evCh := make(chan map[string]string, 4)
+	w := New(func(ip, reason string, count int) { banCh <- ip })
+	w.SetOnEvent(func(ip, eventType, severity string, d map[string]string) { evCh <- d })
+	var logins []string
+	w.SetLoginGuard(func(line string) { logins = append(logins, line) }, func(ip string) string {
+		if ip == "198.51.100.7" {
+			return "ssh_login"
+		}
+		return ""
+	})
+	w.processLine("Nov  3 10:00:00 web1 sshd[10]: Accepted publickey for root from 198.51.100.7 port 52113 ssh2")
+	for i := 0; i < 5; i++ {
+		w.processLine("Nov  3 10:01:00 web1 sshd[11]: Failed password for root from 198.51.100.7 port 52114 ssh2")
+		w.processLine("Nov  3 10:01:00 web1 sshd[12]: Failed password for root from 203.0.113.8 port 52115 ssh2")
+	}
+	if len(logins) != 1 {
+		t.Fatalf("login hook: %v", logins)
+	}
+	var bans []string
+	byAction := map[string]map[string]string{}
+	deadline := time.After(time.Second)
+	for done := false; !done; {
+		select {
+		case ip := <-banCh:
+			bans = append(bans, ip)
+		case d := <-evCh:
+			byAction[d["action"]] = d
+		case <-deadline:
+			done = true
+		}
+	}
+	if len(bans) != 1 || bans[0] != "203.0.113.8" {
+		t.Errorf("bans: %v", bans)
+	}
+	if d := byAction["not_banned"]; d == nil || d["not_banned"] != "ssh_login" || d["attempts"] != "5" {
+		t.Errorf("guarded event: %#v", byAction)
+	}
+	if byAction["banned"] == nil {
+		t.Errorf("the other address's ban event is missing: %#v", byAction)
+	}
+}
