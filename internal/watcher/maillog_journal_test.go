@@ -203,3 +203,17 @@ func TestDetectMailSources(t *testing.T) {
 		}
 	})
 }
+
+func TestJournalIdentifier(t *testing.T) {
+	for line, want := range map[string]string{
+		"Nov 03 10:15:40 mx1 postfix/submission/smtpd[812]: warning: x": "postfix/submission/smtpd",
+		"Nov 03 10:22:00 mx1 dovecot[611]: imap-login: Disconnected":    "dovecot",
+		"Nov 03 10:22:00 mx1 exim: 2026-11-03 rejected RCPT":            "exim",
+		"2026-11-03 10:20:11 dovecot_login authenticator failed":        "",
+		"short": "",
+	} {
+		if got := journalIdentifier(line); got != want {
+			t.Errorf("journalIdentifier(%q) = %q, want %q", line, got, want)
+		}
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -39,12 +41,30 @@ const (
 )
 
 // followJournal reads the journal's mail messages for ever, restarting
-// journalctl with a growing delay when it exits.
+// journalctl with a growing delay when it exits (messages logged while it
+// is down are not read: no history, as for the SSH journal reader).
+// Messages from a program whose own log file is also watched are skipped:
+// Exim and Dovecot can log to their file and to syslog at the same time,
+// and a line must not be counted twice.
 func (w *MailWatcher) followJournal() {
+	var skip []string
+	for _, p := range w.logPaths {
+		switch {
+		case p == "/var/log/dovecot.log":
+			skip = append(skip, "dovecot")
+		case slices.Contains(eximLogPaths, p):
+			skip = append(skip, "exim", "exim4")
+		}
+	}
+	onLine := func(line string) {
+		if !slices.Contains(skip, journalIdentifier(line)) {
+			w.processLine(line)
+		}
+	}
 	delay := journalRetryMin
 	for {
 		start := time.Now()
-		err := followMailJournal(context.Background(), w.processLine)
+		err := followMailJournal(context.Background(), onLine)
 		if time.Since(start) >= journalRunOK {
 			delay = journalRetryMin
 		}
@@ -62,6 +82,8 @@ func followMailJournal(ctx context.Context, onLine func(string)) error {
 	if err != nil {
 		return fmt.Errorf("journalctl pipe: %w", err)
 	}
+	var stderr tailBuffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start journalctl: %w", err)
 	}
@@ -78,9 +100,37 @@ func followMailJournal(ctx context.Context, onLine func(string)) error {
 		return fmt.Errorf("read journalctl: %w", readErr)
 	}
 	if waitErr != nil {
-		return fmt.Errorf("journalctl exited: %w", waitErr)
+		return fmt.Errorf("journalctl exited: %w %s", waitErr, stderr.String())
 	}
 	return errors.New("journalctl exited")
+}
+
+// tailBuffer keeps the last 512 bytes written to it (journalctl's error).
+type tailBuffer struct{ b []byte }
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > 512 {
+		t.b = t.b[len(t.b)-512:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return strings.TrimSpace(string(t.b)) }
+
+// journalIdentifier returns the program name of a line in journalctl's
+// short format, "Nov 03 10:15:40 host postfix/smtpd[812]: message"
+// ("postfix/smtpd"); "" when the line has another shape.
+func journalIdentifier(line string) string {
+	f := strings.SplitN(line, " ", 6)
+	if len(f) < 6 || !strings.HasSuffix(f[4], ":") {
+		return ""
+	}
+	id := strings.TrimSuffix(f[4], ":")
+	if i := strings.IndexByte(id, '['); i >= 0 {
+		id = id[:i]
+	}
+	return id
 }
 
 // readMailJournal splits r into lines with the file reader's bounds: a
