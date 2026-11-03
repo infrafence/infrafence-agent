@@ -36,6 +36,15 @@ loginhist_before() {
     LH_SHADOW=/tmp/shadow.lh-test
     cp -p /etc/shadow "$LH_SHADOW" && usermod -p '*' root
   fi
+  # On an Ubuntu host (the CI runners) AppArmor's unix-chkpwd profile is in
+  # the host kernel and confines the container's unix_chkpwd too: it denies
+  # the capabilities (dac_read_search, dac_override) that reading the RPM
+  # family's /etc/shadow (mode 000) needs, pam_unix's account check fails
+  # ("could not obtain user info (root)") and sshd closes the connection
+  # ("Access denied for user root by PAM account configuration").
+  # Readable by its owner for the login, mode restored afterwards.
+  LH_SHMODE=$(stat -c %a /etc/shadow)
+  [ "$LH_SHMODE" = 0 ] && chmod 400 /etc/shadow
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   cp -p /root/.ssh/authorized_keys /tmp/authorized_keys.lh 2>/dev/null || : >/tmp/authorized_keys.lh
   cat /tmp/admkey.pub >>/root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys
@@ -45,9 +54,11 @@ loginhist_before() {
     log "loginhist: $LH_ADMIN logged in before the install"
   else
     log "loginhist: the administrator's login failed:"; tail -5 /tmp/admssh.log
+    journalctl --no-pager -n 5 -u sshd -u ssh
   fi
   cp -p /tmp/authorized_keys.lh /root/.ssh/authorized_keys
   [ -n "$LH_SHADOW" ] && cp -p "$LH_SHADOW" /etc/shadow && rm -f "$LH_SHADOW"
+  [ "$LH_SHMODE" = 0 ] && chmod 000 /etc/shadow
 
   # A login 10 days ago in a rotated, gzipped log (hosts with a log file).
   local f
