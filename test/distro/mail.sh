@@ -103,9 +103,10 @@ if command -v journalctl >/dev/null && [ -d /run/systemd/journal ]; then
   # address) is repeated until its event shows the agent is reading.
   warm=no
   for _ in $(seq 1 30); do
-    echo "imap-login: Disconnected (auth failed, 1 attempts in 2 secs): user=<warmup@example.com>, method=PLAIN, rip=198.51.100.237, lip=203.0.113.1, TLS" | systemd-cat -t dovecot -p info
+    curl -s -G "$MAIL_API/syslog" --data-urlencode "tag=postfix/smtpd" \
+      --data-urlencode "msg=NOQUEUE: reject: RCPT from unknown[198.51.100.237]: 554 5.7.1 <warmup@journal-target.example>: Relay access denied; from=<spam@example.net> to=<warmup@journal-target.example> proto=ESMTP helo=<x>" >/dev/null
     sleep 2
-    [ -n "$(mail_event mail_brute_force 198.51.100.237)" ] && { warm=yes; break; }
+    [ -n "$(mail_event mail_relay_scan 198.51.100.237)" ] && { warm=yes; break; }
   done
   [ "$warm" = yes ] || log "mail_journal: no event for the warm-up message"
 
@@ -144,6 +145,8 @@ if command -v journalctl >/dev/null && [ -d /run/systemd/journal ]; then
     log "mail_journal: watching=$jwatching missing=${jwhy#,}"
     printf '%s\n' "$jpfx" "$jsub" "$jdov" | sed 's/^/[mail_journal] event: /'
     journalctl --no-pager -n 10 SYSLOG_FACILITY=2 + SYSLOG_IDENTIFIER=dovecot 2>&1 | sed 's/^/[mail_journal] journal: /'
+    ps -o pid,lstart,args -C journalctl 2>&1 | sed 's/^/[mail_journal] ps: /'
+    journalctl -u infrafence-agent --no-pager --since "$since" | grep -iE 'mailwatcher|journal' | tail -5 | sed 's/^/[mail_journal] agent: /'
   fi
 
   for f in /var/log/mail.log /var/log/maillog; do
