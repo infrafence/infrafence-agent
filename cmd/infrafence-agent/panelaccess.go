@@ -89,8 +89,8 @@ type panelDBClientOut struct {
 	Allowed   bool `json:"allowed"`
 }
 
-// panelDBClientsMax bounds the answer: at most 1000 addresses per port are
-// kept, and a few ports at most have clients.
+// panelDBClientsMax bounds the answer (the client log keeps at most 1000
+// addresses per port, internal/dbclients).
 const panelDBClientsMax = 500
 
 func panelDBClients() panel.Response {
@@ -106,6 +106,9 @@ func panelDBClients() panel.Response {
 	}
 	if d := dbDeclared.Load(); d != nil {
 		for _, x := range *d {
+			if len(out) >= 2*panelDBClientsMax {
+				break
+			}
 			out = append(out, panelDBClientOut{
 				Port: dbMySQLPort, IP: x.Entry, Source: cleanText(x.Source, 40), Host: orNull(cleanText(x.Host, 255)),
 				Allowed: dbAllowNet(x.Entry),
