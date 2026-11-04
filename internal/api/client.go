@@ -681,6 +681,9 @@ type SyncConfig struct {
 	// Resolutions inside config: read only when the sync response has none
 	// at the top level (SyncResponse.Resolutions).
 	Resolutions []Resolution `json:"resolutions,omitempty"`
+	// SSH users whose logins never protect an address (Settings, SSH service
+	// users). Absent from dashboards that don't send it: nil keeps the list.
+	SSHServiceUsers *[]string `json:"ssh_service_users,omitempty"`
 }
 
 // Resolution says a problem event's subject ("port:tcp/3306",

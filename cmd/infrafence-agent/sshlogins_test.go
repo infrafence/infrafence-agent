@@ -152,3 +152,88 @@ func TestLiveLoginLimits(t *testing.T) {
 		t.Errorf("known address not updated: %+v", e[0])
 	}
 }
+
+// The logins of SSH service users protect no address; an address another
+// user logged in from stays protected.
+func TestLoginGuardServiceUsers(t *testing.T) {
+	logs := withLoginStore(t)
+	now := time.Now()
+	var logins []loginhistory.Login
+	for i := 1; i <= loginhistory.ServiceUserNets+1; i++ {
+		logins = append(logins, loginhistory.Login{IP: "20.42." + strconv.Itoa(i) + ".7", User: "infrafence-deploy", Time: now.Add(-time.Duration(i) * time.Hour)})
+	}
+	logins = append(logins,
+		loginhistory.Login{IP: "198.51.100.7", User: "root", Time: now.Add(-time.Hour)},
+		loginhistory.Login{IP: "20.42.3.7", User: "root", Time: now.Add(-time.Hour)},
+		loginhistory.Login{IP: "198.51.100.9", User: "ops", Time: now.Add(-time.Hour)},
+	)
+	sshLoginStore.Apply(loginhistory.Result{Logins: logins}, now)
+	// A session event of the deploy user (the session tracker) does not
+	// protect the address either.
+	noteEgressEvent(api.EventRequest{Type: "ssh_session", Details: map[string]string{"ip": "20.42.5.7", "user": "infrafence-deploy"}})
+
+	if guarded("20.42.5.7", "banning") || guarded("20.42.11.7", "banning") {
+		t.Error("a service user's address is guarded")
+	}
+	if !guarded("20.42.3.7", "banning") || !guarded("198.51.100.7", "banning") {
+		t.Error("the administrator's addresses lost the guard")
+	}
+	if bans := guardBans([]api.Ban{{IPAddress: "20.42.5.7"}, {IPAddress: "198.51.100.7"}}); len(bans) != 1 || bans[0].IPAddress != "20.42.5.7" {
+		t.Errorf("dashboard bans kept: %+v", bans)
+	}
+	// The egress checks still read every login.
+	if !fwSSHLoginSeen("20.42.5.7") {
+		t.Error("egress check misses a service user's login")
+	}
+	exempt := strings.Join(sshLoginExempt(), ",")
+	if strings.Contains(exempt, "20.42.5.7") || !strings.Contains(exempt, "20.42.3.7") {
+		t.Errorf("exempt: %s", exempt)
+	}
+
+	// The dashboard's list: nil keeps it, a list applies.
+	applySSHServiceUsers(nil)
+	if !guarded("198.51.100.9", "banning") {
+		t.Error("nil list changed the guard")
+	}
+	applySSHServiceUsers(&[]string{"ops"})
+	if guarded("198.51.100.9", "banning") {
+		t.Error("a listed user's address is guarded")
+	}
+	if !strings.Contains(logs.String(), "[ssh-logins] the dashboard lists 1 SSH service user(s), their logins protect no address: ops") {
+		t.Errorf("log: %s", logs.String())
+	}
+	got := serviceUserList(sshLoginStore.ServiceUsers())
+	if got != "infrafence-deploy (11 networks), ops (listed in the dashboard)" {
+		t.Errorf("service users %q", got)
+	}
+
+	// The report: the protected addresses first.
+	req := sshLoginsPayload()
+	if req.Logins[0].IP != "198.51.100.7" && req.Logins[0].IP != "20.42.3.7" {
+		t.Errorf("first reported %s", req.Logins[0].IP)
+	}
+	if last := req.Logins[len(req.Logins)-1].IP; last == "198.51.100.7" || last == "20.42.3.7" {
+		t.Errorf("last reported %s", last)
+	}
+}
+
+// After a scan the agent logs the service users once.
+func TestScanLogsServiceUsers(t *testing.T) {
+	logs := withLoginStore(t)
+	old := sshLoginScan
+	t.Cleanup(func() { sshLoginScan = old })
+	sshLoginScan = func(_ context.Context, now time.Time) loginhistory.Result {
+		var r loginhistory.Result
+		for i := 1; i <= loginhistory.ServiceUserNets+1; i++ {
+			r.Logins = append(r.Logins, loginhistory.Login{IP: "20.42." + strconv.Itoa(i) + ".7", User: "metrics-deploy", Time: now.Add(-time.Hour)})
+		}
+		r.Logins = append(r.Logins, loginhistory.Login{IP: "198.51.100.7", User: "root", Time: now.Add(-time.Hour)})
+		return r
+	}
+	scanSSHLogins()
+	out := logs.String()
+	if !strings.Contains(out, "1 address(es) with an SSH login in the last 30 days, never banned") ||
+		!strings.Contains(out, "[ssh-logins] service users (their logins protect no address): metrics-deploy (11 networks); 11 address(es) only they logged in from can be banned") {
+		t.Errorf("log: %s", out)
+	}
+}
