@@ -57,7 +57,9 @@ for _ in $(seq 1 10); do ss -tn state established 2>/dev/null | grep -q '192.0.2
 
 ok=$reported
 # The WHM plugin's list (panel db-clients): the regular client, not
-# whitelisted yet, and the declared range of 3306.
+# whitelisted yet, and the declared range of 3306. (Checked now: with the
+# shortened test days its observations leave the 7-day window within
+# minutes; the whitelisted state is a unit test.)
 dbpanel() { "$AGENT" panel db-clients --json 2>/dev/null | grep -o "{[^{}]*\"ip\":\"$1\"[^{}]*}"; }
 row=$(dbpanel 192.0.2.2)
 { grep -q '"port":5432' <<<"$row" && grep -q '"source":"observed"' <<<"$row" && grep -q '"allowed":false' <<<"$row" &&
@@ -87,7 +89,6 @@ if wait_event 202; then
   closed 5432 || { log "5432 not closed after whitelisting"; ok=fail; }
   reaches 192.0.2.2 5432 || { log "the whitelisted client lost 5432"; ok=fail; }
   reaches 192.0.2.3 5432 && { log "192.0.2.3 still reaches 5432"; ok=fail; }
-  grep -q '"allowed":true' <<<"$(dbpanel 192.0.2.2)" || { log "panel db-clients after whitelisting: $(dbpanel 192.0.2.2)"; ok=fail; }
 else
   log "no result for 202"; ok=fail
 fi

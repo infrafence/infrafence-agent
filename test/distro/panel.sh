@@ -179,7 +179,8 @@ curl -s "$API/listen?addr=0.0.0.0:6379&net=tcp4" >/dev/null
 systemctl restart infrafence-agent
 for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 # dbx [PORT]: the newest db_exposed event of PORT (6379).
-dbx() { pcmd events --limit 500 | grep -o '{[^{}]*"type":"db_exposed"[^{}]*}' | grep -F "\"subject\":\"port:tcp/${1:-6379}\"" | head -1; }
+# Keys are sorted: "details" (an object, agent 1.0.41) comes first.
+dbx() { pcmd events --limit 500 | grep -o '{"details":{[^{}]*}[^{}]*"type":"db_exposed"[^{}]*}' | grep -F "\"subject\":\"port:tcp/${1:-6379}\"" | head -1; }
 for _ in $(seq 1 30); do [ -n "$(dbx)" ] && break; sleep 1; done
 e=$(dbx)
 { grep -q '"subject":"port:tcp/6379"' <<<"$e" && grep -q '"state":"open"' <<<"$e" &&
