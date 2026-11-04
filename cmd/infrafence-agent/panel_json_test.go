@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/api"
+	"github.com/infrafence/infrafence-agent/internal/dbclients"
 	"github.com/infrafence/infrafence-agent/internal/loginhistory"
 	"github.com/infrafence/infrafence-agent/internal/malware"
 	"github.com/infrafence/infrafence-agent/internal/panel"
@@ -146,12 +147,15 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 	panelState.Unlock()
 
 	panelNoteEvent(api.EventRequest{Type: "ssh_brute_force", Severity: "warning", SourceIP: "203.0.113.7", OccurredAt: at(-3 * time.Hour), Details: map[string]string{"source": "watcher"}})
-	panelNoteEvent(api.EventRequest{Type: "sql_injection", Severity: "critical", SourceIP: "198.51.100.23", OccurredAt: at(-2 * time.Hour), Details: map[string]string{"source": "modsecurity"}})
+	panelNoteEvent(api.EventRequest{Type: "sql_injection", Severity: "critical", SourceIP: "198.51.100.23", OccurredAt: at(-2 * time.Hour),
+		Details: map[string]string{"source": "modsecurity", "attack_type": "attack-sqli", "domain": "alice.example", "cve": "CVE-2024-27956", "rule_ids": "9920004"}})
+	panelNoteEvent(api.EventRequest{Type: "mail_brute_force", Severity: "warning", SourceIP: "203.0.113.31", OccurredAt: at(-100 * time.Minute),
+		Details: map[string]string{"source": "watcher", "target_user": "info@alice.example", "protocol": "imap", "auth_method": "plain", "attempts": "6", "mta": "dovecot"}})
 	panelNoteEvent(api.EventRequest{Type: "integrity_change", Severity: "warning", OccurredAt: at(-90 * time.Minute), Details: map[string]string{"file": "/etc/passwd"}})
 	// MySQL open to the internet, closed by the agent's firewall at the
 	// dashboard's request.
 	panelNoteEvent(api.EventRequest{Type: "db_exposed", Severity: "critical", OccurredAt: at(-80 * time.Minute),
-		Details: map[string]string{"warning": "MySQL/MariaDB is exposed publicly on port 3306", "port": "3306", "proto": "tcp", "service": "MySQL/MariaDB"}})
+		Details: map[string]string{"warning": "MySQL/MariaDB is exposed publicly on port 3306", "port": "3306", "proto": "tcp", "service": "MySQL/MariaDB", "bind_address": "0.0.0.0:3306"}})
 	panelNoteEvent(api.EventRequest{Type: "firewall_action_done", Severity: "info", OccurredAt: at(-70 * time.Minute),
 		Details: map[string]string{"action_id": "7", "kind": "close_port", "port": "3306", "proto": "tcp", "status": "done", "message": "port 3306 closed"}})
 	panelNoteEvent(api.EventRequest{Type: "malware_realtime", Severity: "critical", OccurredAt: at(-time.Hour),
@@ -164,6 +168,41 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 		Details: map[string]string{"runtime": "ea-php82", "directive": "display_errors", "value": "On", "check_id": "PHP_DISPLAY_ERRORS@ea-php82"}})
 	panelNoteResolutions([]api.Resolution{{Subject: "file:/etc/passwd", ResolvedAt: at(-20 * time.Minute), How: "marked_expected", By: "user"}})
 	t.Cleanup(func() { syncedResolutions.Store(nil) })
+	// Who reaches the server: SSH logins of the last 30 days, regular and
+	// declared clients of MySQL.
+	day := 24 * time.Hour
+	oldLogins, oldCountry, oldAllowNet := panelLogins, panelCountry, dbAllowNet
+	panelLogins = func() ([]loginhistory.Entry, time.Time) {
+		return []loginhistory.Entry{
+			{IP: "198.51.100.61", Users: []string{"root"}, First: f.now.Add(-21 * day), Last: f.now.Add(-25 * time.Minute), Count: 14, Imported: true, Live: true},
+			{IP: "2001:db8:44::7", Users: []string{"deploy", "root"}, First: f.now.Add(-9 * day), Last: f.now.Add(-3 * day), Count: 3, Imported: true},
+		}, f.now.Add(-6 * time.Hour)
+	}
+	panelCountry = func(ip string) string {
+		if ip == "198.51.100.61" {
+			return "IT"
+		}
+		return ""
+	}
+	dbl := dbclients.New("")
+	seen := f.now.Add(-4 * day)
+	dbl.Now = func() time.Time { return seen }
+	for d := 0; d < 4; d++ {
+		dbl.Observe(map[int][]string{3306: {"203.0.113.80"}, 6379: {"192.0.2.81"}})
+		if d < 3 {
+			seen = seen.Add(day)
+		}
+	}
+	dbl.Now = func() time.Time { return f.now }
+	dbClientLog.Store(dbl)
+	declared := []dbclients.Declared{{Entry: "198.51.100.0/24", Host: "198.51.100.%", Source: "cpanel_access_hosts"}}
+	dbDeclared.Store(&declared)
+	dbAllowNet = func(n string) bool { return n == "192.0.2.81" }
+	t.Cleanup(func() {
+		panelLogins, panelCountry, dbAllowNet = oldLogins, oldCountry, oldAllowNet
+		dbClientLog.Store(nil)
+		dbDeclared.Store(nil)
+	})
 	panelNow = func() time.Time { return f.now.Add(-30 * time.Minute) }
 	panelNoteScanFindings([]malware.Finding{{FilePath: bob + "/wp-includes/class-wp-cache.php", Name: "Obfuscated eval", Severity: "high"}})
 	panelNow = func() time.Time { return f.now }
@@ -193,6 +232,8 @@ var panelRefs = []panelRef{
 	{"map_stale", []string{"map", "--hours", "24", "--json"}},
 	{"score", []string{"score", "--json"}},
 	{"error_not_connected", []string{"map", "--hours", "168", "--json"}},
+	{"ssh_logins", []string{"ssh-logins", "--limit", "50", "--json"}},
+	{"db_clients", []string{"db-clients", "--json"}},
 	// Not entitled to the plugins (last: they change the plan).
 	{"status_plan_required", []string{"status", "--json"}},
 	{"error_plan_required", []string{"bans", "--json"}},

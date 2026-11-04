@@ -56,6 +56,15 @@ log "db clients reported for 192.0.2.2 on 5432: $reported"
 for _ in $(seq 1 10); do ss -tn state established 2>/dev/null | grep -q '192.0.2.1:5432 ' || break; sleep 1; done
 
 ok=$reported
+# The WHM plugin's list (panel db-clients): the regular client, not
+# whitelisted yet, and the declared range of 3306.
+dbpanel() { "$AGENT" panel db-clients --json 2>/dev/null | grep -o "{[^{}]*\"ip\":\"$1\"[^{}]*}"; }
+row=$(dbpanel 192.0.2.2)
+{ grep -q '"port":5432' <<<"$row" && grep -q '"source":"observed"' <<<"$row" && grep -q '"allowed":false' <<<"$row" &&
+  grep -q '"last_seen":"20' <<<"$row"; } || { log "panel db-clients 192.0.2.2: ${row:-missing}"; ok=fail; }
+row=$(dbpanel 198.51.100.0/24)
+{ grep -q '"port":3306' <<<"$row" && grep -q '"source":"cpanel_access_hosts"' <<<"$row" && grep -q '"host":"198.51.100.%"' <<<"$row"; } ||
+  { log "panel db-clients 198.51.100.0/24: ${row:-missing}"; ok=fail; }
 curl -s -X POST "$API/set-sync" -d '{"firewall_actions": [{"id": 201, "kind": "close_port", "port": 5432, "proto": "tcp"}, {"id": 204, "kind": "close_port", "port": 3306, "proto": "tcp"}]}' >/dev/null
 if wait_event 201 && wait_event 204; then
   grep -q '"type":"firewall_action_failed"' <<<"$(fw_event 201)" && grep -q '"reason":"regular_clients"' <<<"$(fw_event 201)" \
@@ -78,6 +87,7 @@ if wait_event 202; then
   closed 5432 || { log "5432 not closed after whitelisting"; ok=fail; }
   reaches 192.0.2.2 5432 || { log "the whitelisted client lost 5432"; ok=fail; }
   reaches 192.0.2.3 5432 && { log "192.0.2.3 still reaches 5432"; ok=fail; }
+  grep -q '"allowed":true' <<<"$(dbpanel 192.0.2.2)" || { log "panel db-clients after whitelisting: $(dbpanel 192.0.2.2)"; ok=fail; }
 else
   log "no result for 202"; ok=fail
 fi
