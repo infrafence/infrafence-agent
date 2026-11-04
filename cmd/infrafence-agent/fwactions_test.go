@@ -600,17 +600,6 @@ func TestParseResolvectl(t *testing.T) {
 	}
 }
 
-func TestParseLastIPs(t *testing.T) {
-	out := "root     pts/0        198.51.100.7     Mon Oct 12 10:00   still logged in\n" +
-		"admin    pts/1        2001:db8::7      Sun Oct 11 09:00 - 10:00  (01:00)\n" +
-		"reboot   system boot  0.0.0.0          Sun Oct 11 08:00   still running\n" +
-		"root     tty1         0.0.0.0          Sun Oct 11 08:01 - 08:02  (00:01)\n" +
-		"\nwtmp begins Sun Oct  1 00:00:00 2026\n"
-	if got := parseLastIPs(out); !reflect.DeepEqual(got, []string{"198.51.100.7", "2001:db8::7"}) {
-		t.Fatalf("got %v", got)
-	}
-}
-
 // A block in force is lifted when its address logs in over SSH, never for a
 // connection to SSH that has not logged in.
 func TestEnforcedEgressAndSSHSessions(t *testing.T) {

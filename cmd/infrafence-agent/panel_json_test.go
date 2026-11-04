@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/api"
+	"github.com/infrafence/infrafence-agent/internal/loginhistory"
 	"github.com/infrafence/infrafence-agent/internal/malware"
 	"github.com/infrafence/infrafence-agent/internal/panel"
 	"github.com/infrafence/infrafence-agent/internal/preflight"
@@ -44,6 +45,8 @@ func TestMain(m *testing.M) {
 		cmdPanel(os.Args[1:])
 		os.Exit(0)
 	}
+	// No test writes the real login history.
+	sshLoginStore = loginhistory.NewStore("")
 	os.Exit(m.Run())
 }
 

@@ -1116,6 +1116,31 @@ func (c *Client) ReportMonitorRun(req MonitorRunRequest) error {
 	return c.post("/api/v1/agent/monitor-runs", c.token, req, nil)
 }
 
+// SSHLogin is one address of the login history (cmd sshlogins.go).
+type SSHLogin struct {
+	IP       string   `json:"ip"`
+	Users    []string `json:"users"`
+	FirstAt  string   `json:"first_at"`
+	LastAt   string   `json:"last_at"`
+	Count    int      `json:"count"`
+	Imported bool     `json:"imported"` // found in the logs read at startup / daily
+	Live     bool     `json:"live"`     // seen by the agent as it happened
+}
+
+// SSHLoginsRequest is the history of the successful SSH logins of the last
+// 30 days (at most 500 addresses, the most recent first; Total counts all).
+type SSHLoginsRequest struct {
+	Logins    []SSHLogin `json:"logins"`
+	ScannedAt string     `json:"scanned_at,omitempty"`
+	Total     int        `json:"total"`
+}
+
+// ReportSSHLogins sends the login history. Dashboards before it answer 404
+// (IsNotFound).
+func (c *Client) ReportSSHLogins(req SSHLoginsRequest) error {
+	return c.post("/api/v1/agent/ssh-logins", c.token, req, nil)
+}
+
 func (c *Client) post(path, token string, body, out any) error {
 	return c.postContext(context.Background(), path, token, body, out)
 }

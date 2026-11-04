@@ -29,8 +29,9 @@ import (
 //     reached (re-checked through the same refusals first);
 //   - the addresses this agent flagged as a threat (egress_threat_match,
 //     dns_threat_answer), for 24 hours: egress is only ever blocked to one;
-//   - the addresses SSH logins came from (session events and the login
-//     records), for 30 days: never blocked.
+//   - the addresses SSH logins came from (session events), for 30 days:
+//     never blocked. The logins found in the logs and login records are in
+//     the login history (sshlogins.go), which the egress checks read too.
 
 var fwStatePath = "/var/lib/infrafence/firewall-state.json"
 
@@ -81,6 +82,7 @@ func noteEgressEvent(e api.EventRequest) {
 		}
 		if p := net.ParseIP(strings.TrimSpace(ip)); p != nil {
 			noteAddr(sshLogins, p.String(), maxSSHLogins)
+			noteLiveLogin(p.String(), e.Details["user"], time.Time{})
 		}
 	}
 }
@@ -109,50 +111,6 @@ func noteAddrs(m map[string]int64, ips []string, max int) {
 	}
 }
 
-// watchSSHLogins adds, at startup and every hour, the addresses of the SSH
-// logins the login records (wtmp, wtmpdb) list for the last 30 days: the
-// session tracker only sees logins while it is turned on.
-func watchSSHLogins() {
-	for {
-		if ips := parseLastIPs(lastLogins()); len(ips) > 0 {
-			noteAddrs(sshLogins, ips, maxSSHLogins)
-		}
-		time.Sleep(time.Hour)
-	}
-}
-
-// lastLogins is replaced in tests.
-var lastLogins = func() string {
-	if _, err := exec.LookPath("last"); err != nil {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, "last", "-i", "--since", "-30days").Output()
-	return string(out)
-}
-
-// parseLastIPs reads the address column of `last -i` ("root pts/0
-// 198.51.100.7 Mon Oct 12 10:00 still logged in"); local logins show
-// 0.0.0.0 or ::.
-func parseLastIPs(out string) []string {
-	seen := map[string]bool{}
-	var ips []string
-	for _, line := range strings.Split(out, "\n") {
-		f := strings.Fields(line)
-		if len(f) < 3 {
-			continue
-		}
-		p := net.ParseIP(f[2])
-		if p == nil || p.IsUnspecified() || p.IsLoopback() || seen[p.String()] {
-			continue
-		}
-		seen[p.String()] = true
-		ips = append(ips, p.String())
-	}
-	return ips
-}
-
 func dropOldest(m map[string]int64, n int) {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -176,7 +134,10 @@ var (
 	fwFlagged = func(ip string) bool {
 		return seenWithin(flagged, ip, flaggedFor) || firewall.InThreatSet(ip)
 	}
-	fwSSHLoginSeen = func(ip string) bool { return seenWithin(sshLogins, ip, sshLoginFor) }
+	fwSSHLoginSeen = func(ip string) bool {
+		_, ok := sshLoginGuard(ip)
+		return ok
+	}
 )
 
 // saveFirewallState writes the persisted state. Callers must not hold
