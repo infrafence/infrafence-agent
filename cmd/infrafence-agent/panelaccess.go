@@ -31,6 +31,25 @@ type panelLoginOut struct {
 	Imported bool     `json:"imported"`
 	Live     bool     `json:"live"`
 	Allowed  bool     `json:"allowed"`
+	// Protected: the login guard never bans the address (sshlogins.go): a
+	// user of it is not a service user, or its users are unknown.
+	// NotProtected says why not, null when protected.
+	Protected    bool                  `json:"protected"`
+	NotProtected *panelNotProtectedOut `json:"not_protected"`
+}
+
+// panelNotProtectedOut: every user of the address is a service user
+// (loginhistory.ServiceUser). Reason "listed" when each of them is listed
+// in the dashboard's settings, "service_user" otherwise.
+type panelNotProtectedOut struct {
+	Reason string                `json:"reason"`
+	Users  []panelServiceUserOut `json:"users"`
+}
+
+type panelServiceUserOut struct {
+	User     string `json:"user"`
+	Networks int    `json:"networks"`
+	Listed   bool   `json:"listed"`
 }
 
 // panelCountry is the country of a public address, "" when unknown;
@@ -42,14 +61,33 @@ var panelCountry = func(ip string) string {
 	return ""
 }
 
-// panelLogins is the login history and when the logs were last read;
-// replaced in tests.
-var panelLogins = func() ([]loginhistory.Entry, time.Time) {
-	return sshLoginStore.Entries(0), sshLoginStore.ScannedAt()
+// panelLoginView is the login history, when the logs were last read, and
+// the guard's own answers: which addresses it protects and the service
+// users (loginhistory.Store.Protected, ServiceUsers).
+type panelLoginView struct {
+	entries   []loginhistory.Entry
+	scanned   time.Time
+	protected func(ip string) bool
+	service   []loginhistory.ServiceUser
+}
+
+// panelLogins reads it from the agent's store; replaced in tests.
+var panelLogins = func() panelLoginView {
+	s := sshLoginStore
+	return panelLoginView{
+		entries: s.Entries(0), scanned: s.ScannedAt(),
+		protected: func(ip string) bool { _, ok, _ := s.Protected(ip); return ok },
+		service:   s.ServiceUsers(),
+	}
 }
 
 func panelSSHLogins(limit int) panel.Response {
-	all, scanned := panelLogins()
+	v := panelLogins()
+	all, scanned := v.entries, v.scanned
+	service := make(map[string]loginhistory.ServiceUser, len(v.service))
+	for _, u := range v.service {
+		service[u.User] = u
+	}
 	out := make([]panelLoginOut, 0, min(limit, len(all)))
 	for _, e := range all[:min(limit, len(all))] {
 		users := make([]string, 0, len(e.Users))
@@ -66,12 +104,37 @@ func panelSSHLogins(limit int) panel.Response {
 			IP: e.IP, Users: users, Country: orNull(country),
 			FirstAt: rfc3339(e.First), LastAt: rfc3339(e.Last), Logins: e.Count,
 			Imported: e.Imported, Live: e.Live, Allowed: panelIsAllowListed(e.IP),
+			Protected: v.protected(e.IP), NotProtected: panelNotProtected(e, v.protected, service),
 		})
 	}
 	return panel.OK(map[string]any{
 		"logins": out, "total": len(all), "days": int(loginhistory.Window.Hours() / 24),
 		"scanned_at": rfc3339(scanned),
 	})
+}
+
+// panelNotProtected says why the guard does not protect e: nil when it does.
+func panelNotProtected(e loginhistory.Entry, protected func(string) bool, service map[string]loginhistory.ServiceUser) *panelNotProtectedOut {
+	if protected(e.IP) {
+		return nil
+	}
+	np := &panelNotProtectedOut{Reason: "listed", Users: []panelServiceUserOut{}}
+	for _, u := range e.Users {
+		su, ok := service[u]
+		if !ok {
+			continue
+		}
+		np.Users = append(np.Users, panelServiceUserOut{User: cleanText(u, 64), Networks: su.Nets, Listed: su.Listed})
+		if !su.Listed {
+			np.Reason = "service_user"
+		}
+	}
+	if len(np.Users) == 0 {
+		// Not protected without a service user among its users: the store
+		// changed between the two reads; the next answer says why.
+		np.Reason = "service_user"
+	}
+	return np
 }
 
 // panelDBClientOut is one element of the db-clients answer.
