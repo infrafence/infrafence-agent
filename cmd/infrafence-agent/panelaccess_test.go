@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -46,11 +47,11 @@ func TestPanelSSHLogins(t *testing.T) {
 	got := r["logins"].([]panelLoginOut)
 	want := []panelLoginOut{
 		{IP: "203.0.113.20", Users: []string{"alice[31m"}, Country: nil, FirstAt: now.Add(-time.Minute).Format(time.RFC3339),
-			LastAt: now.Add(-time.Minute).Format(time.RFC3339), Logins: 1, Live: true},
+			LastAt: now.Add(-time.Minute).Format(time.RFC3339), Logins: 1, Live: true, Protected: true},
 		{IP: "198.51.100.7", Users: []string{"root", "deploy"}, Country: "IT", FirstAt: now.Add(-10 * 24 * time.Hour).Format(time.RFC3339),
-			LastAt: now.Add(-2 * 24 * time.Hour).Format(time.RFC3339), Logins: 2, Imported: true},
+			LastAt: now.Add(-2 * 24 * time.Hour).Format(time.RFC3339), Logins: 2, Imported: true, Protected: true},
 		{IP: "2001:db8::5", Users: []string{"root"}, Country: nil, FirstAt: now.Add(-5 * 24 * time.Hour).Format(time.RFC3339),
-			LastAt: now.Add(-5 * 24 * time.Hour).Format(time.RFC3339), Logins: 1, Imported: true, Allowed: true},
+			LastAt: now.Add(-5 * 24 * time.Hour).Format(time.RFC3339), Logins: 1, Imported: true, Allowed: true, Protected: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("logins:\n got %+v\nwant %+v", got, want)
@@ -64,6 +65,51 @@ func TestPanelSSHLogins(t *testing.T) {
 	r = handlePanel(panel.Request{Command: "ssh-logins", Limit: 50})
 	if l := r["logins"].([]panelLoginOut); l == nil || len(l) != 0 || r["scanned_at"] != nil {
 		t.Errorf("empty: %v", r)
+	}
+}
+
+func TestPanelSSHLoginsServiceUsers(t *testing.T) {
+	withFakePanel(t)
+	s := withPanelLogins(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	// deploy from 11 networks (a CI runner): a service user.
+	for i := 1; i <= 11; i++ {
+		s.Note(fmt.Sprintf("198.51.%d.10", i), "deploy", now.Add(-time.Duration(i)*time.Hour))
+	}
+	// root also logged in from one of them: that address stays protected.
+	s.Note("198.51.3.10", "root", now.Add(-30*time.Minute))
+	// backup is listed in the dashboard's settings.
+	s.Note("203.0.113.30", "backup", now.Add(-20*time.Hour))
+	s.SetServiceUsers([]string{"backup"})
+	// Both kinds on one address.
+	s.Note("203.0.113.31", "backup", now.Add(-21*time.Hour))
+	s.Note("203.0.113.31", "deploy", now.Add(-21*time.Hour))
+
+	by := map[string]panelLoginOut{}
+	for _, l := range handlePanel(panel.Request{Command: "ssh-logins", Limit: 500})["logins"].([]panelLoginOut) {
+		by[l.IP] = l
+	}
+	if l := by["198.51.3.10"]; !l.Protected || l.NotProtected != nil {
+		t.Errorf("a person's address: %+v", l)
+	}
+	l := by["198.51.5.10"]
+	if l.Protected || l.NotProtected == nil || l.NotProtected.Reason != "service_user" ||
+		!reflect.DeepEqual(l.NotProtected.Users, []panelServiceUserOut{{User: "deploy", Networks: 12}}) {
+		t.Errorf("service user: %+v %+v", l, l.NotProtected)
+	}
+	l = by["203.0.113.30"]
+	if l.Protected || l.NotProtected == nil || l.NotProtected.Reason != "listed" ||
+		!reflect.DeepEqual(l.NotProtected.Users, []panelServiceUserOut{{User: "backup", Networks: 1, Listed: true}}) {
+		t.Errorf("listed: %+v %+v", l, l.NotProtected)
+	}
+	if l := by["203.0.113.31"]; l.Protected || l.NotProtected == nil || l.NotProtected.Reason != "service_user" || len(l.NotProtected.Users) != 2 {
+		t.Errorf("listed and counted: %+v %+v", l, l.NotProtected)
+	}
+	// The answer is the guard's: the same addresses are unprotected.
+	for ip, l := range by {
+		if _, ok, _ := s.Protected(ip); ok != l.Protected {
+			t.Errorf("%s: panel %v, guard %v", ip, l.Protected, ok)
+		}
 	}
 }
 

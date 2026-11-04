@@ -172,11 +172,19 @@ func seedPanelReference(t *testing.T, f *fakePanelHost, base string) {
 	// declared clients of MySQL.
 	day := 24 * time.Hour
 	oldLogins, oldCountry, oldAllowNet := panelLogins, panelCountry, dbAllowNet
-	panelLogins = func() ([]loginhistory.Entry, time.Time) {
-		return []loginhistory.Entry{
-			{IP: "198.51.100.61", Users: []string{"root"}, First: f.now.Add(-21 * day), Last: f.now.Add(-25 * time.Minute), Count: 14, Imported: true, Live: true},
-			{IP: "2001:db8:44::7", Users: []string{"deploy", "root"}, First: f.now.Add(-9 * day), Last: f.now.Add(-3 * day), Count: 3, Imported: true},
-		}, f.now.Add(-6 * time.Hour)
+	panelLogins = func() panelLoginView {
+		return panelLoginView{
+			entries: []loginhistory.Entry{
+				{IP: "198.51.100.61", Users: []string{"root"}, First: f.now.Add(-21 * day), Last: f.now.Add(-25 * time.Minute), Count: 14, Imported: true, Live: true},
+				{IP: "2001:db8:44::7", Users: []string{"deploy", "root"}, First: f.now.Add(-9 * day), Last: f.now.Add(-3 * day), Count: 3, Imported: true},
+				// A CI runner: deploy logs in from new cloud networks.
+				{IP: "203.0.113.140", Users: []string{"deploy"}, First: f.now.Add(-2 * day), Last: f.now.Add(-2 * day), Count: 1, Imported: true},
+				{IP: "192.0.2.141", Users: []string{"backup"}, First: f.now.Add(-day), Last: f.now.Add(-day), Count: 2, Live: true},
+			},
+			scanned:   f.now.Add(-6 * time.Hour),
+			protected: func(ip string) bool { return ip == "198.51.100.61" || ip == "2001:db8:44::7" },
+			service:   []loginhistory.ServiceUser{{User: "backup", Nets: 1, Listed: true}, {User: "deploy", Nets: 14}},
+		}
 	}
 	panelCountry = func(ip string) string {
 		if ip == "198.51.100.61" {

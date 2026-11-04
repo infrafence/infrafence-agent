@@ -1063,9 +1063,12 @@ Errors: `not_connected`.
 addresses with a successful SSH login in the last 30 days, the most recent login first: what the agent read
 from the server's logs, the journal of the SSH units and the login records (at start and once a day) and
 every login it saw afterwards, the same list it sends the dashboard (at most 1,000 addresses kept). Answered
-on the server from that list: nothing is asked of the dashboard. The agent never bans these addresses by
-itself (the login guard); a login older than what the logs keep is not in the list, so the allow list stays
-the guarantee.
+on the server from that list: nothing is asked of the dashboard. `protected` is the login guard's own answer:
+the agent never bans a protected address by itself. An address only **service users** logged in from is not
+protected: a user name that logged in from more than 10 networks (/24, IPv6 /48) in the last 30 days, such as
+a deploy account used by CI runners, or one listed in the dashboard (**Settings › Network › SSH service
+users**). An address stays protected when another user logged in from it too, or when its users are unknown.
+A login older than what the logs keep is not in the list, so the allow list stays the guarantee.
 
 <!-- example:ssh_logins -->
 ```json
@@ -1082,6 +1085,8 @@ the guarantee.
       "last_at": "2026-10-16T11:35:00Z",
       "live": true,
       "logins": 14,
+      "not_protected": null,
+      "protected": true,
       "users": [
         "root"
       ]
@@ -1095,15 +1100,65 @@ the guarantee.
       "last_at": "2026-10-13T12:00:00Z",
       "live": false,
       "logins": 3,
+      "not_protected": null,
+      "protected": true,
       "users": [
         "deploy",
         "root"
+      ]
+    },
+    {
+      "allowed": false,
+      "country": null,
+      "first_at": "2026-10-14T12:00:00Z",
+      "imported": true,
+      "ip": "203.0.113.140",
+      "last_at": "2026-10-14T12:00:00Z",
+      "live": false,
+      "logins": 1,
+      "not_protected": {
+        "reason": "service_user",
+        "users": [
+          {
+            "listed": false,
+            "networks": 14,
+            "user": "deploy"
+          }
+        ]
+      },
+      "protected": false,
+      "users": [
+        "deploy"
+      ]
+    },
+    {
+      "allowed": false,
+      "country": null,
+      "first_at": "2026-10-15T12:00:00Z",
+      "imported": false,
+      "ip": "192.0.2.141",
+      "last_at": "2026-10-15T12:00:00Z",
+      "live": true,
+      "logins": 2,
+      "not_protected": {
+        "reason": "listed",
+        "users": [
+          {
+            "listed": true,
+            "networks": 1,
+            "user": "backup"
+          }
+        ]
+      },
+      "protected": false,
+      "users": [
+        "backup"
       ]
     }
   ],
   "ok": true,
   "scanned_at": "2026-10-16T06:00:00Z",
-  "total": 2
+  "total": 4
 }
 ```
 <!-- /example:ssh_logins -->
@@ -1122,6 +1177,13 @@ the guarantee.
 | `logins[].imported` | boolean | | yes | Found in the logs. |
 | `logins[].live` | boolean | | yes | Seen by the agent as it happened. |
 | `logins[].allowed` | boolean | | yes | On this server's allow list now (the dashboard's whitelist, or added from the panel), so it stays allowed after 30 days without a login. |
+| `logins[].protected` | boolean | | yes | The login guard never bans this address by itself (agent 1.0.41; with the SSH service users). Older answers have no `protected`: do not claim either way. |
+| `logins[].not_protected` | object \| null | | yes | Why the address is not protected; `null` when it is. |
+| `logins[].not_protected.reason` | string | `service_user`, `listed` | no | `listed`: every user of the address is listed as a service user in the dashboard's settings; `service_user`: at least one of them is a service user by its number of networks. |
+| `logins[].not_protected.users` | array | | no | The service users of the address. |
+| `logins[].not_protected.users[].user` | string | | no | As in `users`. |
+| `logins[].not_protected.users[].networks` | integer | | no | Networks (/24, IPv6 /48) the user logged in from in the last 30 days. |
+| `logins[].not_protected.users[].listed` | boolean | | no | Listed in the dashboard's settings. |
 | `total` | integer | | yes | Addresses in the list (also those past N). |
 | `days` | integer | `30` | yes | The window. |
 | `scanned_at` | string \| null | timestamp | yes | When the logs were last read; `null` before the first scan. |

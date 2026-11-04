@@ -134,10 +134,8 @@ var (
 	fwFlagged = func(ip string) bool {
 		return seenWithin(flagged, ip, flaggedFor) || firewall.InThreatSet(ip)
 	}
-	fwSSHLoginSeen = func(ip string) bool {
-		_, ok := sshLoginGuard(ip)
-		return ok
-	}
+	// Every SSH login, service users' included (sshlogins.go).
+	fwSSHLoginSeen = sshLoginAny
 )
 
 // saveFirewallState writes the persisted state. Callers must not hold

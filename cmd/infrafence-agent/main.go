@@ -1263,7 +1263,9 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 	// Bans already expired here are not applied again (they were lifted
 	// locally, see runBanExpiry).
 	sync.Bans = unexpiredBans(sync.Bans, time.Now())
-	// Never an address with an SSH login in the last 30 days (sshlogins.go).
+	// Never an address with an SSH login in the last 30 days (sshlogins.go),
+	// the dashboard's SSH service users' logins excepted.
+	applySSHServiceUsers(sync.Config.SSHServiceUsers)
 	sync.Bans = guardBans(sync.Bans)
 	activeBanIPs := make(map[string]bool, len(sync.Bans))
 	banIPs := make([]string, 0, len(sync.Bans))

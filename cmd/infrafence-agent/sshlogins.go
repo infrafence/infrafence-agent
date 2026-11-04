@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +35,15 @@ import (
 // (Firewall rules, "block") is still applied: that is a person's explicit
 // decision, not an automatic one. The whitelist stays the guarantee for
 // logins older than what the logs keep.
+//
+// Except the logins of SSH service users: a user name that logged in from
+// more than loginhistory.ServiceUserNets networks (/24, IPv6 /48) in 30
+// days (a deploy account on CI runners, a new cloud address at every run),
+// or one the dashboard lists (config.ssh_service_users). Their logins
+// protect no address; an address another user logged in from stays
+// protected. The service users are logged after every scan. The egress
+// checks still read every login (an outbound block is never applied to an
+// address an SSH login came from).
 //
 // Each refusal is logged ("[guard] not banning X: SSH login on <date>"), at
 // most once an hour per address. The history is saved in
@@ -138,7 +150,11 @@ func scanSSHLogins() {
 	}
 	log.Printf("[ssh-logins] read %d file(s), %d KiB (%v%s) in %s: %d login(s), %d address(es) with an SSH login in the last 30 days, never banned",
 		r.Files, r.Bytes>>10, r.Sources, map[bool]string{true: ", cut at the size limits", false: ""}[r.Truncated],
-		time.Since(start).Round(time.Millisecond), len(r.Logins), len(sshLoginStore.IPs()))
+		time.Since(start).Round(time.Millisecond), len(r.Logins), len(sshLoginStore.ProtectedIPs()))
+	if svc := sshLoginStore.ServiceUsers(); len(svc) > 0 {
+		log.Printf("[ssh-logins] service users (their logins protect no address): %s; %d address(es) only they logged in from can be banned",
+			serviceUserList(svc), len(sshLoginStore.IPs())-len(sshLoginStore.ProtectedIPs()))
+	}
 	if len(added) > 0 {
 		loginsAdded()
 	} else {
@@ -204,20 +220,80 @@ func loginsAdded() {
 	}()
 }
 
-// sshLoginGuard returns the last SSH login of ip in the last 30 days.
-func sshLoginGuard(ip string) (time.Time, bool) {
+// serviceUserList: "deploy (214 networks), ops (listed in the dashboard)".
+func serviceUserList(svc []loginhistory.ServiceUser) string {
+	parts := make([]string, 0, len(svc))
+	for _, u := range svc {
+		if u.Listed {
+			parts = append(parts, u.User+" (listed in the dashboard)")
+		} else {
+			parts = append(parts, fmt.Sprintf("%s (%d networks)", u.User, u.Nets))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// applySSHServiceUsers takes the dashboard's list of service users; nil (an
+// older dashboard, or a failed read there) keeps the list the agent has.
+func applySSHServiceUsers(users *[]string) {
+	if users == nil || sshLoginStore == nil {
+		return
+	}
+	if !sshLoginStore.SetServiceUsers(*users) {
+		return
+	}
+	names := append([]string(nil), *users...)
+	sort.Strings(names)
+	if len(names) == 0 {
+		log.Printf("[ssh-logins] the dashboard lists no SSH service user")
+	} else {
+		log.Printf("[ssh-logins] the dashboard lists %d SSH service user(s), their logins protect no address: %s", len(names), strings.Join(names, ", "))
+	}
+	loginsAdded()
+}
+
+func loginIP(ip string) string {
 	p := net.ParseIP(ip)
 	if p == nil {
+		return ""
+	}
+	if v4 := p.To4(); v4 != nil {
+		return v4.String()
+	}
+	return p.String()
+}
+
+// sshLoginAny reports an SSH login of ip in the last 30 days, whoever logged
+// in (the egress checks).
+func sshLoginAny(ip string) bool {
+	s := loginIP(ip)
+	if s == "" {
+		return false
+	}
+	if sshLoginStore != nil {
+		if _, ok := sshLoginStore.LastLogin(s); ok {
+			return true
+		}
+	}
+	return seenWithin(sshLogins, s, sshLoginFor)
+}
+
+// sshLoginGuard returns the last SSH login of ip in the last 30 days that
+// protects it (not only service users).
+func sshLoginGuard(ip string) (time.Time, bool) {
+	s := loginIP(ip)
+	if s == "" {
 		return time.Time{}, false
 	}
-	s := p.String()
-	if v4 := p.To4(); v4 != nil {
-		s = v4.String()
-	}
 	var last time.Time
-	ok := false
+	ok, known := false, false
 	if sshLoginStore != nil {
-		last, ok = sshLoginStore.LastLogin(s)
+		last, ok, known = sshLoginStore.Protected(s)
+	}
+	if known && !ok {
+		// Only service users logged in from it: the session events of
+		// those logins (sshLogins) do not protect it either.
+		return time.Time{}, false
 	}
 	memoMu.Lock()
 	if t, seen := sshLogins[s]; seen && fwNow().Sub(time.Unix(t, 0)) < sshLoginFor {
@@ -280,7 +356,7 @@ func guardBans(bans []api.Ban) []api.Ban {
 // liftGuardedBans lifts the bans in force of addresses with an SSH login
 // (banned before their login was known).
 func liftGuardedBans() {
-	for _, ip := range sshLoginStore.IPs() {
+	for _, ip := range sshLoginStore.ProtectedIPs() {
 		if !firewall.IsBanned(ip) {
 			continue
 		}
@@ -298,7 +374,7 @@ func sshLoginExempt() []string {
 	if sshLoginStore == nil {
 		return nil
 	}
-	return sshLoginStore.IPs()
+	return sshLoginStore.ProtectedIPs()
 }
 
 func requestSSHLoginReport() {
@@ -310,6 +386,13 @@ func requestSSHLoginReport() {
 
 func sshLoginsPayload() api.SSHLoginsRequest {
 	all := sshLoginStore.Entries(0)
+	// The protected addresses first, so the service users' cannot push them
+	// out of the report (the most recent first within each).
+	prot := map[string]bool{}
+	for _, ip := range sshLoginStore.ProtectedIPs() {
+		prot[ip] = true
+	}
+	sort.SliceStable(all, func(i, j int) bool { return prot[all[i].IP] && !prot[all[j].IP] })
 	req := api.SSHLoginsRequest{Logins: []api.SSHLogin{}, Total: len(all)}
 	if t := sshLoginStore.ScannedAt(); !t.IsZero() {
 		req.ScannedAt = t.UTC().Format(time.RFC3339)

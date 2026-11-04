@@ -274,7 +274,8 @@ out=$(pcmd ssh-logins --limit 500)
 if grep -q '"ok":true' <<<"$out" && grep -q '"days":30' <<<"$out"; then
   if [ "${R_LOGINHIST:-}" = ok ]; then
     row=$(grep -o "{[^{}]*\"ip\":\"$LH_ADMIN\"[^{}]*}" <<<"$out")
-    { grep -q '"imported":true' <<<"$row" && grep -q '"users":\["root"' <<<"$row" && grep -q '"allowed":false' <<<"$row"; } ||
+    { grep -q '"imported":true' <<<"$row" && grep -q '"users":\["root"' <<<"$row" && grep -q '"allowed":false' <<<"$row" &&
+      grep -q '"protected":true' <<<"$row" && grep -q '"not_protected":null' <<<"$row"; } ||
       pf ssh_logins "$LH_ADMIN: ${row:-missing} in $(head -c 600 <<<"$out")"
   fi
 else
