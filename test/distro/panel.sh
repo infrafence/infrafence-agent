@@ -179,7 +179,8 @@ curl -s "$API/listen?addr=0.0.0.0:6379&net=tcp4" >/dev/null
 systemctl restart infrafence-agent
 for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
 # dbx [PORT]: the newest db_exposed event of PORT (6379).
-dbx() { pcmd events --limit 500 | grep -o '{[^{}]*"type":"db_exposed"[^{}]*}' | grep -F "\"subject\":\"port:tcp/${1:-6379}\"" | head -1; }
+# Keys are sorted: "details" (an object, agent 1.0.41) comes first.
+dbx() { pcmd events --limit 500 | grep -o '{"details":{[^{}]*}[^{}]*"type":"db_exposed"[^{}]*}' | grep -F "\"subject\":\"port:tcp/${1:-6379}\"" | head -1; }
 for _ in $(seq 1 30); do [ -n "$(dbx)" ] && break; sleep 1; done
 e=$(dbx)
 { grep -q '"subject":"port:tcp/6379"' <<<"$e" && grep -q '"state":"open"' <<<"$e" &&
@@ -265,6 +266,23 @@ rm -rf /usr/local/cpanel /usr/local/share/infrafence-whm
 curl -s -X POST "$API/set-sync" -d '{"panel_plugin_latest": null, "bans": null}' >/dev/null
 systemctl restart infrafence-agent
 for _ in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
+
+# Who reaches the server (agent 1.0.41): the administrator's SSH login read
+# from the logs before the install (test/distro/loginhist.sh) is a known
+# login; the database clients answer (filled in test/distro/dbclients.sh).
+out=$(pcmd ssh-logins --limit 500)
+if grep -q '"ok":true' <<<"$out" && grep -q '"days":30' <<<"$out"; then
+  if [ "${R_LOGINHIST:-}" = ok ]; then
+    row=$(grep -o "{[^{}]*\"ip\":\"$LH_ADMIN\"[^{}]*}" <<<"$out")
+    { grep -q '"imported":true' <<<"$row" && grep -q '"users":\["root"' <<<"$row" && grep -q '"allowed":false' <<<"$row"; } ||
+      pf ssh_logins "$LH_ADMIN: ${row:-missing} in $(head -c 600 <<<"$out")"
+  fi
+else
+  pf ssh_logins "$out"
+fi
+out=$(pcmd db-clients)
+{ grep -q '"ok":true' <<<"$out" && grep -q '"clients":\[' <<<"$out" && grep -q '"min_days":3' <<<"$out"; } || pf db_clients "$out"
+# Mail, WAF and database event details are checked in test/distro/mail.sh.
 
 # Back to the default sync for the following checks.
 curl -s -X POST "$API/set-sync" -d '{"bans": null, "whitelists": null, "firewall_state": null, "resolutions": null}' >/dev/null

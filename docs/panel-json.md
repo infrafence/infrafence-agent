@@ -474,6 +474,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
   "agent_running": true,
   "events": [
     {
+      "details": {},
       "resolved_at": null,
       "resolved_how": null,
       "severity": "warning",
@@ -485,6 +486,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "php_config_risk"
     },
     {
+      "details": {},
       "resolved_at": null,
       "resolved_how": null,
       "severity": "info",
@@ -496,6 +498,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "quarantine_completed"
     },
     {
+      "details": {},
       "resolved_at": "2026-10-16T11:10:00Z",
       "resolved_how": "quarantined",
       "severity": "critical",
@@ -507,6 +510,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "malware_realtime"
     },
     {
+      "details": {},
       "resolved_at": null,
       "resolved_how": null,
       "severity": "info",
@@ -518,6 +522,10 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "firewall_action_done"
     },
     {
+      "details": {
+        "bind_address": "0.0.0.0:3306",
+        "service": "MySQL/MariaDB"
+      },
       "resolved_at": "2026-10-16T10:50:00Z",
       "resolved_how": "port_closed",
       "severity": "critical",
@@ -529,6 +537,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "db_exposed"
     },
     {
+      "details": {},
       "resolved_at": "2026-10-16T11:40:00Z",
       "resolved_how": "marked_expected",
       "severity": "warning",
@@ -540,6 +549,29 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "integrity_change"
     },
     {
+      "details": {
+        "attempts": "6",
+        "auth_method": "plain",
+        "mta": "dovecot",
+        "protocol": "imap",
+        "target_user": "info@alice.example"
+      },
+      "resolved_at": null,
+      "resolved_how": null,
+      "severity": "warning",
+      "source": "watcher",
+      "source_ip": "203.0.113.31",
+      "state": null,
+      "subject": null,
+      "time": "2026-10-16T10:20:00Z",
+      "type": "mail_brute_force"
+    },
+    {
+      "details": {
+        "attack_type": "attack-sqli",
+        "cve": "CVE-2024-27956",
+        "domain": "alice.example"
+      },
       "resolved_at": null,
       "resolved_how": null,
       "severity": "critical",
@@ -551,6 +583,7 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
       "type": "sql_injection"
     },
     {
+      "details": {},
       "resolved_at": null,
       "resolved_how": null,
       "severity": "warning",
@@ -581,6 +614,21 @@ reported (kept in memory, at most 1,000; progress events are left out), newest f
 | `events[].state` | string \| null | `open`, `resolved` | yes | Problem events only (`null` for every other event, and for a problem event without a subject). `resolved`: its subject was resolved at or after `time`. Count and highlight only `open` ones. Agents before 1.0.34 don't send `state`: treat every event as open. |
 | `events[].resolved_at` | string \| null | timestamp | yes | When it was resolved; `null` unless `state` is `resolved`. |
 | `events[].resolved_how` | string \| null | see [Problems and resolution](#problems-and-resolution) | yes | How it was resolved; `null` unless `state` is `resolved`. |
+| `events[].details` | object | | yes | What the plugins show of the event's own details (from agent 1.0.41; older agents send no `details`): only the keys below the event has, `{}` when none. Each value is text, cleaned of control characters and cut to its length. The mailbox, the recipient and the site come from the attacker's request or log line: HTML-escape them like every other field. |
+| `events[].details.target_user` | string | e.g. `info@alice.example` | no | Mail attacks (`mail_brute_force`, `mail_relay_scan`, `mail_suspicious`): the mailbox or login tried, when the log line has it. At most 254 bytes. |
+| `events[].details.protocol` | string | e.g. `smtp`, `submission`, `imap`, `pop3`, `managesieve`, `roundcube` | no | Mail attacks: the service attacked. |
+| `events[].details.auth_method` | string | e.g. `plain`, `login`, `cram-md5` | no | Mail attacks: the login method. |
+| `events[].details.attempts` | string | digits | no | Mail attacks: the failures from that address in the window. |
+| `events[].details.recipient` | string | | no | Relay probes: the recipient tried. At most 254 bytes. |
+| `events[].details.recipient_domain` | string | | no | Relay probes: its domain. |
+| `events[].details.mta` | string | e.g. `postfix`, `exim`, `dovecot`, `roundcube` | no | Mail attacks: the program whose log line it was. |
+| `events[].details.cve` | string | `CVE-YYYY-NNNN` | no | Web attacks blocked by ModSecurity or a dashboard WAF rule: the vulnerability the matched rule is about (a virtual patch, or a rule tagged with a CVE; agent 1.0.37 or later). |
+| `events[].details.cves` | string | comma-separated CVE ids, at most 10 | no | With more than one CVE: all of them, `cve` first. |
+| `events[].details.attack_type` | string | e.g. `attack-sqli`, `attack-rce` | no | ModSecurity blocks: the attack class of the matched rules (`unknown` when none had one). |
+| `events[].details.waf_ruleset` | string | e.g. `comodo` | no | ModSecurity blocks: the rule set, when the agent recognises it. |
+| `events[].details.domain` | string | | no | ModSecurity blocks: the site (the request's Host header). At most 253 bytes. |
+| `events[].details.service` | string | e.g. `MySQL/MariaDB`, `PostgreSQL`, `Redis`, `MongoDB` | no | `db_exposed`: the database. |
+| `events[].details.bind_address` | string | e.g. `0.0.0.0:3306`, `[::]:5432, 203.0.113.10:5432` | no | `db_exposed`: the addresses it listens on (agent 1.0.37 or later). |
 
 #### Problems and resolution
 
@@ -1008,6 +1056,147 @@ agent has checked.
 | `trend[].score` | integer | 0–100 | yes | |
 
 Errors: `not_connected`.
+
+### `ssh-logins`
+
+`infrafence-agent panel ssh-logins [--limit N] --json` (N 1–500, default 50; agent 1.0.41 or later). The
+addresses with a successful SSH login in the last 30 days, the most recent login first: what the agent read
+from the server's logs, the journal of the SSH units and the login records (at start and once a day) and
+every login it saw afterwards, the same list it sends the dashboard (at most 1,000 addresses kept). Answered
+on the server from that list: nothing is asked of the dashboard. The agent never bans these addresses by
+itself (the login guard); a login older than what the logs keep is not in the list, so the allow list stays
+the guarantee.
+
+<!-- example:ssh_logins -->
+```json
+{
+  "agent_running": true,
+  "days": 30,
+  "logins": [
+    {
+      "allowed": false,
+      "country": "IT",
+      "first_at": "2026-09-25T12:00:00Z",
+      "imported": true,
+      "ip": "198.51.100.61",
+      "last_at": "2026-10-16T11:35:00Z",
+      "live": true,
+      "logins": 14,
+      "users": [
+        "root"
+      ]
+    },
+    {
+      "allowed": false,
+      "country": null,
+      "first_at": "2026-10-07T12:00:00Z",
+      "imported": true,
+      "ip": "2001:db8:44::7",
+      "last_at": "2026-10-13T12:00:00Z",
+      "live": false,
+      "logins": 3,
+      "users": [
+        "deploy",
+        "root"
+      ]
+    }
+  ],
+  "ok": true,
+  "scanned_at": "2026-10-16T06:00:00Z",
+  "total": 2
+}
+```
+<!-- /example:ssh_logins -->
+
+| Field | Type | Values | Always | Meaning |
+|---|---|---|---|---|
+| `ok` | boolean | `true` | yes | |
+| `agent_running` | boolean | `true` | yes | |
+| `logins` | array | | yes | At most N. Empty array when there are none. |
+| `logins[].ip` | string | IPv4 or IPv6 address | yes | |
+| `logins[].users` | array of string | at most 5 | yes | The users who logged in from it, as the logs name them (cleaned of control characters, at most 64 bytes each). |
+| `logins[].country` | string \| null | ISO 3166-1 alpha-2 | yes | From the agent's country database; `null` when it has none or does not know the address. |
+| `logins[].first_at` | string | timestamp | yes | First login in the last 30 days. |
+| `logins[].last_at` | string | timestamp | yes | Latest login. |
+| `logins[].logins` | integer | | yes | Logins counted (the same login in two sources counts once). |
+| `logins[].imported` | boolean | | yes | Found in the logs. |
+| `logins[].live` | boolean | | yes | Seen by the agent as it happened. |
+| `logins[].allowed` | boolean | | yes | On this server's allow list now (the dashboard's whitelist, or added from the panel), so it stays allowed after 30 days without a login. |
+| `total` | integer | | yes | Addresses in the list (also those past N). |
+| `days` | integer | `30` | yes | The window. |
+| `scanned_at` | string \| null | timestamp | yes | When the logs were last read; `null` before the first scan. |
+
+### `db-clients`
+
+`infrafence-agent panel db-clients --json` (agent 1.0.41 or later). The regular and declared clients of the
+database, cache and admin ports the agent may close, by port, the observed clients first and the most
+recently seen first (at most 500). A **regular client** is a public address seen connected on 3 or more of
+the last 7 days (sampled once a minute from the socket and conntrack tables); a **declared client** is one
+the hosting panel lists (on cPanel/WHM the Additional MySQL Access Hosts, clients of 3306 from the first
+minute). While one of a port's clients is not on the allow list the agent refuses to close that port
+(`regular_clients`), whoever asks. Answered on the server from what the agent keeps: nothing is asked of the
+dashboard.
+
+<!-- example:db_clients -->
+```json
+{
+  "agent_running": true,
+  "clients": [
+    {
+      "allowed": false,
+      "days": 4,
+      "first_seen": "2026-10-12T12:00:00Z",
+      "host": null,
+      "ip": "203.0.113.80",
+      "last_seen": "2026-10-15T12:00:00Z",
+      "port": 3306,
+      "source": "observed"
+    },
+    {
+      "allowed": false,
+      "days": null,
+      "first_seen": null,
+      "host": "198.51.100.%",
+      "ip": "198.51.100.0/24",
+      "last_seen": null,
+      "port": 3306,
+      "source": "cpanel_access_hosts"
+    },
+    {
+      "allowed": true,
+      "days": 4,
+      "first_seen": "2026-10-12T12:00:00Z",
+      "host": null,
+      "ip": "192.0.2.81",
+      "last_seen": "2026-10-15T12:00:00Z",
+      "port": 6379,
+      "source": "observed"
+    }
+  ],
+  "min_days": 3,
+  "ok": true,
+  "total": 3,
+  "window_days": 7
+}
+```
+<!-- /example:db_clients -->
+
+| Field | Type | Values | Always | Meaning |
+|---|---|---|---|---|
+| `ok` | boolean | `true` | yes | |
+| `agent_running` | boolean | `true` | yes | |
+| `clients` | array | | yes | Empty array when there are none. |
+| `clients[].port` | integer | e.g. `3306`, `5432`, `6379` | yes | |
+| `clients[].ip` | string | address, or CIDR range for a declared client | yes | |
+| `clients[].source` | string | `observed`, `cpanel_access_hosts` | yes | `observed`: a regular client; otherwise the panel list that declares it. |
+| `clients[].host` | string \| null | e.g. `198.51.100.%`, a host name | yes | The panel's own entry for a declared client; `null` for an observed one. |
+| `clients[].days` | integer \| null | 3–7 | yes | Days seen in the last 7; `null` for a declared client. |
+| `clients[].first_seen` | string \| null | timestamp | yes | First seen in the last 7 days; `null` for a declared client. |
+| `clients[].last_seen` | string \| null | timestamp | yes | Last seen; `null` for a declared client. |
+| `clients[].allowed` | boolean | | yes | The whole address or range is on this server's allow list now, so a closed port stays open to it. |
+| `total` | integer | | yes | Clients in all (also those past 500). |
+| `min_days` | integer | `3` | yes | Days seen that make a regular client. |
+| `window_days` | integer | `7` | yes | The window they are counted in. |
 
 ## Errors
 

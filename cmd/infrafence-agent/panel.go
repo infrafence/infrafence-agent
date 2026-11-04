@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"net/netip"
 	"net/url"
 	"os"
@@ -280,6 +281,10 @@ func handlePanel(req panel.Request) panel.Response {
 		return panelMap(req.Hours)
 	case "score":
 		return panelScore()
+	case "ssh-logins":
+		return panelSSHLogins(req.Limit)
+	case "db-clients":
+		return panelDBClients()
 	}
 	return panel.Fail(panel.ErrUnknownCommand, "unknown command %q", req.Command)
 }
@@ -743,6 +748,10 @@ type panelEventOut struct {
 	State       any `json:"state"`
 	ResolvedAt  any `json:"resolved_at"`
 	ResolvedHow any `json:"resolved_how"`
+
+	// The event's details the plugins show (panelEventDetails): only those
+	// it has, {} when none.
+	Details map[string]string `json:"details"`
 }
 
 func panelEvents(limit int, since string) panel.Response {
@@ -759,7 +768,11 @@ func panelEvents(limit int, since string) panel.Response {
 				continue
 			}
 		}
-		o := panelEventOut{Type: e.Type, Severity: e.Severity, SourceIP: orNull(e.SourceIP), Source: orNull(e.Source), Time: e.Time}
+		o := panelEventOut{Type: e.Type, Severity: e.Severity, SourceIP: orNull(e.SourceIP), Source: orNull(e.Source), Time: e.Time,
+			Details: maps.Clone(e.details)}
+		if o.Details == nil {
+			o.Details = map[string]string{}
+		}
 		o.Subject, o.State, o.ResolvedAt, o.ResolvedHow = resolutionFieldsLocked(e.subject, e.problem, e.Time)
 		res = append(res, o)
 	}
