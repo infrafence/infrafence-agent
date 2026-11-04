@@ -352,3 +352,24 @@ func TestLoggedInSockAddrs(t *testing.T) {
 		t.Fatal("truncated title read as a title")
 	}
 }
+
+// InboundClients reads the sockets and the conntrack table once for all the
+// ports: a host listener's public client, and a published container port
+// known only to conntrack.
+func TestInboundClients(t *testing.T) {
+	fakeProc(t)
+	table := "ipv4     2 tcp      6 431999 ESTABLISHED src=198.51.100.20 dst=192.0.2.1 sport=40000 dport=27017 src=172.17.0.2 dst=198.51.100.20 sport=27017 dport=40000 [ASSURED] mark=0 use=1\n" +
+		"ipv4     2 tcp      6 431999 ESTABLISHED src=198.51.100.7 dst=192.0.2.1 sport=40001 dport=6379 src=192.0.2.1 dst=198.51.100.7 sport=6379 dport=40001 [ASSURED] mark=0 use=1\n" +
+		"ipv4     2 tcp      6 431999 ESTABLISHED src=198.51.100.8 dst=192.0.2.1 sport=40002 dport=22 src=192.0.2.1 dst=198.51.100.8 sport=22 dport=40002 [ASSURED] mark=0 use=1\n" +
+		"ipv4     2 tcp      6 431999 ESTABLISHED src=10.0.0.9 dst=192.0.2.1 sport=40003 dport=27017 src=172.17.0.2 dst=10.0.0.9 sport=27017 dport=40003 [ASSURED] mark=0 use=1\n"
+	ct := parseConntrackClients(strings.NewReader(table+"ipv4     2 tcp      6 100 TIME_WAIT src=198.51.100.30 dst=192.0.2.1 sport=40005 dport=27017 src=172.17.0.2 dst=198.51.100.30 sport=27017 dport=40005 mark=0 use=1\n"), map[int]bool{6379: true, 27017: true, 5432: true}, map[string]bool{})
+	got := inboundClients(Sockets(), []int{6379, 27017, 5432}, ct)
+	// A client that just left (TIME_WAIT) counts for sampling.
+	want := map[int][]string{6379: {"198.51.100.7"}, 27017: {"198.51.100.20", "198.51.100.30"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if got := inboundClients(Sockets(), []int{6379}, nil); !reflect.DeepEqual(got, map[int][]string{6379: {"198.51.100.7"}}) {
+		t.Fatalf("without conntrack: %v", got)
+	}
+}

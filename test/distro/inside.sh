@@ -211,6 +211,9 @@ loginhist_check
 # ── closed ports and egress blocks (test/distro/firewall.sh) ──
 . /distro/firewall.sh
 
+# ── regular clients of a database port are never cut off (test/distro/dbclients.sh) ──
+. /distro/dbclients.sh
+
 # ── trust badge verification file in an nginx site (test/distro/trust.sh) ──
 . /distro/trust.sh
 
@@ -251,6 +254,7 @@ iptables -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables"
 ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
 [ -e /var/lib/infrafence/egress-destinations.json ] && left="$left egress-destinations"
+[ -e /var/lib/infrafence/db-clients.json ] && left="$left db-clients"
 [ -e /var/lib/infrafence/ssh-automation.json ] && left="$left ssh-automation"
 [ -e /var/lib/infrafence/ssh-logins.json ] && left="$left ssh-logins"
 [ -e /var/lib/infrafence/panel-state.json ] && left="$left panel-state"

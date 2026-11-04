@@ -1103,6 +1103,40 @@ func (c *Client) ReportWpInventory(req WpInventoryRequest) error {
 	return c.post("/api/v1/agent/wp-inventory", c.token, req, nil)
 }
 
+// DBClient is one public address seen connected to a database, cache or
+// admin service port on one day.
+type DBClient struct {
+	Port      int    `json:"port"`
+	IP        string `json:"ip"`
+	Day       string `json:"day"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+	Samples   int    `json:"samples"`
+}
+
+// DBDeclared is a client declared in the hosting panel (on cPanel/WHM the
+// Additional MySQL Access Hosts): an address or a CIDR range.
+type DBDeclared struct {
+	Port   int    `json:"port"`
+	Entry  string `json:"entry"`
+	Host   string `json:"host"`
+	Source string `json:"source"`
+}
+
+// DBClientsRequest is the body of /api/v1/agent/db-clients. DeclaredRead
+// says Declared is the complete list (an empty one clears it).
+type DBClientsRequest struct {
+	Clients      []DBClient   `json:"clients"`
+	Declared     []DBDeclared `json:"declared,omitempty"`
+	DeclaredRead bool         `json:"declared_read,omitempty"`
+}
+
+// ReportDBClients sends the clients of the closable ports. A dashboard
+// without the endpoint answers 404 (IsRejected).
+func (c *Client) ReportDBClients(req DBClientsRequest) error {
+	return c.post("/api/v1/agent/db-clients", c.token, req, nil)
+}
+
 // MonitorRunRequest is a single monitor scan result.
 type MonitorRunRequest struct {
 	Monitor    string            `json:"monitor"`

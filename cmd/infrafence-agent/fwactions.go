@@ -33,7 +33,9 @@ import (
 //     ssh.socket/sshd.socket units, the port of every SSH session open now)
 //     or a port a web server listens on; a new request is also refused while
 //     a public address is connected to the port (sockets and conntrack, so a
-//     published container port counts too);
+//     published container port counts too), and a port not closed yet while
+//     a regular client of it (seen on 3 of the last 7 days, or a declared
+//     cPanel remote MySQL host; dbclients.go) is not on the allow list;
 //   - it blocks egress only to an IPv4 address it flagged itself as a threat
 //     in the last 24 hours (egress_threat_match, dns_threat_answer, or the
 //     threat-feed blocklist it enforces), and never to a private, protected
@@ -204,6 +206,12 @@ func renderChecked() (keepPorts []int, keepEgress []string) {
 	appliedMu.Unlock()
 
 	c := newFwChecks()
+	appliedMu.Lock()
+	c.enforced = make(map[int]bool, len(fwAppliedPorts))
+	for p := range fwAppliedPorts {
+		c.enforced[p] = true
+	}
+	appliedMu.Unlock()
 	refused := map[string]api.EventRequest{}
 	for _, p := range ports {
 		if reason, msg := portRefusal(c, p, false); reason != "" {
@@ -394,8 +402,11 @@ type fwChecks struct {
 	// sshUnknown: no OpenSSH process seen, sessions cannot be told apart.
 	sshUnknown bool
 	approved   bool // the request was asked for or approved by a person
-	socks      []netstate.Conn
-	socksRead  bool
+	// enforced: the ports closed now (the regular-clients check applies to
+	// the others only).
+	enforced  map[int]bool
+	socks     []netstate.Conn
+	socksRead bool
 }
 
 func newFwChecks() *fwChecks {
@@ -417,7 +428,10 @@ func (c *fwChecks) sockets() []netstate.Conn {
 }
 
 // portRefusal returns why port may not be closed, or "". With live set (a
-// new request), connections open right now count too.
+// new request), connections open right now count too. A port not closed yet
+// (a new request, or a state entry not enforced) is also refused while a
+// regular or declared client of it is not on the allow list: once closed,
+// it is not reopened when a client stops being whitelisted.
 func portRefusal(c *fwChecks, port int, live bool) (reason, message string) {
 	switch {
 	case port == 22 || c.ssh[port]:
@@ -426,6 +440,11 @@ func portRefusal(c *fwChecks, port int, live bool) (reason, message string) {
 		return "web_port", fmt.Sprintf("port %d is a web port", port)
 	case !closablePorts[port]:
 		return "not_closable", fmt.Sprintf("port %d is not a database, cache or admin service port the agent closes by itself", port)
+	}
+	if live || !c.enforced[port] {
+		if ips := fwRegularClients(port); len(ips) > 0 {
+			return "regular_clients", regularClientsMessage(port, ips)
+		}
 	}
 	if live {
 		if ips := fwPublicInbound(port); len(ips) > 0 {
@@ -637,6 +656,9 @@ func runFirewallAction(a api.FirewallAction) (typ, severity string, details map[
 	switch a.Kind {
 	case "close_port":
 		if reason, msg := portRefusal(checks, a.Port, true); reason != "" {
+			if reason == "regular_clients" {
+				details["clients"] = strings.Join(firstN(fwRegularClients(a.Port), 50), ",")
+			}
 			return result("failed", reason, "refused: "+msg, nil)
 		}
 		if containsInt(ports, a.Port) && firewallHasPort(a.Port) {

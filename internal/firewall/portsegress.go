@@ -208,6 +208,29 @@ func IsAllowListed(ip string) bool {
 	return false
 }
 
+// IsAllowListedNet reports whether the whole of entry (an address or a CIDR
+// range) is covered by one entry of the allow list or the protected
+// addresses.
+func IsAllowListedNet(entry string) bool {
+	n := parseNet(entry)
+	if n == nil {
+		return false
+	}
+	ones, bits := n.Mask.Size()
+	fw.Lock()
+	defer fw.Unlock()
+	for _, a := range append(fw.allowEntries(), fw.allowEntries6()...) {
+		m := parseNet(a)
+		if m == nil || !m.Contains(n.IP) {
+			continue
+		}
+		if mo, mb := m.Mask.Size(); mb == bits && mo <= ones {
+			return true
+		}
+	}
+	return false
+}
+
 // DropConntrack deletes the tracked TCP flows to port (original destination
 // port, so a published container port too) from public, not allow-listed
 // sources, so a connection opened before the port was closed does not
