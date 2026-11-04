@@ -69,6 +69,11 @@ done
 for kv in '"target_user":"sales@example.com"' '"auth_method":"login"' '"mta":"exim"'; do
   grep -qF "$kv" <<<"$exm" || why="$why,exim:$kv"
 done
+# The WHM plugin gets the same details (panel events, agent 1.0.41).
+pev=$("$AGENT" panel events --limit 500 --json 2>/dev/null | grep -o '{"details":{[^}]*}[^}]*"source_ip":"198.51.100.231"[^}]*"type":"mail_brute_force"[^}]*}' | head -1)
+for kv in '"protocol":"imap"' '"target_user":"info@example.com"' '"mta":"dovecot"'; do
+  grep -qF "$kv" <<<"$pev" || why="$why,panel:$kv"
+done
 if [ "$watching" = yes ] && [ -z "$why" ]; then
   R_MAIL=ok
 else
@@ -162,7 +167,9 @@ for _ in $(seq 1 60); do
   [ -n "$db6" ] && [ -n "$dbp" ] && break
   sleep 1
 done
-if [ -n "$db6" ] && [ -n "$dbp" ]; then
+pdb=$("$AGENT" panel events --limit 500 --json 2>/dev/null | grep -o '{"details":{[^}]*"bind_address":"203.0.113.1:3306"[^}]*}[^}]*"type":"db_exposed"[^}]*}' | head -1)
+[ -n "$pdb" ] || log "db_exposed: no panel event with bind_address 203.0.113.1:3306"
+if [ -n "$db6" ] && [ -n "$dbp" ] && [ -n "$pdb" ]; then
   R_DBBIND=ok
 else
   log "db_exposed: [::]:5432=${db6:-none} 203.0.113.1:3306=${dbp:-none}"

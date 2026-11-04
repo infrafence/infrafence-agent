@@ -276,6 +276,7 @@ func TestPanelEntitlementGate(t *testing.T) {
 		{Command: "disallow", IP: "198.51.100.4", Actor: "root"}, {Command: "findings", Limit: 50},
 		{Command: "events", Limit: 50}, {Command: "coexistence"}, {Command: "sites"},
 		{Command: "scan", Path: "/home/alice/public_html", Actor: "root"}, {Command: "map", Hours: 24}, {Command: "score"},
+		{Command: "ssh-logins", Limit: 50}, {Command: "db-clients"},
 	}
 	if len(gated) != len(panel.Commands)-1 {
 		t.Fatalf("%d gated commands checked, %d exist", len(gated), len(panel.Commands)-1)

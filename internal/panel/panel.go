@@ -113,6 +113,7 @@ var Mutating = map[string]bool{"unban": true, "allow": true, "disallow": true, "
 var Commands = map[string]string{
 	"status": "", "bans": "", "unban": "ip", "allow": "ip", "allowlist": "", "disallow": "ip",
 	"findings": "", "events": "", "coexistence": "", "sites": "", "scan": "path", "map": "", "score": "",
+	"ssh-logins": "", "db-clients": "",
 }
 
 const (
@@ -291,7 +292,7 @@ func ParseArgs(args []string, now time.Time) (Request, bool, Response) {
 	switch req.Command {
 	case "allow":
 		allowed["note"] = true
-	case "bans", "findings":
+	case "bans", "findings", "ssh-logins":
 		allowed["limit"] = true
 	case "events":
 		allowed["limit"], allowed["since"] = true, true

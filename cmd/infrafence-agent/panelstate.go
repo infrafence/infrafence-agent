@@ -131,6 +131,35 @@ type panelEvent struct {
 	// details.subject, and whether it is a problem event (resolution.go).
 	subject string
 	problem bool
+	// The details the plugins show (panelEventDetails), nil when none.
+	details map[string]string
+}
+
+// panelEventDetails are the details "panel events" passes on, each with
+// its length cap: what a mail attack targeted (mail watcher), the CVE a WAF
+// block was about (cve, then cves: comma-separated), the attack type, rule
+// set and site of a ModSecurity block, and where an exposed database
+// listens.
+// The mailbox and the recipient come from the attacker's own input.
+var panelEventDetails = map[string]int{
+	"target_user": 254, "protocol": 20, "auth_method": 20, "attempts": 6, "recipient": 254,
+	"recipient_domain": 253, "mta": 20,
+	"cve": 20, "cves": 200, "attack_type": 40, "waf_ruleset": 40, "domain": 253,
+	"service": 40, "bind_address": 200,
+}
+
+// panelDetailsOf keeps the details of e the plugins show, cleaned and cut.
+func panelDetailsOf(e api.EventRequest) map[string]string {
+	var out map[string]string
+	for k, max := range panelEventDetails {
+		if v := cleanText(strings.TrimSpace(e.Details[k]), max); v != "" {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
 }
 
 type panelFinding struct {
@@ -350,7 +379,7 @@ func panelNoteEvent(e api.EventRequest) {
 	panelState.events = append(panelState.events, panelEvent{
 		Type: cleanText(e.Type, 64), Severity: cleanText(e.Severity, 16), SourceIP: cleanText(e.SourceIP, 45),
 		Time: cleanText(at, 40), Source: cleanText(e.Details["source"], 64),
-		subject: panelEventSubject(e), problem: problemEvent(e),
+		subject: panelEventSubject(e), problem: problemEvent(e), details: panelDetailsOf(e),
 	})
 	if n := len(panelState.events) - maxEvents; n > 0 {
 		panelState.events = slices.Delete(panelState.events, 0, n)
