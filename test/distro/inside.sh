@@ -220,6 +220,9 @@ loginhist_check
 # ── Coolify: container domains from proxy labels (test/distro/coolify.sh) ──
 . /distro/coolify.sh
 
+# ── Coolify: web attacks seen in Traefik's access log (test/distro/traefik.sh) ──
+. /distro/traefik.sh
+
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 

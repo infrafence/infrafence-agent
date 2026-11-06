@@ -119,6 +119,17 @@ type DockerContainer struct {
 	Image  string            `json:"Image"`
 	Labels map[string]string `json:"Labels"`
 	Ports  []DockerPort      `json:"Ports"`
+	// NetworkSettings: the container's addresses on its networks (a
+	// reverse proxy's are the only ones whose X-Forwarded-For is believed).
+	NetworkSettings struct {
+		Networks map[string]DockerNetwork `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+// DockerNetwork is a container's address on one network.
+type DockerNetwork struct {
+	IPAddress         string `json:"IPAddress"`
+	GlobalIPv6Address string `json:"GlobalIPv6Address"`
 }
 
 // DockerPort represents a port mapping.
