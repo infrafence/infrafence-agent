@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,8 @@ import (
 // plugin is updated from the dashboard, not with the agent, so both show
 // its own version. Read only: the VERSION file the plugin installs, else
 // one query of the package database. Detected at most once per
-// panelPluginEvery, never by running the panel.
+// panelPluginEvery, and again as soon as the VERSION file changes (an
+// update from WHM or the dashboard), never by running the panel.
 
 // panelPluginByPanel: where each panel's plugin says its version.
 var panelPluginByPanel = map[string]struct {
@@ -32,34 +34,39 @@ const panelPluginEvery = time.Hour
 var (
 	panelPluginDetect = detectPanelPlugin
 	panelPluginQuery  = queryPackageVersion
+	panelPluginStamp  = versionFileStamp
 )
 
 var panelPluginCache struct {
 	sync.Mutex
 	panelID string
 	at      time.Time
+	stamp   string // the VERSION file when detected (versionFileStamp)
 	v       *api.PanelPlugin
 	busy    bool // a detection is running
 }
 
 func resetPanelPluginCache() {
 	panelPluginCache.Lock()
-	panelPluginCache.panelID, panelPluginCache.at, panelPluginCache.v, panelPluginCache.busy = "", time.Time{}, nil, false
+	panelPluginCache.panelID, panelPluginCache.at, panelPluginCache.stamp, panelPluginCache.v, panelPluginCache.busy = "", time.Time{}, "", nil, false
 	panelPluginCache.Unlock()
 }
 
 // panelPlugin is the plugin of panelID, detected again when the last
-// detection is at least panelPluginEvery old. The detection runs outside
-// the lock: meanwhile other callers get the last answer.
+// detection is at least panelPluginEvery old or the VERSION file changed
+// since (one stat per call). The detection runs outside the lock:
+// meanwhile other callers get the last answer.
 func panelPlugin(panelID string) *api.PanelPlugin {
-	if _, ok := panelPluginByPanel[panelID]; !ok {
+	p, ok := panelPluginByPanel[panelID]
+	if !ok {
 		return nil
 	}
+	stamp := panelPluginStamp(p.versionFile)
 	c := &panelPluginCache
 	c.Lock()
 	// A clock set back never stops the detection for long.
 	since := time.Since(c.at)
-	stale := c.panelID != panelID || c.at.IsZero() || since < 0 || since >= panelPluginEvery
+	stale := c.panelID != panelID || c.at.IsZero() || since < 0 || since >= panelPluginEvery || stamp != c.stamp
 	if !stale || c.busy {
 		v := c.v
 		if c.panelID != panelID {
@@ -74,7 +81,7 @@ func panelPlugin(panelID string) *api.PanelPlugin {
 	v := panelPluginDetect(panelID)
 
 	c.Lock()
-	c.panelID, c.at, c.v, c.busy = panelID, time.Now(), v, false
+	c.panelID, c.at, c.stamp, c.v, c.busy = panelID, time.Now(), stamp, v, false
 	c.Unlock()
 	return copyPlugin(v)
 }
@@ -110,6 +117,16 @@ func detectPanelPlugin(panelID string) *api.PanelPlugin {
 		return nil
 	}
 	return &api.PanelPlugin{Panel: p.name, Version: v}
+}
+
+// versionFileStamp: the file's modification time and size, "" when it is
+// missing or not a regular file.
+func versionFileStamp(path string) string {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return fi.ModTime().UTC().Format(time.RFC3339Nano) + " " + strconv.FormatInt(fi.Size(), 10)
 }
 
 // readVersionFile: the first line of a small regular file (not a link).

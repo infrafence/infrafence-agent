@@ -108,6 +108,60 @@ func TestPanelPluginCachedHourly(t *testing.T) {
 	}
 }
 
+// An update of the plugin is seen at the next call, not an hour later.
+func TestPanelPluginVersionFileChange(t *testing.T) {
+	savedDetect, savedStamp := panelPluginDetect, panelPluginStamp
+	t.Cleanup(func() { panelPluginDetect, panelPluginStamp = savedDetect, savedStamp; resetPanelPluginCache() })
+	resetPanelPluginCache()
+	n, ver, stamp := 0, "1.0.2", "a"
+	panelPluginDetect = func(string) *api.PanelPlugin { n++; return &api.PanelPlugin{Panel: "whm", Version: ver} }
+	panelPluginStamp = func(string) string { return stamp }
+	for range 3 {
+		panelPlugin("cpanel")
+	}
+	if n != 1 {
+		t.Fatalf("detected %d times, want 1", n)
+	}
+	ver, stamp = "1.1.0", "b"
+	if p := panelPlugin("cpanel"); p == nil || p.Version != "1.1.0" || n != 2 {
+		t.Fatalf("after the update: %+v (%d)", p, n)
+	}
+	// Removed: detected again (no plugin), then cached.
+	stamp = ""
+	panelPluginDetect = func(string) *api.PanelPlugin { n++; return nil }
+	if p := panelPlugin("cpanel"); p != nil || n != 3 {
+		t.Fatalf("after removal: %+v (%d)", p, n)
+	}
+	panelPlugin("cpanel")
+	if n != 3 {
+		t.Fatalf("detected %d times, want 3", n)
+	}
+}
+
+func TestVersionFileStamp(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "VERSION")
+	if versionFileStamp(f) != "" {
+		t.Fatal("missing file has a stamp")
+	}
+	if err := os.WriteFile(f, []byte("1.0.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := versionFileStamp(f)
+	if err := os.WriteFile(f, []byte("1.1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(f, time.Now().Add(time.Minute), time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if b := versionFileStamp(f); a == "" || b == "" || a == b {
+		t.Fatalf("stamps %q %q", a, b)
+	}
+	if err := os.Symlink(f, filepath.Join(dir, "link")); err == nil && versionFileStamp(filepath.Join(dir, "link")) != "" {
+		t.Fatal("a link has a stamp")
+	}
+}
+
 func TestPanelStatusPluginVersions(t *testing.T) {
 	withFakePanel(t)
 	r := handlePanel(panel.Request{Command: "status"})
