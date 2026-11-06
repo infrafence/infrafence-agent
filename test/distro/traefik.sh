@@ -59,11 +59,12 @@ attack() {
 # event_for IP TYPE: the event's JSON, if reported.
 event_for() { curl -s "$tapi/state" | grep -o "{\"type\":\"$2\",\"severity\":\"[a-z]*\",\"source_ip\":\"$1\"[^}]*}" | tail -1; }
 any_event_for() { curl -s "$tapi/state" | grep -o "\"source_ip\":\"$1\"" | head -1; }
-banned() { curl -s "$tapi/state" | sed -n 's/.*"bans":\(\[[^]]*\]\).*/\1/p' | grep -qF "\"$1\""; }
+banned() { curl -s "$tapi/state" | sed -n 's/.*"bans":\(\[[^]]*\]\).*/\1/p' | grep -F "\"$1\"" >/dev/null; }
 # wait_journal SINCE PATTERN SECONDS
 wait_journal() {
   for _ in $(seq 1 "$3"); do
-    journalctl -u infrafence-agent --no-pager --since "$1" | grep -qF -- "$2" && return 0
+    # Not grep -q: with pipefail, journalctl killed by SIGPIPE would fail the match.
+    journalctl -u infrafence-agent --no-pager --since "$1" | grep -F -- "$2" >/dev/null && return 0
     sleep 1
   done
   return 1
