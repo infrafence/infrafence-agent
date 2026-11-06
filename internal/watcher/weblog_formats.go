@@ -32,9 +32,38 @@ const (
 	parseSkip // a known format's other output (a proxy's own log lines)
 )
 
-// parseLine parses an access log line in any supported format. The
-// combined format is tried last, exactly as before.
-func parseLine(line string) (accessLogEntry, parseResult) {
+// parseLine parses an access log line of a source whose web server is
+// server. A known server's log is parsed in that server's formats only, so
+// a request cannot make its own line look like another format (a fake
+// HAProxy line in a User-Agent, say); a log of an unknown server (a path
+// given by hand) is tried in every format, the combined format last.
+func parseLine(line, server string) (accessLogEntry, parseResult) {
+	switch server {
+	case "nginx", "apache", "litespeed":
+		return parseCombined(line)
+	case "haproxy":
+		if e, ok := parseHAProxyLog(line); ok {
+			return e, parseOK
+		}
+		return accessLogEntry{}, parseFail
+	case "traefik", "caddy":
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "{") {
+			e, r := parseJSONAccessLog(trimmed)
+			if r == parseOK && e.format != map[string]string{"traefik": formatTraefikJSON, "caddy": formatCaddyJSON}[server] {
+				return e, parseSkip
+			}
+			return e, r
+		}
+		if server == "traefik" {
+			if e, ok := parseTraefikCLF(line); ok {
+				return e, parseOK
+			}
+			return accessLogEntry{}, parseFail
+		}
+		// Caddy 1 and log transforms write the common log format.
+		return parseCombined(line)
+	}
 	trimmed := strings.TrimSpace(line)
 	if strings.HasPrefix(trimmed, "{") {
 		return parseJSONAccessLog(trimmed)
@@ -45,6 +74,10 @@ func parseLine(line string) (accessLogEntry, parseResult) {
 	if e, ok := parseTraefikCLF(line); ok {
 		return e, parseOK
 	}
+	return parseCombined(line)
+}
+
+func parseCombined(line string) (accessLogEntry, parseResult) {
 	e, ok := parseAccessLog(line)
 	if !ok {
 		return e, parseFail
@@ -108,7 +141,7 @@ func parseJSONAccessLog(line string) (accessLogEntry, parseResult) {
 		e.forwardedFor = j.ForwardedFor
 		e.cfConnectingIP = j.CFConnectingIP
 		e.router = j.RouterName
-	case j.Request != nil && (j.Logger == "" || strings.HasPrefix(j.Logger, "http.log.access")):
+	case j.Request != nil && strings.HasPrefix(j.Logger, "http.log.access"):
 		r := j.Request
 		e.format = formatCaddyJSON
 		// client_ip is the client after Caddy's own trusted_proxies.
@@ -197,15 +230,13 @@ func parseTraefikCLF(line string) (accessLogEntry, bool) {
 // syslog prefix rsyslog writes or without it (log stdout format raw):
 //
 //	[... haproxy[PID]: ]IP:PORT [date] FRONTEND BACKEND/SERVER TR/Tw/Tc/Tr/Ta STATUS BYTES ... "METHOD URI PROTO"
-var haproxyRe = regexp.MustCompile(`^(?:.*?haproxy(?:\[\d+\])?: )?([0-9A-Fa-f:.]+):(\d{1,5}) \[[0-9]{2}/[A-Za-z]{3}/[0-9]{4}:[^\]]*\] \S+ \S+ [-+0-9/]+ (-?\d+) \+?(\d+) .*"([A-Za-z]+) ([^ "]+)[^"]*"$`)
+var haproxyRe = regexp.MustCompile(`^(?:(?:[A-Z][a-z]{2} +\d{1,2} \d\d:\d\d:\d\d|\d{4}-\d\d-\d\dT[0-9:.+Z-]+) \S+ haproxy\[\d+\]: )?([0-9A-Fa-f:.]+):(\d{1,5}) \[[0-9]{2}/[A-Za-z]{3}/[0-9]{4}:[^\]]*\] \S+ \S+ [-+0-9/]+ (-?\d+) \+?(\d+) .*"([A-Za-z]+) ([^ "]+)[^"]*"$`)
 
 func parseHAProxyLog(line string) (accessLogEntry, bool) {
 	var e accessLogEntry
-	// Cheap test first: a combined line has " - " after its address.
+	// Cheap test first. The line starts with the syslog header or the
+	// client's address:port (never request data: the regexp is anchored).
 	if !strings.Contains(line, "] ") || !strings.HasSuffix(line, `"`) {
-		return e, false
-	}
-	if i := strings.IndexByte(line, ' '); i < 0 || (!strings.Contains(line[:i], ":") && !strings.Contains(line, "haproxy")) {
 		return e, false
 	}
 	m := haproxyRe.FindStringSubmatch(line)

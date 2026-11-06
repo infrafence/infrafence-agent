@@ -108,11 +108,14 @@ func FollowContainerLogs(ctx context.Context, idOrName string, tty bool, onLine 
 			return d.DialContext(ctx, "unix", sock)
 		},
 		ResponseHeaderTimeout: 10 * time.Second,
+		DisableKeepAlives:     true,
 	}}
 	q := url.Values{}
 	q.Set("follow", "1")
 	q.Set("stdout", "1")
 	q.Set("stderr", "1")
+	// Whole seconds: Podman's API takes no fraction. A reconnect may see
+	// the lines of its first second again.
 	q.Set("since", strconv.FormatInt(time.Now().Unix(), 10))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"http://localhost/containers/"+url.PathEscape(idOrName)+"/logs?"+q.Encode(), nil)

@@ -108,6 +108,9 @@ func dockerHTTPClient(sockPath string) *http.Client {
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 				return net.DialTimeout("unix", sockPath, 5*time.Second)
 			},
+			// A new client per call: an idle connection kept alive would
+			// never be closed (one socket and two goroutines per call).
+			DisableKeepAlives: true,
 		},
 	}
 }

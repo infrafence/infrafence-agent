@@ -1292,15 +1292,11 @@ func (w *WebWatcher) Run() {
 					details["hint"] = "In Coolify, Servers > this server > Proxy > Configuration, add to the command: " + strings.Join(h.Settings, " ") + " (then restart the proxy)"
 				}
 			}
-		} else {
-			log.Printf("[webwatcher] no web server logs found — WAF disabled")
-			log.Printf("[webwatcher] hint: if your web server runs in Docker, mount the log directory to the host:")
-			log.Printf("[webwatcher]   volumes:")
-			log.Printf("[webwatcher]     - /var/log/nginx:/var/log/nginx")
-			log.Printf("[webwatcher] hint: or set WEB_LOG_PATH=/path/to/access.log in the systemd unit")
+			// Report to the panel so users can see the issue without SSH access.
+			go w.onEvent("0.0.0.0", "waf_disabled", "warning", details)
 		}
-		// Report to the panel so users can see the issue without SSH access.
-		go w.onEvent("0.0.0.0", "waf_disabled", "warning", details)
+		// Otherwise no web server runs here (a mail or database server, say):
+		// nothing to report, as before (main logged that no log was found).
 		// A log that appears later (an access log turned on) is picked up
 		// by the hot reload.
 		go w.cleanupLoop()
@@ -1358,6 +1354,8 @@ func (w *WebWatcher) startTailGoroutine(path string) {
 			w.mu.Unlock()
 		}()
 
+		container := strings.HasPrefix(path, containerLogPrefix)
+		delay, lastErr := 5*time.Second, ""
 		for {
 			select {
 			case <-ctx.Done():
@@ -1365,12 +1363,34 @@ func (w *WebWatcher) startTailGoroutine(path string) {
 			default:
 			}
 
+			start := time.Now()
 			if err := w.tailWithContext(ctx, path); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("[webwatcher] %s error: %v — retrying in 5s", filepath.Base(path), err)
-				time.Sleep(5 * time.Second)
+				if !container {
+					log.Printf("[webwatcher] %s error: %v — retrying in 5s", filepath.Base(path), err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				// A container's output: a stopped container or a log driver
+				// the API cannot read fails again at once, so the wait
+				// doubles up to 5 minutes, and an error is logged once.
+				if time.Since(start) > time.Minute {
+					delay = 5 * time.Second
+				}
+				if msg := err.Error(); msg != lastErr {
+					lastErr = msg
+					log.Printf("[webwatcher] %s: %v — retrying in %s (longer while it fails)", path, err, delay)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(delay):
+				}
+				if delay *= 2; delay > 5*time.Minute {
+					delay = 5 * time.Minute
+				}
 			}
 		}
 	}()
@@ -1883,7 +1903,10 @@ func (w *WebWatcher) enrichDetails(logPath, rawLine, lineDomain string, details 
 }
 
 func (w *WebWatcher) processLine(logPath, line string) {
-	entry, res := parseLine(line)
+	w.mu.Lock()
+	server := w.sources[logPath].Server
+	w.mu.Unlock()
+	entry, res := parseLine(line, server)
 	if res == parseSkip {
 		return // a proxy's own log line, not a request
 	}

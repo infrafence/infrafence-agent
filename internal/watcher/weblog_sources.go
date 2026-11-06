@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -90,6 +91,9 @@ var (
 	// containers' labels (Traefik's default format logs the router, not the
 	// host).
 	routerHosts = map[string]string{}
+	// lastDockerSources: the last detection's sources, kept when the Docker
+	// API fails (a daemon restart must not stop the reading).
+	lastDockerSources []LogPathInfo
 )
 
 // CurrentWebLogHints returns the last detection's hints.
@@ -274,6 +278,9 @@ func traefikConfigFromFile(content string, toml bool) traefikAccessLog {
 			}
 			continue
 		}
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "---") {
+			continue
+		}
 		if m := yamlSectionRe.FindStringSubmatch(line); m != nil {
 			in = strings.EqualFold(m[1], "accessLog")
 			if in {
@@ -320,13 +327,44 @@ func traefikConfigFile(args []string, mounts map[string]string) string {
 		}
 	}
 	for _, c := range candidates {
-		if h := resolveDockerMount(c, mounts); h != "" {
-			if fi, err := os.Stat(h); err == nil && fi.Mode().IsRegular() {
-				return h
-			}
+		if h := hostPathInMount(c, mounts); h != "" {
+			return h
 		}
 	}
 	return ""
+}
+
+// hostPathInMount is the host file a container path is, through the
+// container's mounts: "" when no mount shows it, when it is not a regular
+// file, or when it leaves the mount (.., or a symlink pointing out of it:
+// the container's owner chooses these paths, the agent reads as root).
+func hostPathInMount(containerPath string, mounts map[string]string) string {
+	if !filepath.IsAbs(containerPath) || strings.Contains(containerPath, "..") {
+		return ""
+	}
+	h := resolveDockerMount(filepath.Clean(containerPath), mounts)
+	if h == "" {
+		return ""
+	}
+	real, err := filepath.EvalSymlinks(h)
+	if err != nil {
+		return ""
+	}
+	inside := false
+	for _, src := range mounts {
+		rs, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			continue
+		}
+		if rel, err := filepath.Rel(rs, real); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			inside = true
+			break
+		}
+	}
+	if fi, err := os.Stat(real); !inside || err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return real
 }
 
 // traefikAccessLogOf works out a Traefik container's access log the way
@@ -351,19 +389,14 @@ func readBounded(path string, max int64) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	fi, err := f.Stat()
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
 	if err != nil {
 		return nil, err
 	}
-	if fi.Size() > max {
+	if int64(len(data)) > max {
 		return nil, fmt.Errorf("%s: larger than %d bytes", path, max)
 	}
-	buf := make([]byte, fi.Size())
-	n, err := f.Read(buf)
-	if err != nil && n == 0 && fi.Size() > 0 {
-		return nil, err
-	}
-	return buf[:n], nil
+	return data, nil
 }
 
 func mountMap(ms []monitor.DockerMount) map[string]string {
@@ -404,25 +437,33 @@ func containerIPs(c monitor.DockerContainer) []string {
 // webServerOfImage is the web server an image runs, when it is one that
 // logs requests to its output: "nginx", "apache", "litespeed" or "".
 func webServerOfImage(image string) string {
+	// The repository's last part and the tag: an image merely named after a
+	// web server (apache/superset, apache/airflow) runs another program.
 	im := strings.ToLower(image)
-	switch {
-	case strings.Contains(im, "nginx") || strings.Contains(im, "openresty"):
+	if i := strings.IndexByte(im, '@'); i >= 0 {
+		im = im[:i]
+	}
+	repo, tag := im, ""
+	if i := strings.LastIndexByte(im, ':'); i > strings.LastIndexByte(im, '/') {
+		repo, tag = im[:i], im[i+1:]
+	}
+	name := repo[strings.LastIndexByte(repo, '/')+1:]
+	switch name {
+	case "nginx", "nginx-unprivileged", "openresty", "nginx-proxy":
 		return "nginx"
-	case strings.Contains(im, "httpd") || strings.Contains(im, "apache"):
+	case "httpd", "apache", "apache2":
 		return "apache"
-	case strings.Contains(im, "litespeed"):
+	case "openlitespeed", "litespeed":
 		return "litespeed"
-	}
-	// The official WordPress image runs Apache (its fpm and cli variants run none).
-	repo := im
-	if i := strings.LastIndexByte(repo, ':'); i > strings.LastIndexByte(repo, '/') {
-		if tag := repo[i+1:]; strings.Contains(tag, "fpm") || strings.Contains(tag, "cli") {
-			return ""
+	case "wordpress":
+		// The official image runs Apache; its fpm and cli variants run none.
+		if tag == "" || !(strings.Contains(tag, "fpm") || strings.Contains(tag, "cli")) {
+			return "apache"
 		}
-		repo = repo[:i]
-	}
-	if repo == "wordpress" || strings.HasSuffix(repo, "/wordpress") {
-		return "apache"
+	case "php":
+		if strings.Contains(tag, "apache") {
+			return "apache"
+		}
 	}
 	return ""
 }
@@ -463,8 +504,17 @@ func detectDockerSources(filesFor map[string]bool) []LogPathInfo {
 	}
 	cs, err := monitor.ListDockerContainers()
 	if err != nil {
-		return nil // the daemon is restarting: the last state stays
+		// The daemon is restarting: the last state stays.
+		dockerStateMu.Lock()
+		defer dockerStateMu.Unlock()
+		return append([]LogPathInfo(nil), lastDockerSources...)
 	}
+	dockerStateMu.Lock()
+	previous := map[string]LogPathInfo{}
+	for _, i := range lastDockerSources {
+		previous[i.Container] = i
+	}
+	dockerStateMu.Unlock()
 	if len(cs) > 1000 {
 		cs = cs[:1000]
 	}
@@ -494,6 +544,10 @@ func detectDockerSources(filesFor map[string]bool) []LogPathInfo {
 		}
 		d, err := monitor.InspectContainer(c.ID)
 		if err != nil {
+			if p, ok := previous[name]; ok {
+				out = append(out, p)
+				proxyLogRead = true
+			}
 			continue
 		}
 		switch flavour {
@@ -535,6 +589,10 @@ func detectDockerSources(filesFor map[string]bool) []LogPathInfo {
 		}
 		d, err := monitor.InspectContainer(c.ID)
 		if err != nil {
+			if p, ok := previous[name]; ok {
+				n++
+				out = append(out, p)
+			}
 			continue
 		}
 		n++
@@ -546,6 +604,9 @@ func detectDockerSources(filesFor map[string]bool) []LogPathInfo {
 			Container: name, Tty: d.Tty, Proxies: proxyIPs})
 	}
 	setDockerState(hints, routers)
+	dockerStateMu.Lock()
+	lastDockerSources = append([]LogPathInfo(nil), out...)
+	dockerStateMu.Unlock()
 	return out
 }
 
@@ -566,12 +627,12 @@ func traefikSource(name string, labels map[string]string, d *monitor.ContainerDe
 		return &LogPathInfo{Path: containerLogPrefix + name, Server: "traefik", Container: name, Tty: d.Tty}, nil
 	}
 	h.Path = cfg.FilePath
-	host := resolveDockerMount(cfg.FilePath, mounts)
-	if host == "" {
+	if strings.Contains(cfg.FilePath, "..") || resolveDockerMount(filepath.Clean(cfg.FilePath), mounts) == "" {
 		h.Reason = HintLogNotOnHost
 		return nil, h
 	}
-	if fi, err := os.Stat(host); err != nil || !fi.Mode().IsRegular() {
+	host := hostPathInMount(cfg.FilePath, mounts)
+	if host == "" {
 		h.Reason, h.Settings = HintLogFileAbsent, nil
 		return nil, h
 	}
@@ -742,4 +803,17 @@ func describeSource(s LogPathInfo) string {
 		return fmt.Sprintf("%s access log file of container %s", server, s.Container)
 	}
 	return server + " access log file"
+}
+
+// ActivePaths returns the logs being read (container outputs as
+// docker://<name>), sorted.
+func (w *WebWatcher) ActivePaths() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	paths := make([]string, 0, len(w.activePaths))
+	for p := range w.activePaths {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths
 }

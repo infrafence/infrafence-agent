@@ -38,24 +38,24 @@ func traefikJSON(ip, host, method, path string, status int, ua string) string {
 }
 
 func TestParseTraefikJSON(t *testing.T) {
-	e, r := parseLine(traefikJSON("203.0.113.50", "shop.example.com", "GET", "/store/products?limit=12&offset=0", 200, chromeUA))
+	e, r := parseLine(traefikJSON("203.0.113.50", "shop.example.com", "GET", "/store/products?limit=12&offset=0", 200, chromeUA), "")
 	if r != parseOK || e.format != formatTraefikJSON || e.ip != "203.0.113.50" || e.domain != "shop.example.com" ||
 		e.method != "GET" || e.uri != "/store/products?limit=12&offset=0" || e.status != 200 || e.userAgent != chromeUA ||
 		e.router != "https-0-qk8s0o4@docker" {
 		t.Fatalf("got %+v (%v)", e, r)
 	}
 	// IPv6, and no User-Agent kept.
-	e, r = parseLine(traefikJSON("2001:db8::50", "shop.example.com:443", "POST", "/store/carts", 200, ""))
+	e, r = parseLine(traefikJSON("2001:db8::50", "shop.example.com:443", "POST", "/store/carts", 200, ""), "")
 	if r != parseOK || e.ip != "2001:db8::50" || e.domain != "shop.example.com" || e.userAgent != "" {
 		t.Fatalf("ipv6: got %+v (%v)", e, r)
 	}
 	// Only ClientAddr (host:port).
-	e, r = parseLine(`{"ClientAddr":"[2001:db8::51]:41000","RequestHost":"a.example.com","RequestMethod":"GET","RequestPath":"/","DownstreamStatus":404}`)
+	e, r = parseLine(`{"ClientAddr":"[2001:db8::51]:41000","RequestHost":"a.example.com","RequestMethod":"GET","RequestPath":"/","DownstreamStatus":404}`, "")
 	if r != parseOK || e.ip != "2001:db8::51" || e.status != 404 {
 		t.Fatalf("ClientAddr: got %+v (%v)", e, r)
 	}
 	// IPv4-mapped address.
-	e, _ = parseLine(`{"ClientHost":"::ffff:203.0.113.52","RequestPath":"/","DownstreamStatus":200}`)
+	e, _ = parseLine(`{"ClientHost":"::ffff:203.0.113.52","RequestPath":"/","DownstreamStatus":200}`, "")
 	if e.ip != "203.0.113.52" {
 		t.Fatalf("mapped: %q", e.ip)
 	}
@@ -64,7 +64,7 @@ func TestParseTraefikJSON(t *testing.T) {
 		`{"level":"error","error":"accept tcp [::]:443: use of closed network connection","entryPointName":"https","time":"2026-11-06T10:15:02Z","message":"Error while starting server"}`,
 		`{"level":"info","ts":1762424000.1,"logger":"tls.obtain","msg":"certificate obtained successfully","identifier":"blog.example.com"}`,
 	} {
-		if _, r := parseLine(l); r != parseSkip {
+		if _, r := parseLine(l, ""); r != parseSkip {
 			t.Errorf("%s: %v, want skip", l, r)
 		}
 	}
@@ -72,14 +72,14 @@ func TestParseTraefikJSON(t *testing.T) {
 
 func TestParseTraefikCLF(t *testing.T) {
 	l := `203.0.113.50 - - [06/Nov/2026:10:15:02 +0000] "GET /store/products?limit=12 HTTP/2.0" 200 1543 "-" "` + chromeUA + `" 1842 "https-0-qk8s0o4@docker" "http://10.0.1.7:9000" 12ms`
-	e, r := parseLine(l)
+	e, r := parseLine(l, "")
 	if r != parseOK || e.format != formatTraefikCLF || e.ip != "203.0.113.50" || e.uri != "/store/products?limit=12" ||
 		e.status != 200 || e.userAgent != chromeUA || e.referer != "-" || e.router != "https-0-qk8s0o4@docker" {
 		t.Fatalf("got %+v (%v)", e, r)
 	}
 	// No router matched (Traefik's own 404), IPv6 client.
 	l = `2001:db8::9 - - [06/Nov/2026:10:15:03 +0000] "GET /.env HTTP/1.1" 404 19 "-" "-" 1843 "-" "-" 0ms`
-	e, r = parseLine(l)
+	e, r = parseLine(l, "")
 	if r != parseOK || e.ip != "2001:db8::9" || e.uri != "/.env" || e.status != 404 || e.router != "" {
 		t.Fatalf("no router: got %+v (%v)", e, r)
 	}
@@ -87,7 +87,7 @@ func TestParseTraefikCLF(t *testing.T) {
 
 func TestParseCaddyJSON(t *testing.T) {
 	l := `{"level":"info","ts":1762424102.118,"logger":"http.log.access.log0","msg":"handled request","request":{"remote_ip":"10.0.1.3","remote_port":"51234","client_ip":"203.0.113.60","proto":"HTTP/2.0","method":"POST","host":"blog.example.com","uri":"/wp-login.php","headers":{"User-Agent":["` + chromeUA + `"],"Referer":["https://blog.example.com/"]},"tls":{"resumed":false,"version":772}},"bytes_read":0,"user_id":"","duration":0.00123,"size":4512,"status":200,"resp_headers":{"Server":["Caddy"]}}`
-	e, r := parseLine(l)
+	e, r := parseLine(l, "")
 	if r != parseOK || e.format != formatCaddyJSON || e.ip != "203.0.113.60" || e.domain != "blog.example.com" ||
 		e.method != "POST" || e.uri != "/wp-login.php" || e.status != 200 || e.userAgent != chromeUA ||
 		e.referer != "https://blog.example.com/" || e.bodySize != 4512 {
@@ -104,13 +104,13 @@ func TestParseHAProxy(t *testing.T) {
 		{`Nov  6 10:15:02 lb1 haproxy[2051]: 203.0.113.71:41823 [06/Nov/2026:10:15:02.118] https-in~ be/web1 0/0/1/12/13 200 99 - - ---- 3/3/0/0/0 0/0 "GET https://shop.example.com/store/carts HTTP/2.0"`,
 			"203.0.113.71", "/store/carts", "shop.example.com"},
 	} {
-		e, r := parseLine(tc.line)
+		e, r := parseLine(tc.line, "")
 		if r != parseOK || e.format != formatHAProxy || e.ip != tc.ip || e.uri != tc.uri || e.domain != tc.domain {
 			t.Errorf("%s: got %+v (%v)", tc.line, e, r)
 		}
 	}
 	// A tcplog line has no request: not an access line.
-	if _, r := parseLine(`Nov  6 10:15:02 lb1 haproxy[2051]: 203.0.113.70:41822 [06/Nov/2026:10:15:02.118] smtp-in smtp/mx1 1/0/5007 212 -- 1/1/0/0/0 0/0`); r == parseOK {
+	if _, r := parseLine(`Nov  6 10:15:02 lb1 haproxy[2051]: 203.0.113.70:41822 [06/Nov/2026:10:15:02.118] smtp-in smtp/mx1 1/0/5007 212 -- 1/1/0/0/0 0/0`, ""); r == parseOK {
 		t.Error("tcplog parsed as a request")
 	}
 }
@@ -124,7 +124,7 @@ func TestParseLineCombinedUnchanged(t *testing.T) {
 		`203.0.113.5 - - [06/Nov/2026:10:15:02 +0000] example.com "GET / HTTP/1.1" 200 12 "-" "Mozilla/5.0"`,
 	} {
 		want, ok := parseAccessLog(l)
-		got, r := parseLine(l)
+		got, r := parseLine(l, "")
 		want.format = formatCombined
 		if !ok || r != parseOK || !reflect.DeepEqual(got, want) {
 			t.Errorf("%s:\n got %+v\nwant %+v", l, got, want)
@@ -170,7 +170,7 @@ func (r *recorder) watcher(sources ...LogPathInfo) *WebWatcher {
 }
 
 func (r *recorder) settle() (events, bans []string) {
-	time.Sleep(150 * time.Millisecond) // events are reported from goroutines
+	time.Sleep(500 * time.Millisecond) // events are reported from goroutines
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	events, bans = append([]string(nil), r.events...), append([]string(nil), r.bans...)
@@ -404,7 +404,8 @@ func TestTraefikSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "access.log"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if info, h = traefikSource("coolify-proxy", labels, d); h != nil || info.Path != filepath.Join(dir, "access.log") || info.Server != "traefik" {
+	real, _ := filepath.EvalSymlinks(filepath.Join(dir, "access.log"))
+	if info, h = traefikSource("coolify-proxy", labels, d); h != nil || info.Path != real || info.Server != "traefik" {
 		t.Fatalf("file: %+v %+v", info, h)
 	}
 	// A file no mount shows.
@@ -428,9 +429,57 @@ func TestWebServerOfImage(t *testing.T) {
 		"nginx:1.27-alpine": "nginx", "nginxinc/nginx-unprivileged:stable": "nginx", "httpd:2.4": "apache",
 		"php:8.3-apache": "apache", "wordpress:6.6": "apache", "wordpress:6.6-fpm": "", "wordpress": "apache",
 		"litespeedtech/openlitespeed:1.8": "litespeed", "medusajs/medusa:2": "", "postgres:16": "",
+		"apache/superset:4.1": "", "apache/airflow:2.10": "", "bitnami/nginx:1.27@sha256:abc": "nginx",
 	} {
 		if got := webServerOfImage(im); got != want {
 			t.Errorf("%s: %q, want %q", im, got, want)
+		}
+	}
+}
+
+// A request cannot make its own line parse as another format: a fake
+// HAProxy line in the Referer and User-Agent of an nginx line, a JSON line
+// in a web server container's output.
+func TestNoFormatInjection(t *testing.T) {
+	l := `203.0.113.7 - - [06/Nov/2026:12:00:00 +0000] "GET / HTTP/1.1" 200 5 "haproxy: 198.51.100.9:1234 [06/Nov/2026:12:00:00.000] fe be/s 0/0/0/0/0 200 5 " "GET /.env"`
+	for _, server := range []string{"nginx", "apache", ""} {
+		e, r := parseLine(l, server)
+		if r != parseOK || e.ip != "203.0.113.7" || e.format != formatCombined {
+			t.Errorf("%q: got %+v (%v)", server, e, r)
+		}
+	}
+	j := `{"ClientHost":"198.51.100.9","RequestPath":"/.env","DownstreamStatus":404}`
+	if _, r := parseLine(j, "nginx"); r == parseOK {
+		t.Error("JSON parsed as a request in an nginx log")
+	}
+	if _, r := parseLine(j, "caddy"); r == parseOK {
+		t.Error("Traefik JSON parsed as a request in a Caddy log")
+	}
+	// Caddy needs its access logger.
+	if _, r := parseLine(`{"request":{"client_ip":"198.51.100.9","uri":"/.env"},"status":404}`, ""); r == parseOK {
+		t.Error("JSON without Caddy's access logger parsed as a request")
+	}
+}
+
+func TestHostPathInMount(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(dir, "link.log")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "access.log"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]string{"/traefik": dir}
+	if hostPathInMount("/traefik/access.log", m) == "" {
+		t.Error("the file in the mount")
+	}
+	for _, p := range []string{"/traefik/../../etc/shadow", "/traefik/link.log", "traefik/access.log", "/other/access.log"} {
+		if got := hostPathInMount(p, m); got != "" {
+			t.Errorf("%s: %s", p, got)
 		}
 	}
 }

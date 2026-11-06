@@ -97,7 +97,21 @@ case "$(uname -m)" in aarch64|arm64) tarch=arm64 ;; *) tarch=amd64 ;; esac
 tsha_var=TRAEFIK_SHA_$tarch
 turl=https://github.com/traefik/traefik/releases/download/v$TRAEFIK_VERSION/traefik_v${TRAEFIK_VERSION}_linux_$tarch.tar.gz
 tmock="" ttr="" tshop=""
-if ! curl -fsSL -m 120 --retry 3 --retry-all-errors --retry-delay 5 -o /tmp/traefik.tgz "$turl"; then
+# tar and gzip are not in every minimal image (Fedora, Amazon Linux).
+if ! command -v tar >/dev/null || ! command -v gzip >/dev/null; then
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tar gzip </dev/null >/tmp/traefik-pkg.log 2>&1
+  else
+    dnf install -y -q tar gzip >/tmp/traefik-pkg.log 2>&1 || yum install -y -q tar gzip >>/tmp/traefik-pkg.log 2>&1
+  fi
+fi
+# A plain retry loop: curl's --retry-all-errors is newer than RHEL 8's curl.
+tdl=no
+for _ in 1 2 3 4; do
+  curl -fsSL -m 120 -o /tmp/traefik.tgz "$turl" && { tdl=yes; break; }
+  sleep 5
+done
+if [ "$tdl" != yes ]; then
   tf download "$turl"
 elif [ "$(sha256sum /tmp/traefik.tgz | cut -d' ' -f1)" != "${!tsha_var}" ]; then
   tf checksum "$(sha256sum /tmp/traefik.tgz)"

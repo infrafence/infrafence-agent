@@ -973,7 +973,7 @@ func runAgent() {
 				WebServer:         wsName,
 				WebServerVersion:  wsVersion,
 				MonitoredDomains:  heartbeatDomains(monitoredDomains, proxyDomains.Domains()),
-				MonitoredLogPaths: monitoredLogPaths,
+				MonitoredLogPaths: logPathsNow(webW, monitoredLogPaths),
 				FirewallMode:      fwStatus.Mode,
 				BanCapacity:       fwStatus.Capacity,
 				ActiveBans:        fwStatus.ActiveBans,
@@ -2758,4 +2758,15 @@ func webDetection(webW *watcher.WebWatcher) any {
 		return nil
 	}
 	return webW.Detection()
+}
+
+// logPathsNow: the logs the web watcher reads now (a log found by its hot
+// reload included), else those found at start.
+func logPathsNow(webW *watcher.WebWatcher, atStart []string) []string {
+	if webW != nil {
+		if paths := webW.ActivePaths(); len(paths) > 0 {
+			return paths
+		}
+	}
+	return atStart
 }
