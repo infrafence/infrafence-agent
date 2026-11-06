@@ -59,9 +59,10 @@ if [ -n "$ftpd" ] && [ "$curl_ftp" = yes ]; then
   for _ in $(seq 1 120); do [ "$(ftp_syncs)" -gt "$before" ] && break; sleep 1; done
   sleep 2
   # The agent reads the FTP configuration every minute: wait until it has
-  # the passive range.
+  # the passive range. Up to 3 minutes: on a loaded runner the line has
+  # reached the journal after more than 90 s (almalinux-9, oracle-9).
   got_conf=no
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 180); do
     journalctl -u infrafence-agent --no-pager | grep -q 'FTP server: .*passive ports 40000-40100' && { got_conf=yes; break; }
     sleep 1
   done
