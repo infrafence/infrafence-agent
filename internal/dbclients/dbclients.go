@@ -38,8 +38,15 @@ const (
 	// maxPerPort bounds the addresses kept per port over the window.
 	maxPerPort = 1000
 	maxPorts   = 64
-	saveEvery  = 10 * time.Minute
-	maxFile    = 16 << 20
+	// HeldSamples: a connection counts as held, for Held, once it is seen
+	// established in this many consecutive samples (one a minute: open for
+	// two minutes or more, longer than MySQL's connect_timeout and
+	// PostgreSQL's authentication_timeout defaults, 10 s and 60 s).
+	HeldSamples = 3
+	// maxConnsPerPort bounds the connections followed per port and sample.
+	maxConnsPerPort = 5000
+	saveEvery       = 10 * time.Minute
+	maxFile         = 16 << 20
 )
 
 // Entry is one address on one port on one day.
@@ -47,6 +54,8 @@ type Entry struct {
 	First   int64 `json:"first"` // unix seconds
 	Last    int64 `json:"last"`
 	Samples int   `json:"samples"`
+	// Held: the samples with a held connection of the address (see Held).
+	Held int `json:"held,omitempty"`
 	// sent is the number of samples the dashboard has (not saved: after a
 	// restart everything is sent once more).
 	sent int
@@ -77,6 +86,10 @@ type Log struct {
 	path  string
 	ports map[int]map[string]map[int64]*Entry // port -> address -> day -> entry
 	full  map[int]int64                       // port -> day the per-day bound was logged
+	// age: per port, the established connections of the last sample
+	// (client "address:port") and in how many consecutive samples each was
+	// seen. In memory only.
+	age   map[int]map[string]int
 	dirty bool
 	saved time.Time
 
@@ -165,6 +178,48 @@ func (l *Log) Observe(seen map[int][]string) {
 	}
 }
 
+// ObserveConns follows the established connections of one sample (per
+// port, the client's "address:port", from netstate.InboundClients), after
+// Observe of the same sample: the address of a connection held for
+// HeldSamples samples gets a held sample for today.
+func (l *Log) ObserveConns(conns map[int][]string) {
+	if l == nil {
+		return
+	}
+	today := l.day(l.Now())
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	next := map[int]map[string]int{}
+	for port, keys := range conns {
+		ages := map[string]int{}
+		held := map[string]bool{}
+		for _, k := range keys {
+			if len(ages) >= maxConnsPerPort {
+				break
+			}
+			host, _, err := net.SplitHostPort(k)
+			if err != nil {
+				continue
+			}
+			ip := normIP(host)
+			if ip == "" {
+				continue
+			}
+			n := l.age[port][k] + 1
+			ages[k] = n
+			if n >= HeldSamples && !held[ip] {
+				held[ip] = true
+				if e := l.ports[port][ip][today]; e != nil {
+					e.Held++
+					l.dirty = true
+				}
+			}
+		}
+		next[port] = ages
+	}
+	l.age = next
+}
+
 // evictLocked drops, to make room on port, the address seen on a single
 // day (not today) with the fewest samples. It reports whether one was
 // dropped.
@@ -221,6 +276,20 @@ func (l *Log) pruneLocked(today int64) {
 // Regular returns the regular clients of port: the addresses seen on at
 // least MinDays different days of the last WindowDays days, today included.
 func (l *Log) Regular(port int) []Client {
+	return l.regular(port, false)
+}
+
+// Held returns the regular clients of port counting only the days the
+// address held a connection open for HeldSamples samples. A host that only
+// opens connections, never authenticated past the database's login timeout
+// (a scanner, a brute force), does not get there; an idle unauthenticated
+// connection a service keeps open (Redis, MongoDB without auth timeouts)
+// still does.
+func (l *Log) Held(port int) []Client {
+	return l.regular(port, true)
+}
+
+func (l *Log) regular(port int, held bool) []Client {
 	if l == nil {
 		return nil
 	}
@@ -231,7 +300,7 @@ func (l *Log) Regular(port int) []Client {
 	for ip, days := range l.ports[port] {
 		c := Client{IP: ip}
 		for d, e := range days {
-			if d <= today-WindowDays || d > today || e.Samples <= 0 {
+			if d <= today-WindowDays || d > today || e.Samples <= 0 || held && e.Held <= 0 {
 				continue
 			}
 			c.Days++

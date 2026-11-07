@@ -173,7 +173,7 @@ func panelDBClients() panel.Response {
 				break
 			}
 			out = append(out, panelDBClientOut{
-				Port: dbMySQLPort, IP: x.Entry, Source: cleanText(x.Source, 40), Host: orNull(cleanText(x.Host, 255)),
+				Port: x.ClientPort(), IP: x.Entry, Source: cleanText(x.Source, 40), Host: orNull(cleanText(x.Host, 255)),
 				Allowed: dbAllowNet(x.Entry),
 			})
 		}

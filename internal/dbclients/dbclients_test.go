@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -168,5 +169,48 @@ func TestEvictOneDayAddress(t *testing.T) {
 	l.Observe(map[int][]string{6379: {"203.0.113.9"}})
 	if l.ports[6379]["203.0.113.9"] == nil || len(l.ports[6379]) != maxPerPort {
 		t.Fatalf("not admitted: %d addresses", len(l.ports[6379]))
+	}
+}
+
+// Held counts a day only when the same connection (address and client
+// port) stayed established for HeldSamples consecutive samples; a gap
+// starts the count again. The held count is saved with the day.
+func TestHeldNeedsLongConnection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db-clients.json")
+	l, c := newTestLog(t, path)
+	sample := func(conns ...string) {
+		ips := []string{}
+		for _, k := range conns {
+			ips = append(ips, k[:strings.LastIndexByte(k, ':')])
+		}
+		l.Observe(map[int][]string{5432: ips})
+		l.ObserveConns(map[int][]string{5432: conns})
+	}
+	for d := 0; d < 3; d++ {
+		// A pool: one connection open for minutes. A client connecting
+		// anew every minute (a new port each time).
+		for i := 0; i < HeldSamples; i++ {
+			sample("203.0.113.7:40000", "198.51.100.9:"+strconv.Itoa(50000+i))
+		}
+		// Seen twice, gone, seen again: not held.
+		sample("198.51.100.10:41000")
+		sample("198.51.100.10:41000")
+		sample()
+		sample("198.51.100.10:41000")
+		c.t = c.t.Add(24 * time.Hour)
+	}
+	c.t = c.t.Add(-24 * time.Hour)
+	if got := l.Regular(5432); len(got) != 3 {
+		t.Fatalf("regular: %+v", got)
+	}
+	got := l.Held(5432)
+	if len(got) != 1 || got[0].IP != "203.0.113.7" || got[0].Days != 3 {
+		t.Fatalf("held: %+v", got)
+	}
+	l.Save()
+	l2 := New(path)
+	l2.Now = c.now
+	if got := l2.Held(5432); len(got) != 1 {
+		t.Fatalf("held after load: %+v", got)
 	}
 }

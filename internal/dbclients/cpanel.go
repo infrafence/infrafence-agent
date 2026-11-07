@@ -38,11 +38,21 @@ const (
 )
 
 // Declared is one declared client: Entry is an address or a CIDR range,
-// Host the line it comes from.
+// Host the line it comes from, Port the port it is a client of (0: MySQL's
+// 3306, as for the cPanel access hosts).
 type Declared struct {
 	Entry  string `json:"entry"`
 	Host   string `json:"host"`
 	Source string `json:"source"`
+	Port   int    `json:"port,omitempty"`
+}
+
+// ClientPort is the port d is a declared client of.
+func (d Declared) ClientPort() int {
+	if d.Port == 0 {
+		return mysqlPort
+	}
+	return d.Port
 }
 
 // Resolver looks a host name up (replaced in tests).

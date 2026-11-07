@@ -1195,7 +1195,8 @@ database, cache and admin ports the agent may close, by port, the observed clien
 recently seen first (at most 500). A **regular client** is a public address seen connected on 3 or more of
 the last 7 days (sampled once a minute from the socket and conntrack tables); a **declared client** is one
 the hosting panel lists (on cPanel/WHM the Additional MySQL Access Hosts, clients of 3306 from the first
-minute). While one of a port's clients is not on the allow list the agent refuses to close that port
+minute) or, from agent 1.0.43 on any server, the database itself authorizes: the hosts of the MySQL/MariaDB
+accounts (3306) and the host lines of PostgreSQL's `pg_hba.conf` (5432), addresses and ranges only. While one of a port's clients is not on the allow list the agent refuses to close that port
 (`regular_clients`), whoever asks. Answered on the server from what the agent keeps: nothing is asked of the
 dashboard.
 
@@ -1250,8 +1251,8 @@ dashboard.
 | `clients` | array | | yes | Empty array when there are none. |
 | `clients[].port` | integer | e.g. `3306`, `5432`, `6379` | yes | |
 | `clients[].ip` | string | address, or CIDR range for a declared client | yes | |
-| `clients[].source` | string | `observed`, `cpanel_access_hosts` | yes | `observed`: a regular client; otherwise the panel list that declares it. |
-| `clients[].host` | string \| null | e.g. `198.51.100.%`, a host name | yes | The panel's own entry for a declared client; `null` for an observed one. |
+| `clients[].source` | string | `observed`, `cpanel_access_hosts`, `mysql_grants`, `pg_hba` | yes | `observed`: a regular client; otherwise where it is declared: the WHM access hosts, the hosts of MySQL's accounts or `pg_hba.conf` (the last two from agent 1.0.43). Show an unknown value as it is. |
+| `clients[].host` | string \| null | e.g. `198.51.100.%`, a host name | yes | The entry as written where it is declared (WHM, the MySQL account's host, the `pg_hba.conf` address); `null` for an observed one. |
 | `clients[].days` | integer \| null | 3–7 | yes | Days seen in the last 7; `null` for a declared client. |
 | `clients[].first_seen` | string \| null | timestamp | yes | First seen in the last 7 days; `null` for a declared client. |
 | `clients[].last_seen` | string \| null | timestamp | yes | Last seen; `null` for a declared client. |
