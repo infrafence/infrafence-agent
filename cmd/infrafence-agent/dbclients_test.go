@@ -178,3 +178,41 @@ func TestKnownDBClient(t *testing.T) {
 		t.Errorf("no data: %q", got)
 	}
 }
+
+// A server with no hosting panel (no access hosts file): the regular
+// clients the sampler learned protect PostgreSQL, MongoDB and the other
+// sampled ports on their own.
+func TestKnownDBClientNoPanel(t *testing.T) {
+	oldFile, oldDecl := dbclients.AccessHostsFile, dbDeclared.Load()
+	dbclients.AccessHostsFile = t.TempDir() + "/mysqlaccesshosts"
+	t.Cleanup(func() {
+		dbclients.AccessHostsFile = oldFile
+		dbDeclared.Store(oldDecl)
+	})
+	readDeclared()
+	if d := dbDeclared.Load(); d == nil || len(*d) != 0 {
+		t.Fatalf("declared: %v", d)
+	}
+
+	l := dbclients.New("")
+	now := time.Now().Add(-48 * time.Hour)
+	l.Now = func() time.Time { return now }
+	for d := 0; d < 3; d++ {
+		l.Observe(map[int][]string{5432: {"203.0.113.50"}, 27017: {"203.0.113.51"}})
+		now = now.Add(24 * time.Hour)
+	}
+	now = now.Add(-24 * time.Hour)
+	oldLog := dbClientLog.Load()
+	dbClientLog.Store(l)
+	t.Cleanup(func() { dbClientLog.Store(oldLog) })
+
+	for ip, want := range map[string]string{
+		"203.0.113.50": "regular_client", // PostgreSQL
+		"203.0.113.51": "regular_client", // MongoDB
+		"203.0.113.52": "",
+	} {
+		if got := knownDBClient(ip); got != want {
+			t.Errorf("%s: %q, want %q", ip, got, want)
+		}
+	}
+}

@@ -175,3 +175,33 @@ func TestDBKnownClientMonitorMode(t *testing.T) {
 		t.Errorf("bans %v, events %d", b, len(e))
 	}
 }
+
+// PostgreSQL failed logins of a regular client are not banned either; an
+// unknown address is.
+func TestDBKnownClientPostgreSQL(t *testing.T) {
+	w, bans, evs := newTestDBWatcher()
+	w.SetKnownClient(func(ip string) string {
+		if ip == "203.0.113.50" {
+			return "regular_client"
+		}
+		return ""
+	})
+	for i := 0; i < 5; i++ {
+		for _, ip := range []string{"203.0.113.50", "203.0.113.60"} {
+			w.processLine(fmt.Sprintf(`2026-11-07 10:00:00 UTC [900] app@shop FATAL:  password authentication failed for user "app" connection authorized: host=%s`, ip))
+		}
+	}
+	b, e := collectDB(bans, evs)
+	if len(b) != 1 || b[0] != (dbBan{"203.0.113.60", "db_brute_force"}) {
+		t.Fatalf("bans: %v", b)
+	}
+	guarded := 0
+	for _, x := range e {
+		if x.ip == "203.0.113.50" && x.d["not_banned"] == "regular_client" {
+			guarded++
+		}
+	}
+	if guarded != 1 {
+		t.Errorf("events: %+v", e)
+	}
+}

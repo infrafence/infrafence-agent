@@ -198,21 +198,18 @@ func regularClientsNotAllowed(port int) []string {
 	return out
 }
 
-// dbLogPorts: the ports of the databases whose logs the database watcher
-// reads (MySQL/MariaDB, PostgreSQL, MongoDB).
-var dbLogPorts = []int{3306, 5432, 27017, 27018}
-
-// knownDBClient is the database watcher's guard: "regular_client" for a
-// regular client of a database port, "declared_mysql_host" for an address
-// in a declared remote MySQL host (an address or a range), "" when the
-// address may be banned.
+// knownDBClient is the database watcher's guard, on every server, panel or
+// not: "regular_client" for a regular client of a port of closablePorts
+// (the sampler sees host and published container ports alike),
+// "declared_mysql_host" for an address in a declared remote MySQL host (an
+// address or a range, cPanel/WHM only), "" when the address may be banned.
 func knownDBClient(ip string) string {
 	p := net.ParseIP(ip)
 	if p == nil {
 		return ""
 	}
 	l := dbClientLog.Load()
-	for _, port := range dbLogPorts {
+	for _, port := range closablePortList() {
 		for _, c := range l.Regular(port) {
 			if net.ParseIP(c.IP).Equal(p) {
 				return "regular_client"
