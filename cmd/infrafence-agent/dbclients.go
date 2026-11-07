@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -23,6 +24,10 @@ import (
 // once per minute per port and day. An address seen on 3 of the last 7
 // days is a regular client; on cPanel/WHM the Additional MySQL Access Hosts
 // are declared clients of 3306 from the first minute.
+//
+// The database watcher never bans a regular client of a database port or
+// a declared client (knownDBClient): an application with a wrong or just
+// changed password keeps failing its logins and must not be cut off.
 //
 // Before a port is closed (whoever asks: AutoMode, emergency mode, a
 // person), the agent refuses with regular_clients while a regular or
@@ -191,6 +196,40 @@ func regularClientsNotAllowed(port int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// dbLogPorts: the ports of the databases whose logs the database watcher
+// reads (MySQL/MariaDB, PostgreSQL, MongoDB).
+var dbLogPorts = []int{3306, 5432, 27017, 27018}
+
+// knownDBClient is the database watcher's guard: "regular_client" for a
+// regular client of a database port, "declared_mysql_host" for an address
+// in a declared remote MySQL host (an address or a range), "" when the
+// address may be banned.
+func knownDBClient(ip string) string {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return ""
+	}
+	l := dbClientLog.Load()
+	for _, port := range dbLogPorts {
+		for _, c := range l.Regular(port) {
+			if net.ParseIP(c.IP).Equal(p) {
+				return "regular_client"
+			}
+		}
+	}
+	if d := dbDeclared.Load(); d != nil {
+		for _, x := range *d {
+			if _, n, err := net.ParseCIDR(x.Entry); err == nil && n.Contains(p) {
+				return "declared_mysql_host"
+			}
+			if net.ParseIP(x.Entry).Equal(p) {
+				return "declared_mysql_host"
+			}
+		}
+	}
+	return ""
 }
 
 // regularClientsMessage words a regular_clients refusal.

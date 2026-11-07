@@ -151,3 +151,30 @@ func TestRegularClientsMessage(t *testing.T) {
 		t.Fatalf("got %q", m)
 	}
 }
+
+// The database watcher's guard: regular clients of a database port and
+// declared hosts (addresses and ranges), whitelisted or not.
+func TestKnownDBClient(t *testing.T) {
+	withDBClients(t, []dbclients.Declared{
+		{Entry: "198.51.100.0/24", Host: "198.51.100.%", Source: "cpanel_access_hosts"},
+		{Entry: "192.0.2.9", Host: "192.0.2.9", Source: "cpanel_access_hosts"},
+	}, map[string]bool{"203.0.113.7": true})
+	for ip, want := range map[string]string{
+		"203.0.113.7":  "regular_client",
+		"203.0.113.8":  "", // seen on 2 days only
+		"198.51.100.4": "declared_mysql_host",
+		"192.0.2.9":    "declared_mysql_host",
+		"192.0.2.10":   "",
+		"not-an-ip":    "",
+	} {
+		if got := knownDBClient(ip); got != want {
+			t.Errorf("%s: %q, want %q", ip, got, want)
+		}
+	}
+	// Without a log or declared hosts nothing is known.
+	dbClientLog.Store(nil)
+	dbDeclared.Store(nil)
+	if got := knownDBClient("203.0.113.7"); got != "" {
+		t.Errorf("no data: %q", got)
+	}
+}
