@@ -103,6 +103,9 @@ func main() {
 	case "uninstall":
 		cmdUninstall(os.Args[2:])
 
+	case "boot-sets":
+		cmdBootSets(os.Args[2:])
+
 	case "panel":
 		cmdPanel(os.Args[2:])
 
@@ -129,6 +132,7 @@ func printUsage() {
 	fmt.Println("  infrafence-agent check")
 	fmt.Println("  infrafence-agent preflight [--json]   read-only host compatibility scan")
 	fmt.Println("  infrafence-agent uninstall --clean    remove every change InfraFence made to this host")
+	fmt.Println("  infrafence-agent boot-sets [--install] create the ipsets saved iptables rulesets reference (run at boot)")
 	fmt.Println("  infrafence-agent panel <command> [args] --json   for the WHM and Plesk plugins (root only):")
 	fmt.Println("      status | bans | unban <ip> | allow <ip> | allowlist | disallow <ip> | findings | events |")
 	fmt.Println("      coexistence | sites | scan <path> | map [--hours 24|168] | score")
@@ -221,6 +225,10 @@ func runAgent() {
 
 	// Deploy recovery script for systemd ExecStartPre (self-heals corrupted binaries)
 	updater.DeployRecoveryScript()
+
+	// Saved iptables rulesets restore at boot although they reference the agent's ipsets (bootsets.go);
+	// in the background: a wedged systemctl never holds up the start
+	go deployBootSets()
 
 	// Check if the recovery script restored the binary before we started
 	updater.CheckRecoveryMarker(version, reportUpdateEvent)

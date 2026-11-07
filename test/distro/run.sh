@@ -93,8 +93,32 @@ while IFS='|' read -r name image pm rsyslog; do
   line=$(echo "$out" | grep '^RESULT' | tail -1)
   [ $rc -ne 124 ] || line="RESULT distro=$name error=timeout"
   [ -n "$line" ] || line="RESULT distro=$name error=no-result"
-  results+=("$line arch=$goarch")
   [ $rc -eq 0 ] || status=1
+
+  # ── a ruleset saved while the agent runs, across a real boot (test/distro/boot.sh):
+  # the container restarts with a clean shutdown (SIGRTMIN+3 halts systemd) ──
+  bout=$(docker exec "$cid" timeout 900 bash /distro/boot.sh save 2>&1)
+  boot=$(echo "$bout" | grep '^BOOTRESULT' | tail -1)
+  if [[ "$boot" == "BOOTRESULT boot=ok"* ]]; then
+    docker kill -s RTMIN+3 "$cid" >/dev/null
+    for _ in $(seq 1 60); do
+      [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = false ] && break
+      sleep 1
+    done
+    docker stop -t 1 "$cid" >/dev/null
+    docker start "$cid" >/dev/null
+    for _ in $(seq 1 60); do
+      docker exec "$cid" systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break
+      sleep 1
+    done
+    cout=$(docker exec "$cid" timeout 900 bash /distro/boot.sh check 2>&1)
+    boot=$(echo "$cout" | grep '^BOOTRESULT' | tail -1)
+    bout="$bout"$'\n'"$cout"
+  fi
+  echo "$bout" | grep -v '^BOOTRESULT' | tail -60
+  [ -n "$boot" ] || boot="BOOTRESULT boot=no-result"
+  [[ "$boot" == "BOOTRESULT boot=ok"* || "$boot" == "BOOTRESULT boot=skip"* ]] || status=1
+  results+=("$line ${boot#BOOTRESULT } arch=$goarch")
   docker rm -f "$cid" >/dev/null
 done <<<"$MATRIX"
 
