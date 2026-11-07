@@ -25,9 +25,13 @@ import (
 // days is a regular client; on cPanel/WHM the Additional MySQL Access Hosts
 // are declared clients of 3306 from the first minute.
 //
-// The database watcher never bans a regular client of a database port or
-// a declared client (knownDBClient): an application with a wrong or just
-// changed password keeps failing its logins and must not be cut off.
+// The database watcher never bans a regular client that holds its
+// connections open (a connection pool, a replica: knownDBClient, from
+// dbclients.Log.Held) or a declared client: an application with a wrong or
+// just changed password keeps failing its logins and must not be cut off.
+// Accepted residual risk: a host that keeps an unauthenticated connection
+// open on 3 of 7 days (an idle Redis or MongoDB connection, which those
+// services allow) becomes known too.
 //
 // Before a port is closed (whoever asks: AutoMode, emergency mode, a
 // person), the agent refuses with regular_clients while a regular or
@@ -109,7 +113,9 @@ func watchDBClients(l *dbclients.Log, client func() *api.Client, sample, report 
 		if withTool {
 			lastTool = now
 		}
-		l.Observe(dbInbound(ports, withTool))
+		clients, conns := dbInbound(ports, withTool)
+		l.Observe(clients)
+		l.ObserveConns(conns)
 		if now.Sub(lastDeclared) >= dbDeclaredEvery {
 			lastDeclared = now
 			// Host names are resolved (bounded): not in the sampling path.
@@ -200,7 +206,9 @@ func regularClientsNotAllowed(port int) []string {
 
 // knownDBClient is the database watcher's guard, on every server, panel or
 // not: "regular_client" for a regular client of a port of closablePorts
-// (the sampler sees host and published container ports alike),
+// that held a connection open on those days (the sampler sees host and
+// published container ports alike; a client that only connects for a
+// moment, as a PHP page does, is protected by the whitelist),
 // "declared_mysql_host" for an address in a declared remote MySQL host (an
 // address or a range, cPanel/WHM only), "" when the address may be banned.
 func knownDBClient(ip string) string {
@@ -210,7 +218,7 @@ func knownDBClient(ip string) string {
 	}
 	l := dbClientLog.Load()
 	for _, port := range closablePortList() {
-		for _, c := range l.Regular(port) {
+		for _, c := range l.Held(port) {
 			if net.ParseIP(c.IP).Equal(p) {
 				return "regular_client"
 			}

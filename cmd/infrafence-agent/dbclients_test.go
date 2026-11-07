@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,7 +13,8 @@ import (
 )
 
 // withDBClients gives the guard a log with 203.0.113.7 seen on port 3306
-// on 3 days, 203.0.113.8 on 2 days, and declared hosts.
+// on 3 days (holding one connection open), 203.0.113.8 on 2 days, and
+// declared hosts.
 func withDBClients(t *testing.T, declared []dbclients.Declared, allow map[string]bool) {
 	t.Helper()
 	l := dbclients.New("")
@@ -24,6 +26,7 @@ func withDBClients(t *testing.T, declared []dbclients.Declared, allow map[string
 			seen[3306] = append(seen[3306], "203.0.113.8")
 		}
 		l.Observe(seen)
+		holdConn(l, 3306, "203.0.113.7:40000")
 		now = now.Add(24 * time.Hour)
 	}
 	now = now.Add(-24 * time.Hour)
@@ -38,6 +41,13 @@ func withDBClients(t *testing.T, declared []dbclients.Declared, allow map[string
 		dbDeclared.Store(oldDecl)
 		dbAllowListed, dbAllowNet = oldAllow, oldNet
 	})
+}
+
+// holdConn shows the log one connection held open for HeldSamples samples.
+func holdConn(l *dbclients.Log, port int, conn string) {
+	for i := 0; i < dbclients.HeldSamples; i++ {
+		l.ObserveConns(map[int][]string{port: {conn}})
+	}
 }
 
 func TestCloseRefusedForRegularClients(t *testing.T) {
@@ -155,17 +165,25 @@ func TestRegularClientsMessage(t *testing.T) {
 // The database watcher's guard: regular clients of a database port and
 // declared hosts (addresses and ranges), whitelisted or not.
 func TestKnownDBClient(t *testing.T) {
-	withDBClients(t, []dbclients.Declared{
-		{Entry: "198.51.100.0/24", Host: "198.51.100.%", Source: "cpanel_access_hosts"},
-		{Entry: "192.0.2.9", Host: "192.0.2.9", Source: "cpanel_access_hosts"},
-	}, map[string]bool{"203.0.113.7": true})
+	// As WHM writes them: a range, an address, a MySQL % pattern.
+	declared := dbclients.ParseAccessHosts("198.51.100.0/24\n192.0.2.9\n198.18.4.%\n", "cpanel_access_hosts")
+	if len(declared) != 3 {
+		t.Fatalf("parsed: %+v", declared)
+	}
+	withDBClients(t, declared, map[string]bool{"203.0.113.7": true})
 	for ip, want := range map[string]string{
-		"203.0.113.7":  "regular_client",
-		"203.0.113.8":  "", // seen on 2 days only
-		"198.51.100.4": "declared_mysql_host",
-		"192.0.2.9":    "declared_mysql_host",
-		"192.0.2.10":   "",
-		"not-an-ip":    "",
+		"203.0.113.7":        "regular_client",
+		"::ffff:203.0.113.7": "regular_client", // IPv4-mapped
+		"203.0.113.8":        "",               // seen on 2 days only
+		"198.51.100.4":       "declared_mysql_host",
+		"198.51.100.255":     "declared_mysql_host",
+		"198.51.101.0":       "", // just outside the range
+		"198.51.99.255":      "",
+		"192.0.2.9":          "declared_mysql_host",
+		"192.0.2.10":         "",
+		"198.18.4.200":       "declared_mysql_host", // 198.18.4.%
+		"198.18.5.1":         "",
+		"not-an-ip":          "",
 	} {
 		if got := knownDBClient(ip); got != want {
 			t.Errorf("%s: %q, want %q", ip, got, want)
@@ -199,6 +217,8 @@ func TestKnownDBClientNoPanel(t *testing.T) {
 	l.Now = func() time.Time { return now }
 	for d := 0; d < 3; d++ {
 		l.Observe(map[int][]string{5432: {"203.0.113.50"}, 27017: {"203.0.113.51"}})
+		holdConn(l, 5432, "203.0.113.50:51000")
+		holdConn(l, 27017, "203.0.113.51:52000")
 		now = now.Add(24 * time.Hour)
 	}
 	now = now.Add(-24 * time.Hour)
@@ -214,5 +234,30 @@ func TestKnownDBClientNoPanel(t *testing.T) {
 		if got := knownDBClient(ip); got != want {
 			t.Errorf("%s: %q, want %q", ip, got, want)
 		}
+	}
+}
+
+// A host that only opens connections (a new source port every sample, as a
+// scanner or a brute force that never logs in) becomes a regular client
+// for closing ports, never a known client for the database watcher.
+func TestKnownDBClientNeedsHeldConnection(t *testing.T) {
+	withDBClients(t, nil, map[string]bool{})
+	l := dbclients.New("")
+	now := time.Now().Add(-48 * time.Hour)
+	l.Now = func() time.Time { return now }
+	for d := 0; d < 3; d++ {
+		for i := 0; i < 10; i++ {
+			l.Observe(map[int][]string{3306: {"203.0.113.90"}})
+			l.ObserveConns(map[int][]string{3306: {fmt.Sprintf("203.0.113.90:%d", 40000+d*100+i)}})
+		}
+		now = now.Add(24 * time.Hour)
+	}
+	now = now.Add(-24 * time.Hour)
+	dbClientLog.Store(l)
+	if got := regularClientsNotAllowed(3306); !reflect.DeepEqual(got, []string{"203.0.113.90"}) {
+		t.Fatalf("regular for closing: %v", got)
+	}
+	if got := knownDBClient("203.0.113.90"); got != "" {
+		t.Errorf("known without a held connection: %q", got)
 	}
 }

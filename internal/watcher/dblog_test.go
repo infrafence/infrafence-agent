@@ -51,28 +51,59 @@ func accessDenied(ip string) string {
 	return fmt.Sprintf("2026-11-07T10:00:00.123456Z 42 [Warning] Access denied for user 'app'@'%s' (using password: YES)", ip)
 }
 
+const (
+	abortedLine = "2026-11-07T10:00:00.123456Z 43 [Warning] Aborted connection 43 to db: 'shop' user: 'app' host: '%s' (Got an error reading communication packets)"
+	pgDropLine  = `2026-11-07 10:00:00 UTC [812] app@shop LOG:  could not receive data from client: Connection reset by peer connection host=%s`
+)
+
 // Dropped connections (MySQL "Aborted connection", PostgreSQL "could not
-// receive data") are reported but never lead to a ban.
+// receive data") never lead to a ban and are reported once a window per
+// address, with the lines since the last report.
 func TestDBSuspiciousNeverBans(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
 	for i := 0; i < 20; i++ {
-		w.processLine("2026-11-07T10:00:00.123456Z 43 [Warning] Aborted connection 43 to db: 'shop' user: 'app' host: '203.0.113.20' (Got an error reading communication packets)")
-		w.processLine(`2026-11-07 10:00:00 UTC [812] app@shop LOG:  could not receive data from client: Connection reset by peer connection host=203.0.113.21`)
+		w.processLine(fmt.Sprintf(abortedLine, "203.0.113.20"))
+		w.processLine(fmt.Sprintf(pgDropLine, "203.0.113.21"))
 	}
 	b, e := collectDB(bans, evs)
 	if len(b) != 0 {
 		t.Fatalf("banned: %v", b)
 	}
-	if len(e) != 40 {
-		t.Fatalf("events: %d", len(e))
+	if len(e) != 2 {
+		t.Fatalf("events: %+v", e)
 	}
 	for _, x := range e {
-		if x.typ != "db_suspicious" || x.severity != "warning" {
+		if x.typ != "db_suspicious" || x.severity != "warning" || x.d["lines"] != "1" {
 			t.Fatalf("event: %+v", x)
 		}
 	}
 	if len(w.attempts) != 0 {
 		t.Errorf("counted: %v", w.attempts)
+	}
+
+	// The next window's event carries the 19 lines not reported, plus its own.
+	w.mu.Lock()
+	w.dropped["203.0.113.20"].since = time.Now().Add(-w.window - time.Second)
+	w.mu.Unlock()
+	w.processLine(fmt.Sprintf(abortedLine, "203.0.113.20"))
+	if _, e := collectDB(bans, evs); len(e) != 1 || e[0].d["lines"] != "20" {
+		t.Errorf("next window: %+v", e)
+	}
+
+	// Counts are forgotten two windows later, and the map is bounded.
+	w.cleanup(time.Now().Add(2*w.window + time.Second))
+	if len(w.dropped) != 0 {
+		t.Errorf("kept: %v", w.dropped)
+	}
+	w.mu.Lock()
+	w.dropped = make(map[string]*dbDropped)
+	for i := 0; i <= dbMaxEntries; i++ {
+		w.dropped[fmt.Sprint(i)] = &dbDropped{since: time.Now()}
+	}
+	w.mu.Unlock()
+	w.cleanup(time.Now())
+	if len(w.dropped) != 0 {
+		t.Errorf("bound: %d", len(w.dropped))
 	}
 }
 
@@ -133,29 +164,106 @@ func TestDBKnownClientNotGeoblocked(t *testing.T) {
 		return ""
 	})
 	w.processLine(accessDenied("198.51.100.4"))
-	w.processLine("2026-11-07T10:00:00.123456Z 43 [Warning] Aborted connection 43 to db: 'shop' user: 'app' host: '203.0.113.30' (Got an error reading communication packets)")
+	w.processLine(fmt.Sprintf(abortedLine, "203.0.113.30"))
 	b, e := collectDB(bans, evs)
 	if len(b) != 1 || b[0] != (dbBan{"203.0.113.30", "geoblock_xx"}) {
 		t.Fatalf("bans: %v", b)
 	}
-	if len(e) != 1 || e[0].ip != "198.51.100.4" || e[0].typ != "db_brute_force" {
+	// The failed login, and once the country ban it was spared.
+	geo := 0
+	for _, x := range e {
+		if x.ip != "198.51.100.4" || x.typ != "db_brute_force" {
+			t.Fatalf("event: %+v", x)
+		}
+		if x.d["reason"] == "geoblock_xx" && x.d["not_banned"] == "declared_mysql_host" {
+			geo++
+		}
+	}
+	if len(e) != 2 || geo != 1 {
 		t.Fatalf("events: %+v", e)
 	}
 	for i := 0; i < 4; i++ {
 		w.processLine(accessDenied("198.51.100.4"))
 	}
+	w.processLine(fmt.Sprintf(abortedLine, "198.51.100.4"))
 	b, e = collectDB(bans, evs)
 	if len(b) != 0 {
 		t.Fatalf("known client banned: %v", b)
 	}
 	guarded := 0
 	for _, x := range e {
-		if x.d["action"] == "not_banned" && x.d["not_banned"] == "declared_mysql_host" {
+		if x.d["reason"] == "geoblock_xx" {
+			t.Errorf("country exemption reported again: %+v", x)
+		}
+		if x.d["attempts"] == "5" && x.d["not_banned"] == "declared_mysql_host" {
 			guarded++
 		}
 	}
+	// 4 failed logins and the threshold's not_banned; the banned state then
+	// skips the dropped connection.
 	if len(e) != 5 || guarded != 1 {
 		t.Errorf("events: %+v", e)
+	}
+}
+
+// The guard is asked once a window per address, also for a known client
+// that its country would ban on every line.
+func TestDBKnownClientCached(t *testing.T) {
+	w, bans, evs := newTestDBWatcher()
+	w.SetCheckIP(func(ip string) string { return "geoblock_xx" })
+	asked := 0
+	w.SetKnownClient(func(ip string) string {
+		asked++
+		return "regular_client"
+	})
+	for i := 0; i < 30; i++ {
+		w.processLine(fmt.Sprintf(abortedLine, "203.0.113.70"))
+	}
+	b, e := collectDB(bans, evs)
+	if asked != 1 || len(b) != 0 {
+		t.Fatalf("asked %d times, bans %v", asked, b)
+	}
+	// The country exemption and one dropped-connection event.
+	if len(e) != 2 {
+		t.Errorf("events: %+v", e)
+	}
+	// A window later it is asked again.
+	w.mu.Lock()
+	w.knownSeen["203.0.113.70"].since = time.Now().Add(-w.window - time.Second)
+	w.mu.Unlock()
+	w.processLine(fmt.Sprintf(abortedLine, "203.0.113.70"))
+	collectDB(bans, evs)
+	if asked != 2 {
+		t.Errorf("asked %d times", asked)
+	}
+}
+
+// Once the window has passed, the ban state and the guard's answer are
+// forgotten: a client no longer known is banned at the next threshold.
+func TestDBBanStateExpiry(t *testing.T) {
+	w, bans, evs := newTestDBWatcher()
+	known := "regular_client"
+	asked := 0
+	w.SetKnownClient(func(ip string) string {
+		asked++
+		return known
+	})
+	for i := 0; i < 6; i++ {
+		w.processLine(accessDenied("203.0.113.80"))
+	}
+	if b, _ := collectDB(bans, evs); len(b) != 0 || asked != 1 {
+		t.Fatalf("bans %v, asked %d", b, asked)
+	}
+	w.cleanup(time.Now().Add(w.window + time.Second))
+	if w.banned["203.0.113.80"] || w.knownSeen["203.0.113.80"] != nil || w.attempts["203.0.113.80"] != nil {
+		t.Fatal("state kept past the window")
+	}
+	known = ""
+	for i := 0; i < 5; i++ {
+		w.processLine(accessDenied("203.0.113.80"))
+	}
+	if b, _ := collectDB(bans, evs); len(b) != 1 || asked != 2 {
+		t.Errorf("bans %v, asked %d", b, asked)
 	}
 }
 
