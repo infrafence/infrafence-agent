@@ -240,3 +240,33 @@ func TestLiteSpeedInstalledButApacheServes(t *testing.T) {
 		t.Errorf("fact = %q", r.Facts["litespeed"])
 	}
 }
+
+// A saved ruleset that matches the agent's ipsets fails to restore at boot
+// unless infrafence-ipsets.service creates them first.
+func TestSavedRulesetAtBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name, unit, saved string
+		lvl               Level
+		says              string
+	}{
+		{"hestia, nothing saved yet", "hestia-iptables", "", Info, "install.sh installs infrafence-ipsets.service"},
+		{"saved, no unit", "netfilter-persistent", "-A INFRAFENCE -m set --match-set infrafence-bans src -j DROP\n", Warn, "/etc/iptables/rules.v4 includes"},
+		{"saved, unit", "iptables", "-A INFRAFENCE -m set --match-set infrafence-bans src -j DROP\n", Info, "creates those sets, empty, at boot"},
+	} {
+		e := ubuntu()
+		e.runs["systemctl is-active "+tc.unit] = "active"
+		if tc.saved != "" {
+			e.files["/etc/iptables/rules.v4"] = tc.saved
+		}
+		if tc.lvl == Info && tc.saved != "" {
+			e.files["/etc/systemd/system/infrafence-ipsets.service"] = ""
+		}
+		f := finding(ScanEnv(e), "persistent")
+		if f == nil || f.Level != tc.lvl || !strings.Contains(f.Detail, tc.says) {
+			t.Errorf("%s: %+v", tc.name, f)
+		}
+		if f != nil && strings.Contains(f.Detail, "simply re-checked") {
+			t.Errorf("%s: old claim: %s", tc.name, f.Detail)
+		}
+	}
+}

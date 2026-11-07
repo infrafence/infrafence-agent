@@ -680,6 +680,13 @@ install_service() {
         install_recovery_script
     fi
 
+    # A ruleset saved while the agent runs (netfilter-persistent save,
+    # service iptables save, HestiaCP) references the agent's ipsets, and
+    # its restore at boot fails as a whole until they exist: a small unit
+    # (or if-pre-up.d hook without systemd) creates them, empty, first.
+    "${INSTALL_DIR}/${BINARY_NAME}" boot-sets --install \
+        || warn "Could not install infrafence-ipsets.service: a saved iptables ruleset may not restore at boot."
+
     case "$INIT_SYSTEM" in
         systemd)
             install_service_systemd "$auth_log"
@@ -1064,6 +1071,8 @@ uninstall() {
         systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
         systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
         rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+        systemctl disable infrafence-ipsets.service 2>/dev/null || true
+        rm -f /etc/systemd/system/infrafence-ipsets.service
         systemctl daemon-reload 2>/dev/null || true
     fi
     if command -v initctl &>/dev/null; then
@@ -1079,6 +1088,7 @@ uninstall() {
     rm -f "${INSTALL_DIR}/${BINARY_NAME}"
     rm -f "${INSTALL_DIR}/${BINARY_NAME}.bak"
     rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
+    rm -f /etc/network/if-pre-up.d/infrafence-ipsets  # creates the agent's ipsets at boot without systemd
     rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
     rm -f /var/lib/infrafence/firewall-state.json  # saved closed ports / egress blocks
     rm -f /var/lib/infrafence/egress-destinations.json  # destinations this server connects to (approval before blocking them)
@@ -1152,6 +1162,8 @@ main() {
         echo "  A real run would:"
         [[ -n "${DRY_MISSING:-}" ]] && echo "    • install/set up: ${DRY_MISSING}"
         echo "    • install ${INSTALL_DIR}/${BINARY_NAME} and the ${SERVICE_NAME} service"
+        [[ "$INIT_SYSTEM" == systemd ]] \
+            && echo "    • install infrafence-ipsets.service (creates the agent's ipsets at boot, so a saved iptables ruleset restores)"
         command -v ipset &>/dev/null || [[ "$NO_IPSET" == true ]] \
             || echo "    • install the ipset package (skip with --no-ipset)"
         echo "    • create the INFRAFENCE firewall chains (jumped to from INPUT, and DOCKER-USER if present)"

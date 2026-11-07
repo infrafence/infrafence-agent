@@ -288,6 +288,14 @@ func cmdUninstall(args []string) {
 	for _, s := range firewall.RemoveAll() {
 		fmt.Println("removed", s)
 	}
+	// Nothing creates the agent's sets at boot any more (bootsets.go): a
+	// saved ruleset that still holds its chains must be saved again.
+	for _, p := range removeBootSets() {
+		fmt.Println("removed", p)
+	}
+	for _, w := range savedRulesetWarnings() {
+		fmt.Fprintln(os.Stderr, w)
+	}
 	// Saved closed ports and egress blocks: a reinstall starts with none.
 	if err := os.Remove(fwStatePath); err == nil {
 		fmt.Println("removed", fwStatePath)

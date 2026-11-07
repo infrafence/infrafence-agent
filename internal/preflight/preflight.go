@@ -17,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/infrafence/infrafence-agent/internal/firewall"
 )
 
 // Level of a finding.
@@ -217,10 +219,10 @@ func ScanEnv(env Env) Report {
 		managers = append(managers, "crowdsec")
 		add("crowdsec", Info, "CrowdSec is active", "Compatible: both only drop traffic; they don't conflict.")
 	}
-	if active("netfilter-persistent") || active("iptables") {
+	if active("netfilter-persistent") || active("iptables") || active("ip6tables") || active("hestia-iptables") {
 		managers = append(managers, "iptables-persistent")
-		add("persistent", Info, "Saved iptables rules are restored at boot",
-			"If InfraFence's rules end up in a saved ruleset they're simply re-checked; the guard keeps them consistent.")
+		lvl, detail := savedRulesets(env)
+		add("persistent", lvl, "Saved iptables rules are restored at boot", detail)
 	}
 	if active("docker") || env.Exists("/var/run/docker.sock") {
 		d.Docker = true
@@ -487,3 +489,27 @@ func diskFreeMB(path string) (uint64, bool) {
 // PackageOperationsRunning lists package operations running right now on
 // this host (package manager processes or held dpkg/apt locks).
 func PackageOperationsRunning() []string { return runningPackageOps(hostEnv{}) }
+
+// bootSetsUnit creates the agent's ipsets at boot (cmd/infrafence-agent/bootsets.go).
+const bootSetsUnit = "/etc/systemd/system/infrafence-ipsets.service"
+
+// savedRulesets explains what happens at boot to a ruleset saved while the
+// agent runs: it holds the agent's chains, whose rules match its ipsets,
+// and its restore fails as a whole while those don't exist.
+func savedRulesets(env Env) (Level, string) {
+	if env.Exists(bootSetsUnit) {
+		return Info, "A ruleset saved while InfraFence runs includes its chains, whose rules match its ipsets. " +
+			"infrafence-ipsets.service creates those sets, empty, at boot before the restore, so the saved rules load; " +
+			"the agent fills the sets and rebuilds its chains when it starts."
+	}
+	for _, f := range firewall.SavedRulesets {
+		if data, err := env.ReadFile(f.Path); err == nil && strings.Contains(data, "--match-set infrafence-") {
+			return Warn, f.Path + " includes InfraFence's chains, whose rules match its ipsets, and nothing creates those sets at boot: " +
+				"the restore would fail as a whole and the server would start without any of its saved rules. " +
+				"install.sh installs infrafence-ipsets.service, which creates them before the restore."
+		}
+	}
+	return Info, "A ruleset saved while InfraFence runs includes its chains, whose rules match its ipsets. " +
+		"install.sh installs infrafence-ipsets.service, which creates those sets, empty, at boot before the restore, " +
+		"so the saved rules load (without it the restore would fail as a whole)."
+}
