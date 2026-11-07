@@ -115,7 +115,13 @@ EOF
   has "$(iptables -S INFRAFENCE 2>/dev/null)" '--match-set infrafence-' || { bf agent-chain; journalctl -u infrafence-agent --no-pager -n 20; }
   # The customer's own rules.
   eval "iptables -A INPUT $V4RULE" || bf customer-rule
-  eval "ip6tables -A INPUT $V6RULE" || bf customer-rule6
+  # IPv6 where ip6tables works in this container (not on Ubuntu 20.04's
+  # legacy backend in CI: inside.sh reports ipv6=skip there too).
+  if ip6tables -S INPUT >/dev/null 2>&1; then
+    eval "ip6tables -A INPUT $V6RULE" && touch /root/boot-v6 || bf customer-rule6
+  else
+    echo "[boot] ip6tables not usable here: IPv6 customer rule skipped"
+  fi
 
   save_now
   for f in $(saved_files); do
@@ -161,7 +167,9 @@ if [ "$phase" = check ]; then
     has "$(systemctl show -p After --value $u)" infrafence-ipsets.service || bf "order:$u"
   done
   has "$(iptables -S INPUT)" customer-rule || bf customer-rule-after-boot
-  has "$(ip6tables -S INPUT)" customer-rule || bf customer-rule6-after-boot
+  if [ -e /root/boot-v6 ]; then
+    has "$(ip6tables -S INPUT)" customer-rule || bf customer-rule6-after-boot
+  fi
   iptables -S INFRAFENCE >/dev/null 2>&1 || bf agent-chain-after-boot
 
   # Uninstall: the unit goes, and each saved file that still holds the
