@@ -259,7 +259,7 @@ func TestSavedRulesetAtBoot(t *testing.T) {
 			e.files["/etc/iptables/rules.v4"] = tc.saved
 		}
 		if tc.lvl == Info && tc.saved != "" {
-			e.files["/etc/systemd/system/infrafence-ipsets.service"] = ""
+			e.files["/etc/systemd/system/infrafence-ipsets.service"] = "ExecStart=/usr/local/bin/infrafence-agent boot-sets\n"
 		}
 		f := finding(ScanEnv(e), "persistent")
 		if f == nil || f.Level != tc.lvl || !strings.Contains(f.Detail, tc.says) {

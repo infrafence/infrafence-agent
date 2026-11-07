@@ -1089,6 +1089,7 @@ uninstall() {
     rm -f "${INSTALL_DIR}/${BINARY_NAME}.bak"
     rm -f "${INSTALL_DIR}/infrafence-agent-recover.sh"
     rm -f /etc/network/if-pre-up.d/infrafence-ipsets  # creates the agent's ipsets at boot without systemd
+    rm -f /var/lib/infrafence/boot-sets-installed /var/lib/infrafence/boot-sets-notice  # the boot unit was installed once; its last notice
     rm -f /var/lib/infrafence/agent-crash-count /var/lib/infrafence/agent-recovered
     rm -f /var/lib/infrafence/firewall-state.json  # saved closed ports / egress blocks
     rm -f /var/lib/infrafence/egress-destinations.json  # destinations this server connects to (approval before blocking them)

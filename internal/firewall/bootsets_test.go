@@ -41,8 +41,8 @@ func TestSavedSets(t *testing.T) {
 		"/etc/iptables/rules.v4": savedV4,
 		// HestiaCP's copy of the same ruleset: no duplicates.
 		"/etc/iptables.rules": savedV4,
-		// A future IPv6 set; a name in both files keeps the IPv4 family.
-		"/etc/iptables/rules.v6": "-A INPUT -m set --match-set infrafence-v6 src -j DROP\n-A X -m set --match-set infrafence-bans src -j DROP\n",
+		// IPv6 files are not read for sets: every set the agent makes is inet.
+		"/etc/iptables/rules.v6": "-A INPUT -m set --match-set infrafence-v6 src -j DROP\n",
 	})
 	var got []string
 	for _, b := range savedSets() {
@@ -53,7 +53,6 @@ func TestSavedSets(t *testing.T) {
 		"create infrafence-bans hash:ip family inet maxelem 65536 -exist",
 		"create infrafence-egress hash:ip family inet maxelem 65536 -exist",
 		"create infrafence-geo-cn hash:net family inet maxelem 131072 -exist",
-		"create infrafence-v6 hash:net family inet6 maxelem 131072 -exist",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("savedSets:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

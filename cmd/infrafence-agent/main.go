@@ -226,8 +226,9 @@ func runAgent() {
 	// Deploy recovery script for systemd ExecStartPre (self-heals corrupted binaries)
 	updater.DeployRecoveryScript()
 
-	// Saved iptables rulesets restore at boot although they reference the agent's ipsets (bootsets.go)
-	deployBootSets()
+	// Saved iptables rulesets restore at boot although they reference the agent's ipsets (bootsets.go);
+	// in the background: a wedged systemctl never holds up the start
+	go deployBootSets()
 
 	// Check if the recovery script restored the binary before we started
 	updater.CheckRecoveryMarker(version, reportUpdateEvent)

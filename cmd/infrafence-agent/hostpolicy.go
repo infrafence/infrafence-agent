@@ -285,6 +285,11 @@ func cmdUninstall(args []string) {
 		os.Exit(1)
 	}
 	failed := false
+	// A running agent would put its chains back, and at its next start the
+	// boot unit (bootsets.go).
+	for _, s := range stopAgentService() {
+		fmt.Println(s)
+	}
 	for _, s := range firewall.RemoveAll() {
 		fmt.Println("removed", s)
 	}

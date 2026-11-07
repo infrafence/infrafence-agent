@@ -5,7 +5,11 @@
 # so the restore services run in their real order):
 #   save   iptables-persistent (apt) or iptables-services (dnf), plus on
 #          apt HestiaCP's own save and boot unit exactly as v-update-firewall
-#          writes them; the agent installed with install.sh; a customer
+#          writes them; the agent installed with install.sh; the unit
+#          disabled, then removed and masked, by the administrator and left
+#          so by the agent's restarts, put back by "boot-sets --install",
+#          then removed with its marker (a server set up before it existed)
+#          and installed again by the agent's start; a customer
 #          rule (IPv4 and IPv6); the ruleset saved while the agent runs. In
 #          a fresh network namespace (no sets, as at boot) the saved file
 #          is refused ("Set infrafence-... doesn't exist"), and loads once
@@ -113,6 +117,40 @@ EOF
     sleep 1
   done
   has "$(iptables -S INFRAFENCE 2>/dev/null)" '--match-set infrafence-' || { bf agent-chain; journalctl -u infrafence-agent --no-pager -n 20; }
+  # The administrator's choice is kept: disabled, or removed and masked,
+  # the unit stays so across agent restarts; "boot-sets --install" puts it
+  # back. Then the update path: a server set up before the unit existed
+  # (no unit, no marker) gets it when the agent starts.
+  U=/etc/systemd/system/infrafence-ipsets.service
+  agent_log() { # PATTERN: the agent logged it within 30 s
+    local _
+    for _ in $(seq 1 30); do
+      has "$(journalctl -u infrafence-agent --no-pager -o cat 2>/dev/null)" "$1" && return 0
+      sleep 1
+    done
+    return 1
+  }
+  # (installed by install.sh: marker written)
+  systemctl disable -q infrafence-ipsets.service
+  systemctl restart infrafence-agent
+  agent_log "disabled by the administrator" && [ "$(systemctl is-enabled infrafence-ipsets.service 2>&1)" = disabled ] \
+    || bf admin-disabled "$(systemctl is-enabled infrafence-ipsets.service 2>&1)"
+  rm -f $U && systemctl mask -q infrafence-ipsets.service
+  systemctl restart infrafence-agent
+  agent_log "is a symlink (masked?)" && [ "$(readlink $U)" = /dev/null ] || bf admin-masked "$(ls -l $U 2>&1)"
+  systemctl unmask -q infrafence-ipsets.service
+  /usr/local/bin/infrafence-agent boot-sets --install | sed 's/^/[boot] /'
+  [ "$(systemctl is-enabled infrafence-ipsets.service 2>&1)" = enabled ] || bf explicit-install
+  # Last, so the reboot below runs the unit the agent itself installed.
+  systemctl disable -q infrafence-ipsets.service; rm -f $U /var/lib/infrafence/boot-sets-installed; systemctl daemon-reload
+  systemctl restart infrafence-agent
+  agent_log "installed $U" && [ "$(systemctl is-enabled infrafence-ipsets.service 2>&1)" = enabled ] \
+    || bf update-path "$(systemctl is-enabled infrafence-ipsets.service 2>&1)"
+  for _ in $(seq 1 30); do
+    has "$(iptables -S INFRAFENCE 2>/dev/null)" '--match-set infrafence-bans' && break
+    sleep 1
+  done
+
   # The customer's own rules.
   eval "iptables -A INPUT $V4RULE" || bf customer-rule
   # IPv6 where ip6tables works in this container (not on Ubuntu 20.04's

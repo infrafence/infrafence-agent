@@ -497,7 +497,7 @@ const bootSetsUnit = "/etc/systemd/system/infrafence-ipsets.service"
 // agent runs: it holds the agent's chains, whose rules match its ipsets,
 // and its restore fails as a whole while those don't exist.
 func savedRulesets(env Env) (Level, string) {
-	if env.Exists(bootSetsUnit) {
+	if unit, err := env.ReadFile(bootSetsUnit); err == nil && strings.Contains(unit, "boot-sets") { // (masked: /dev/null)
 		return Info, "A ruleset saved while InfraFence runs includes its chains, whose rules match its ipsets. " +
 			"infrafence-ipsets.service creates those sets, empty, at boot before the restore, so the saved rules load; " +
 			"the agent fills the sets and rebuilds its chains when it starts."

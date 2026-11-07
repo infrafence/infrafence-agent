@@ -62,22 +62,24 @@ func (b bootSet) args() []string {
 // bootSetFor gives a set the type and size the agent creates it with: the
 // ban and egress sets are hash:ip (createIpsetHashIP), every other one
 // hash:net (createIpsetHashNet; replaceNetSet swaps in a larger one when
-// it needs more room).
-func bootSetFor(name string, v6 bool) bootSet {
+// it needs more room), all of family inet like every set the agent makes.
+func bootSetFor(name string) bootSet {
 	b := bootSet{name: name, typ: "hash:net", family: "inet", maxelem: netSetMax(0)}
 	if name == banSetName || name == egressSetName {
 		b.typ, b.maxelem = "hash:ip", 65536
 	}
-	if v6 {
-		b.family = "inet6"
-	}
 	return b
 }
 
-// savedSets returns the agent's sets the saved rulesets reference, by name.
+// savedSets returns the agent's sets the saved IPv4 rulesets reference,
+// by name. The agent's IPv6 rules use no set (an inet set would not load
+// in ip6tables-restore anyway), so IPv6 files are not read for sets.
 func savedSets() []bootSet {
 	found := map[string]bootSet{}
 	for _, f := range SavedRulesets {
+		if f.IPv6 {
+			continue
+		}
 		data, err := readSaved(f.Path)
 		if err != nil {
 			continue
@@ -87,9 +89,7 @@ func savedSets() []bootSet {
 				continue
 			}
 			for _, m := range matchSet.FindAllStringSubmatch(l, -1) {
-				if _, ok := found[m[1]]; !ok || !f.IPv6 {
-					found[m[1]] = bootSetFor(m[1], f.IPv6)
-				}
+				found[m[1]] = bootSetFor(m[1])
 			}
 		}
 	}
