@@ -349,6 +349,9 @@ type HeartbeatRequest struct {
 	WebPorts []int `json:"web_ports,omitempty"`
 	// The installed panel plugin (WHM today); null when there is none.
 	PanelPlugin *PanelPlugin `json:"panel_plugin"`
+	// WebDetection: which access logs web attack detection reads, or why it
+	// is off and what to change (watcher.WebDetection).
+	WebDetection any `json:"web_detection,omitempty"`
 }
 
 // VerifyDNS: the domain has no document root on the host, so its trust

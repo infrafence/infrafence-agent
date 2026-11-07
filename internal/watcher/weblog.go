@@ -29,6 +29,18 @@ type EventFunc func(ip, eventType, severity string, details map[string]string)
 type LogPathInfo struct {
 	Path    string
 	Domains []string
+	// Server is the web server writing the log, when known ("nginx",
+	// "apache", "litespeed", "caddy", "traefik", "haproxy").
+	Server string
+	// Container: the log is this container's (a file it writes, or its
+	// output when Path starts with containerLogPrefix).
+	Container string
+	// Tty: the container has a TTY (its output is not framed).
+	Tty bool
+	// Proxies are the addresses of the reverse proxy containers in front
+	// of the container: only their requests have the client taken from
+	// X-Forwarded-For.
+	Proxies []string
 }
 
 // parseFileStats tracks parse success/failure rates per log file.
@@ -36,6 +48,8 @@ type parseFileStats struct {
 	totalLines  int
 	failedLines int
 	warned      bool
+	parsed      uint64 // access log lines parsed
+	format      string // the last one's format
 }
 
 // compiledBot holds a pre-compiled bot fingerprint for fast matching.
@@ -149,6 +163,12 @@ type WebWatcher struct {
 
 	// Hot-reload: active goroutines with cancel functions
 	activePaths map[string]context.CancelFunc
+
+	// sources: where each log comes from (weblog_sources.go).
+	sources map[string]LogPathInfo
+	// cfWarned: logs already warned about Cloudflare requests without
+	// CF-Connecting-IP.
+	cfWarned map[string]bool
 }
 
 // ── Log path detection ──────────────────────────────────────────────
@@ -222,6 +242,9 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 	domainMap := make(map[string][]string)
 
 	add := func(info LogPathInfo) {
+		if info.Server == "" {
+			info.Server = serverOfLogPath(info.Path)
+		}
 		if !seen[info.Path] {
 			seen[info.Path] = true
 			infos = append(infos, info)
@@ -261,29 +284,44 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 
 	// 2. Parse nginx config for access_log + server_name
 	for _, info := range detectNginxLogInfo() {
+		info.Server = "nginx"
 		add(info)
 	}
 
 	// 3. Parse apache config for CustomLog + ServerName
 	for _, info := range detectApacheLogInfo() {
+		info.Server = "apache"
+		add(info)
+	}
+
+	// 3a. Caddy installed on the host: its Caddyfile's log files (JSON).
+	for _, info := range detectCaddyfileLogs() {
 		add(info)
 	}
 
 	// 3b. OpenLiteSpeed server and vhost configs (accesslog + listener maps)
 	for _, info := range detectOpenLiteSpeedLogInfo() {
 		if _, err := os.Stat(info.Path); err == nil {
+			info.Server = "litespeed"
 			add(info)
 		}
 	}
 
 	// 4. cPanel domlogs (per-domain access logs)
 	for _, info := range detectCpanelDomlogs() {
+		info.Server = "apache"
 		add(info)
 	}
 
 	// 5. Docker containers running web servers (always checked — a host may run
 	//    both a native web server and additional services inside Docker).
-	for _, info := range detectDockerLogInfo() {
+	dockerInfos, filesFor := detectDockerLogInfo()
+	for _, info := range dockerInfos {
+		add(info)
+	}
+	// 5b. Reverse proxies and web servers in containers whose logs are not
+	//     files on the host: read through the Docker API (weblog_sources.go).
+	for _, info := range detectDockerSources(filesFor) {
 		add(info)
 	}
 
@@ -336,6 +374,10 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 		"/var/log/caddy/access.log",
 		"/var/log/nginx-access.log",
 		"/var/log/access.log",
+		// HAProxy (option httplog) through rsyslog: Debian and Ubuntu's
+		// package writes this file.
+		"/var/log/haproxy.log",
+		"/var/log/haproxy/haproxy.log",
 	}
 	for _, p := range knownPaths {
 		if _, err := os.Stat(p); err == nil {
@@ -939,9 +981,10 @@ func detectCpanelDomlogs() []LogPathInfo {
 //	infrafence.log-path=/path   — explicit host log path(s), comma-separated
 //	infrafence.waf=true         — (informational) reported in heartbeat, WAF config comes from panel
 //	infrafence.domain=example   — associate domain(s) with this container's logs, comma-separated
-func detectDockerLogInfo() []LogPathInfo {
+func detectDockerLogInfo() ([]LogPathInfo, map[string]bool) {
+	filesFor := make(map[string]bool) // containers whose logs were found as files
 	if _, err := exec.LookPath("docker"); err != nil {
-		return nil
+		return nil, filesFor
 	}
 
 	out, err := exec.Command("docker", "ps",
@@ -949,7 +992,7 @@ func detectDockerLogInfo() []LogPathInfo {
 		"--filter", "status=running",
 	).Output()
 	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
-		return nil
+		return nil, filesFor
 	}
 
 	webKeywords := []string{"nginx", "apache", "httpd", "caddy", "openresty", "traefik"}
@@ -1009,6 +1052,7 @@ func detectDockerLogInfo() []LogPathInfo {
 		if lp, ok := labels["infrafence.log-path"]; ok && lp != "" {
 			for _, p := range strings.Split(lp, ",") {
 				p = strings.TrimSpace(p)
+				filesFor[name] = true
 				if p != "" && !seen[p] {
 					seen[p] = true
 					result = append(result, LogPathInfo{Path: p, Domains: labelDomains})
@@ -1019,12 +1063,9 @@ func detectDockerLogInfo() []LogPathInfo {
 		}
 
 		// Traefik and Caddy (Coolify's coolify-proxy, for one) run no
-		// nginx, and write JSON access logs (when they write any), which
-		// this watcher does not read: their sites are reported from the
-		// containers' labels (internal/proxysites). infrafence.log-path
-		// above still points at a log in a supported format.
-		if flavour := proxysites.Flavour(image); flavour != "" {
-			log.Printf("[webwatcher] docker: %s is a %s proxy: its domains come from container labels, its access log is not read", name, flavour)
+		// nginx: their access logs are found from their configuration
+		// through the Docker API (detectDockerSources).
+		if proxysites.Flavour(image) != "" {
 			continue
 		}
 
@@ -1033,6 +1074,7 @@ func detectDockerLogInfo() []LogPathInfo {
 		// Primary: run nginx -T inside the container to get precise paths + domain names.
 		if nginxOut, err := exec.Command("docker", "exec", name, "nginx", "-T").CombinedOutput(); err == nil {
 			for _, info := range nginxBlocksToLogPathInfos(parseNginxBlocks(string(nginxOut)), mounts) {
+				filesFor[name] = true
 				if !seen[info.Path] {
 					seen[info.Path] = true
 					if len(labelDomains) > 0 {
@@ -1058,6 +1100,7 @@ func detectDockerLogInfo() []LogPathInfo {
 				lower := strings.ToLower(e.Name())
 				if strings.Contains(lower, "access") && strings.HasSuffix(lower, ".log") {
 					hostPath := filepath.Join(hostDir, e.Name())
+					filesFor[name] = true
 					if !seen[hostPath] {
 						seen[hostPath] = true
 						result = append(result, LogPathInfo{Path: hostPath, Domains: labelDomains})
@@ -1068,7 +1111,7 @@ func detectDockerLogInfo() []LogPathInfo {
 		}
 	}
 
-	return result
+	return result, filesFor
 }
 
 // parseDockerLabels parses the comma-separated key=value label string from `docker ps --format {{.Labels}}`.
@@ -1147,6 +1190,8 @@ func NewWebWatcher(paths []string, domainMap map[string][]string, onBan BanFunc,
 		fcrdns:          newFcrdnsCache(24 * time.Hour),
 		portScanResults: newPortScanCache(24 * time.Hour),
 		activePaths:   make(map[string]context.CancelFunc),
+		sources:       make(map[string]LogPathInfo),
+		cfWarned:      make(map[string]bool),
 	}
 }
 
@@ -1230,22 +1275,41 @@ func (w *WebWatcher) isWhitelisted(ip string) bool {
 // Run starts tailing all access logs. Blocks indefinitely.
 func (w *WebWatcher) Run() {
 	if len(w.logPaths) == 0 {
-		log.Printf("[webwatcher] no web server logs found — WAF disabled")
-		log.Printf("[webwatcher] hint: if your web server runs in Docker, mount the log directory to the host:")
-		log.Printf("[webwatcher]   volumes:")
-		log.Printf("[webwatcher]     - /var/log/nginx:/var/log/nginx")
-		log.Printf("[webwatcher] hint: or set WEB_LOG_PATH=/path/to/access.log in the systemd unit")
-		// Report to the panel so users can see the issue without SSH access.
-		go w.onEvent("0.0.0.0", "waf_disabled", "warning", map[string]string{
+		details := map[string]string{
 			"reason": "no_web_logs_found",
 			"hint":   "Mount your container log directory to the host (e.g. /var/log/nginx:/var/log/nginx) or set WEB_LOG_PATH in the agent systemd unit",
-		})
-		return
+		}
+		if hints := CurrentWebLogHints(); len(hints) > 0 {
+			// A reverse proxy writes no access log (Coolify's, for one): what
+			// to add was logged with the proxy (weblog_sources.go).
+			h := hints[0]
+			details["reason"] = h.Reason
+			details["server"] = h.Server
+			details["container"] = h.Container
+			if len(h.Settings) > 0 {
+				details["hint"] = "Add to the proxy's command: " + strings.Join(h.Settings, " ")
+				if h.Platform == "coolify" {
+					details["hint"] = "In Coolify, Servers > this server > Proxy > Configuration, add to the command: " + strings.Join(h.Settings, " ") + " (then restart the proxy)"
+				}
+			}
+			// Report to the panel so users can see the issue without SSH access.
+			go w.onEvent("0.0.0.0", "waf_disabled", "warning", details)
+		}
+		// Otherwise no web server runs here (a mail or database server, say):
+		// nothing to report, as before (main logged that no log was found).
+		// A log that appears later (an access log turned on) is picked up
+		// by the hot reload.
+		go w.cleanupLoop()
+		go w.hotReloadLoop()
+		select {}
 	}
 
 	// Startup logging with domain info
 	totalDomains := 0
 	for _, p := range w.logPaths {
+		if src := w.sources[p]; src.Container != "" || src.Server != "" {
+			log.Printf("[webwatcher] reading %s: %s", p, describeSource(src))
+		}
 		if domains, ok := w.domainMap[p]; ok && len(domains) > 0 {
 			log.Printf("[webwatcher] watching %s (%s)", p, strings.Join(domains, ", "))
 			totalDomains += len(domains)
@@ -1290,6 +1354,8 @@ func (w *WebWatcher) startTailGoroutine(path string) {
 			w.mu.Unlock()
 		}()
 
+		container := strings.HasPrefix(path, containerLogPrefix)
+		delay, lastErr := 5*time.Second, ""
 		for {
 			select {
 			case <-ctx.Done():
@@ -1297,12 +1363,34 @@ func (w *WebWatcher) startTailGoroutine(path string) {
 			default:
 			}
 
+			start := time.Now()
 			if err := w.tailWithContext(ctx, path); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("[webwatcher] %s error: %v — retrying in 5s", filepath.Base(path), err)
-				time.Sleep(5 * time.Second)
+				if !container {
+					log.Printf("[webwatcher] %s error: %v — retrying in 5s", filepath.Base(path), err)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				// A container's output: a stopped container or a log driver
+				// the API cannot read fails again at once, so the wait
+				// doubles up to 5 minutes, and an error is logged once.
+				if time.Since(start) > time.Minute {
+					delay = 5 * time.Second
+				}
+				if msg := err.Error(); msg != lastErr {
+					lastErr = msg
+					log.Printf("[webwatcher] %s: %v — retrying in %s (longer while it fails)", path, err, delay)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(delay):
+				}
+				if delay *= 2; delay > 5*time.Minute {
+					delay = 5 * time.Minute
+				}
 			}
 		}
 	}()
@@ -1327,6 +1415,7 @@ func (w *WebWatcher) hotReloadLoop() {
 		for path, domains := range newDomainMap {
 			w.domainMap[path] = domains
 		}
+		w.setSourcesLocked(newInfos)
 
 		// Find new paths not yet being watched
 		var toStart []string
@@ -1393,6 +1482,9 @@ func (w *WebWatcher) cleanupLoop() {
 
 // tailWithContext follows a single access log file, respecting context cancellation.
 func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error {
+	if name, ok := strings.CutPrefix(logPath, containerLogPrefix); ok {
+		return w.tailContainer(ctx, logPath, name)
+	}
 	f, err := os.Open(logPath)
 	if err != nil {
 		return err
@@ -1480,6 +1572,11 @@ type accessLogEntry struct {
 	referer   string
 	userAgent string
 	domain    string // extracted from vhost_combined format (domain:port IP ...)
+
+	format         string // formatCombined, formatTraefikJSON, ... (weblog_formats.go)
+	forwardedFor   string // X-Forwarded-For, when the format logs it
+	cfConnectingIP string // CF-Connecting-IP, when the format logs it
+	router         string // Traefik's router
 }
 
 // parseAccessLog parses a combined log format line without regex.
@@ -1778,6 +1875,8 @@ var (
 	ruleWPAjax     = thresholdRule{"wp_ajax", "wp_bruteforce", 10, 30 * time.Second}
 	ruleDrupalAuth = thresholdRule{"drupal_auth", "cms_bruteforce", 5, 30 * time.Second}
 	ruleJoomlaAuth = thresholdRule{"joomla_auth", "cms_bruteforce", 5, 30 * time.Second}
+	// Medusa: POST /auth/{user,customer}/emailpass answers 401 to a wrong password.
+	ruleMedusaAuth = thresholdRule{"medusa_auth", "cms_bruteforce", 10, 2 * time.Minute}
 	rulePluginScan = thresholdRule{"plugin_scan", "scanner_detected", 5, 5 * time.Minute}
 	rule404Flood   = thresholdRule{"404_flood", "404_flood", 15, 5 * time.Minute}
 )
@@ -1804,7 +1903,13 @@ func (w *WebWatcher) enrichDetails(logPath, rawLine, lineDomain string, details 
 }
 
 func (w *WebWatcher) processLine(logPath, line string) {
-	entry, ok := parseAccessLog(line)
+	w.mu.Lock()
+	server := w.sources[logPath].Server
+	w.mu.Unlock()
+	entry, res := parseLine(line, server)
+	if res == parseSkip {
+		return // a proxy's own log line, not a request
+	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1818,9 +1923,10 @@ func (w *WebWatcher) processLine(logPath, line string) {
 	stats.totalLines++
 	w.requestsAnalyzed++
 
-	if !ok {
+	if res != parseOK {
 		stats.failedLines++
-		if !stats.warned && stats.totalLines >= 100 {
+		// A container's output mixes requests with everything else it prints.
+		if !stats.warned && stats.totalLines >= 100 && !strings.HasPrefix(logPath, containerLogPrefix) {
 			rate := float64(stats.failedLines) / float64(stats.totalLines)
 			if rate > 0.5 {
 				stats.warned = true
@@ -1831,7 +1937,17 @@ func (w *WebWatcher) processLine(logPath, line string) {
 		return
 	}
 
-	ip := entry.ip
+	stats.parsed++
+	stats.format = entry.format
+
+	ip, ok := w.clientIP(logPath, line, &entry)
+	if !ok {
+		return
+	}
+	// Traefik's default format logs the router, not the host.
+	if entry.domain == "" && entry.router != "" {
+		entry.domain = routerHost(entry.router)
+	}
 
 	// Skip private/reserved IPs (Docker bridge, localhost, etc.)
 	if isPrivateIP(ip) {
@@ -2190,6 +2306,25 @@ func (w *WebWatcher) processLine(logPath, line string) {
 		return
 	}
 
+	// ── Threshold → score: Medusa (e-commerce) login brute force ──
+	if entry.method == "POST" && entry.status == 401 && isMedusaLogin(uriLower) {
+		if w.isTypeEnabled("cms_bruteforce") {
+			ruleKey := ruleMedusaAuth.key
+			if entry.domain != "" {
+				ruleKey = ruleMedusaAuth.key + ":" + entry.domain
+			}
+			rule := thresholdRule{ruleKey, ruleMedusaAuth.eventType, w.wafThreshold("cms_bruteforce", ruleMedusaAuth.threshold), ruleMedusaAuth.window}
+			if w.checkThresholdOnly(ip, rule, now) {
+				w.addScore(ip, "cms_bruteforce", logPath, line, map[string]string{
+					"domain": entry.domain,
+					"uri":    entry.uri,
+					"cms":    "medusa",
+				})
+			}
+		}
+		return
+	}
+
 	// ── Threshold → score: plugin scanner ──
 	if strings.Contains(uriLower, "wp-content/plugins/") && entry.status == 404 {
 		if w.isTypeEnabled("scanner_detected") {
@@ -2232,6 +2367,15 @@ func (w *WebWatcher) processLine(logPath, line string) {
 		}
 		return
 	}
+}
+
+// isMedusaLogin: Medusa's password login routes (admin users and store
+// customers), /auth/user/emailpass and /auth/customer/emailpass.
+func isMedusaLogin(uriLower string) bool {
+	if i := strings.IndexByte(uriLower, '?'); i >= 0 {
+		uriLower = uriLower[:i]
+	}
+	return uriLower == "/auth/user/emailpass" || uriLower == "/auth/customer/emailpass"
 }
 
 // isStaticAsset404 returns true if the URI is a request for a static asset.
