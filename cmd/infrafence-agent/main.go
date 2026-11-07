@@ -467,11 +467,15 @@ func runAgent() {
 		}
 	}
 
-	if webLogInfos, domainMap := watcher.DetectWebLogInfo(); len(webLogInfos) > 0 {
-		webLogPaths := make([]string, len(webLogInfos))
-		for i, info := range webLogInfos {
-			webLogPaths[i] = info.Path
-		}
+	// The web watcher runs even without a log: one that appears later (a
+	// proxy's access log turned on) is picked up by its hot reload, and the
+	// heartbeat says why detection is off meanwhile.
+	webLogInfos, domainMap := watcher.DetectWebLogInfo()
+	webLogPaths := make([]string, len(webLogInfos))
+	for i, info := range webLogInfos {
+		webLogPaths[i] = info.Path
+	}
+	if len(webLogInfos) > 0 {
 		monitoredLogPaths = webLogPaths
 		// Collect unique domains from all log files + web server configs
 		domainSet := make(map[string]bool)
@@ -497,6 +501,10 @@ func runAgent() {
 		domains := chooseVerifyDomains(configured, logged)
 		verifyDomains.Store(&domains)
 		log.Printf("[webwatcher] detected %d access log(s)", len(webLogPaths))
+	} else {
+		log.Printf("[webwatcher] no access logs found — web attack detection disabled until one appears (checked every 5 minutes; set WEB_LOG_PATH to override)")
+	}
+	{
 		webW = watcher.NewWebWatcher(
 			webLogPaths,
 			domainMap,
@@ -537,10 +545,9 @@ func runAgent() {
 			}
 		}()
 		webW.SetModsecDedup(modsecDedup)
+		webW.SetSources(webLogInfos)
 		webW.LoadBotFingerprintsCache()
 		webW.LoadWafRulesCache()
-	} else {
-		log.Printf("[webwatcher] no access logs found — web attack detection disabled (set WEB_LOG_PATH to override)")
 	}
 
 	// Detect web server once at startup (lightweight — runs nginx -v or apache2 -v once)
@@ -966,7 +973,7 @@ func runAgent() {
 				WebServer:         wsName,
 				WebServerVersion:  wsVersion,
 				MonitoredDomains:  heartbeatDomains(monitoredDomains, proxyDomains.Domains()),
-				MonitoredLogPaths: monitoredLogPaths,
+				MonitoredLogPaths: logPathsNow(webW, monitoredLogPaths),
 				FirewallMode:      fwStatus.Mode,
 				BanCapacity:       fwStatus.Capacity,
 				ActiveBans:        fwStatus.ActiveBans,
@@ -979,6 +986,7 @@ func runAgent() {
 				}(),
 				ModsecActive:        modsecEngine != nil && modsecEngine.IsAvailable(),
 				RequestsAnalyzed:    reqAnalyzed,
+				WebDetection:        webDetection(webW),
 				CSFInstalled:        fwStatus.CSF.Installed,
 				CSFVersion:          fwStatus.CSF.Version,
 				CSFPortsIn:          fwStatus.CSF.PortsIn,
@@ -2741,4 +2749,24 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 		return
 	}
 	noteBanReported(ip)
+}
+
+// webDetection is the heartbeat's web_detection: the access logs read, or
+// why web attack detection is off.
+func webDetection(webW *watcher.WebWatcher) any {
+	if webW == nil {
+		return nil
+	}
+	return webW.Detection()
+}
+
+// logPathsNow: the logs the web watcher reads now (a log found by its hot
+// reload included), else those found at start.
+func logPathsNow(webW *watcher.WebWatcher, atStart []string) []string {
+	if webW != nil {
+		if paths := webW.ActivePaths(); len(paths) > 0 {
+			return paths
+		}
+	}
+	return atStart
 }

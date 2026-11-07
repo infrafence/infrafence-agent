@@ -75,6 +75,7 @@ Reads your web servers' access logs and scores every visitor IP:
 | Honeypot trap (decoy paths you define as custom rules) | +40 | Score-based |
 | Path traversal / Header injection | +30 | Score-based |
 | WordPress brute force | +30 | Threshold (10 req / 2 min) |
+| Medusa login brute force (`/auth/user/emailpass`, `/auth/customer/emailpass`) | +30 | Threshold (10 failed / 2 min) |
 | XSS / `.env` probe / XMLRPC | +25 | Score-based |
 | Config probing | +20 | Score-based |
 | 404 flood | +15 | Threshold (15 req / 5 min) |
@@ -258,7 +259,7 @@ On the server:
 | Environment variable | Effect |
 |---|---|
 | `AUTH_LOG_PATH` | SSH log file to read instead of the systemd journal (default: the journal on systemd hosts, otherwise `/var/log/auth.log` or `/var/log/secure`) |
-| `WEB_LOG_PATH` | Web access logs, comma-separated (default: auto-detected from nginx, Apache, LiteSpeed, panels, Docker) |
+| `WEB_LOG_PATH` | Web access logs, comma-separated (default: auto-detected from nginx, Apache, LiteSpeed, Caddy, HAProxy, Traefik, panels, Docker) |
 | `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Override the detected mail, database and FTP logs |
 | `MODSEC_AUDIT_LOG` | ModSecurity audit log |
 | `GEOIP_DB_PATH` | Country database (MaxMind DB format) to use instead of the one downloaded from the dashboard to `/etc/infrafence/geoip-country.mmdb`; when set, nothing is downloaded |
@@ -267,6 +268,17 @@ On the server:
 Set them with `sudo systemctl edit infrafence-agent` (`[Service]` → `Environment=...`), then restart the service.
 
 **Docker labels** on your containers: `infrafence.monitor` (`true`/`false`), `infrafence.log-path` (host paths), `infrafence.domain` (domains). From 1.0.35 the agent also lists the domains of the containers behind a reverse proxy, read only from the labels the proxy itself reads: Traefik's `traefik.http.routers.<name>.rule` (`Host(...)`; `HostRegexp` is skipped) and Caddy's `caddy` / `caddy_<n>` site addresses. That covers Coolify (`coolify-proxy`, Traefik or Caddy) with no label to add. They are refreshed every 2 minutes, reported with the heartbeat, and the agent never runs anything inside the proxy container.
+
+**Traefik, Caddy, HAProxy and web servers in containers.** The same rules also read Traefik's access log (JSON or Traefik's default format), from the file set with `--accesslog.filepath` (found from the container's command, environment or static configuration file and its mounts) or from the container's output; Caddy's JSON access log (a host Caddyfile's `log { output file ... }`, or a Caddy container's output); HAProxy's HTTP log (`option httplog`) in `/var/log/haproxy.log`; and the output of nginx, Apache (httpd, WordPress) and LiteSpeed containers that publish port 80/443, or sit behind a proxy whose log is not read. Behind a proxy container the client is taken from `X-Forwarded-For` only for requests from the proxy's own address. A Cloudflare edge address is never banned: the visitor is taken from `CF-Connecting-IP`, and a request without it is skipped. All of it is read only, through the Docker API; the agent never changes a proxy's configuration. Traefik writes no access log by default, Coolify's included: the agent then logs once what to add and reports it with the heartbeat, so the dashboard shows it. In Coolify, open **Servers › your server › Proxy › Configuration**, add these lines to the proxy's `command`, save and restart the proxy:
+
+```yaml
+      - '--accesslog=true'
+      - '--accesslog.format=json'
+      - '--accesslog.filepath=/traefik/access.log'
+      - '--accesslog.fields.headers.names.User-Agent=keep'
+```
+
+The file is `/data/coolify/proxy/access.log` on the host and Coolify does not rotate it: add a logrotate rule with `copytruncate`. Behind Cloudflare also add `--accesslog.fields.headers.names.Cf-Connecting-Ip=keep`. Elsewhere (Dokploy, plain Traefik) `--accesslog=true`, `--accesslog.format=json` and the User-Agent line are enough: the agent reads the container's output.
 
 **Commands:** `infrafence-agent preflight [--json]` (read-only server check), `infrafence-agent version` (installed version), `infrafence-agent check`, `infrafence-agent uninstall --clean`. All commands: [Command reference](https://infrafence.com/docs/cli).
 

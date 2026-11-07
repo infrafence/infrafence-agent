@@ -75,6 +75,7 @@ Liest die Access-Logs deiner Webserver und vergibt für jede besuchende IP einen
 | Honeypot-Falle (Köderpfade als eigene Regeln definiert) | +40 | Punktbasiert |
 | Path Traversal / Header-Injection | +30 | Punktbasiert |
 | WordPress-Brute-Force | +30 | Schwellenwert (10 Anfragen / 2 Min.) |
+| Brute Force auf den Medusa-Login (`/auth/user/emailpass`, `/auth/customer/emailpass`) | +30 | Schwellenwert (10 fehlgeschlagen / 2 Min.) |
 | XSS / Suche nach `.env` / XMLRPC | +25 | Punktbasiert |
 | Suche nach Konfigurationsdateien | +20 | Punktbasiert |
 | 404-Flut | +15 | Schwellenwert (15 Anfragen / 5 Min.) |
@@ -258,7 +259,7 @@ Auf dem Server:
 | Umgebungsvariable | Wirkung |
 |---|---|
 | `AUTH_LOG_PATH` | SSH-Logdatei, die statt des systemd-Journals gelesen wird (Standard: das Journal auf Systemen mit systemd, sonst `/var/log/auth.log` oder `/var/log/secure`) |
-| `WEB_LOG_PATH` | Web-Access-Logs, kommagetrennt (Standard: erkannt aus nginx, Apache, LiteSpeed, Panels, Docker) |
+| `WEB_LOG_PATH` | Web-Access-Logs, kommagetrennt (Standard: erkannt aus nginx, Apache, LiteSpeed, Caddy, HAProxy, Traefik, Panels, Docker) |
 | `MAIL_LOG_PATH`, `DB_LOG_PATH`, `FTP_LOG_PATH` | Ersetzen die erkannten Mail-, Datenbank- und FTP-Logs |
 | `MODSEC_AUDIT_LOG` | ModSecurity-Audit-Log |
 | `GEOIP_DB_PATH` | Länderdatenbank (MaxMind-DB-Format), die statt der vom Dashboard nach `/etc/infrafence/geoip-country.mmdb` geladenen verwendet wird; ist sie gesetzt, wird nichts heruntergeladen |
@@ -267,6 +268,17 @@ Auf dem Server:
 Setze sie mit `sudo systemctl edit infrafence-agent` (`[Service]` → `Environment=...`) und starte den Dienst neu.
 
 **Docker-Labels** an deinen Containern: `infrafence.monitor` (`true`/`false`), `infrafence.log-path` (Pfade auf dem Host), `infrafence.domain` (Domains). Ab 1.0.35 listet der Agent auch die Domains der Container hinter einem Reverse Proxy auf, nur lesend, aus den Labels, die der Proxy selbst liest: `traefik.http.routers.<name>.rule` von Traefik (`Host(...)`; `HostRegexp` wird übersprungen) und die Site-Adressen `caddy` / `caddy_<n>` von Caddy. So funktioniert Coolify (`coolify-proxy`, Traefik oder Caddy), ohne dass du ein Label setzen musst. Sie werden alle 2 Minuten aktualisiert und mit dem Heartbeat gesendet; der Agent führt im Proxy-Container nie etwas aus.
+
+**Traefik, Caddy, HAProxy und Webserver in Containern.** Dieselben Regeln lesen auch das Access-Log von Traefik (JSON oder das Standardformat von Traefik), aus der mit `--accesslog.filepath` gesetzten Datei (ermittelt aus Befehl, Umgebung oder statischer Konfigurationsdatei des Containers und seinen Mounts) oder aus der Ausgabe des Containers; das JSON-Access-Log von Caddy (`log { output file ... }` im Caddyfile des Hosts oder die Ausgabe eines Caddy-Containers); das HTTP-Log von HAProxy (`option httplog`) in `/var/log/haproxy.log`; und die Ausgabe von nginx-, Apache- (httpd, WordPress) und LiteSpeed-Containern, die Port 80/443 veröffentlichen oder hinter einem Proxy stehen, dessen Log nicht gelesen wird. Hinter einem Proxy-Container wird der Client nur für Anfragen von der Adresse des Proxys selbst aus `X-Forwarded-For` genommen. Eine Cloudflare-Edge-Adresse wird nie gesperrt: Der Besucher wird aus `CF-Connecting-IP` genommen, eine Anfrage ohne diesen Header wird übersprungen. Alles nur lesend, über die Docker-API; der Agent ändert nie die Konfiguration eines Proxys. Traefik schreibt standardmäßig kein Access-Log, auch nicht der von Coolify: Dann schreibt der Agent einmal ins Log, was du ergänzen musst, und meldet es mit dem Heartbeat, damit das Dashboard es anzeigt. Öffne in Coolify **Servers › dein Server › Proxy › Configuration**, füge diese Zeilen zum `command` des Proxys hinzu, speichere und starte den Proxy neu:
+
+```yaml
+      - '--accesslog=true'
+      - '--accesslog.format=json'
+      - '--accesslog.filepath=/traefik/access.log'
+      - '--accesslog.fields.headers.names.User-Agent=keep'
+```
+
+Auf dem Host ist die Datei `/data/coolify/proxy/access.log`, und Coolify rotiert sie nicht: Lege eine logrotate-Regel mit `copytruncate` an. Hinter Cloudflare ergänze auch `--accesslog.fields.headers.names.Cf-Connecting-Ip=keep`. Anderswo (Dokploy, eigenständiges Traefik) reichen `--accesslog=true`, `--accesslog.format=json` und die User-Agent-Zeile: Der Agent liest die Ausgabe des Containers.
 
 **Befehle:** `infrafence-agent preflight [--json]` (rein lesende Serverprüfung), `infrafence-agent version` (installierte Version), `infrafence-agent check`, `infrafence-agent uninstall --clean`. Alle Befehle: [Befehlsreferenz](https://infrafence.com/de/dokumentation/befehlsreferenz).
 

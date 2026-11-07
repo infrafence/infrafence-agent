@@ -64,9 +64,17 @@ func main() {
 	binary := flag.String("binary", "", "agent binary served at /releases/infrafence-agent-linux-<arch>")
 	geoip := flag.String("geoip", "/tmp/mockapi-geoip.mmdb", "country database served at /api/v1/agent/geoip (missing: 503)")
 	dockerSock := flag.String("docker-sock", "", "serve a Coolify server's Docker API on this Unix socket instead (docker.go)")
+	traefikLog := flag.String("traefik-log", "", "with -docker-sock: coolify-proxy's access log, off (\"\"), file or stdout (docker.go)")
+	traefikOut := flag.String("traefik-out", "", "with -traefik-log=stdout: the file the real Traefik's output goes to, served as the container's logs")
+	shopAddr := flag.String("shop", "", "serve a shop backend (200 to everything) on this address instead")
 	flag.Parse()
+	if *shopAddr != "" {
+		log.Fatal(http.ListenAndServe(*shopAddr, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("ok"))
+		})))
+	}
 	if *dockerSock != "" {
-		serveDocker(*dockerSock)
+		serveDocker(*dockerSock, *traefikLog, *traefikOut)
 		return
 	}
 
