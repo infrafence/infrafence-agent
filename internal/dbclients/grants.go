@@ -3,12 +3,14 @@ package dbclients
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -43,7 +45,8 @@ const (
 var (
 	// MySQLQuery runs the grant hosts query, nil error on success.
 	MySQLQuery = runMySQLQuery
-	// PGHBAFile asks PostgreSQL where pg_hba.conf is ("" when it cannot).
+	// PGHBAFile asks PostgreSQL where pg_hba.conf is and its port ("", 0
+	// when it cannot).
 	PGHBAFile = askHBAFile
 	// PGHBAPaths are tried when PostgreSQL cannot be asked.
 	PGHBAPaths = []string{
@@ -51,50 +54,92 @@ var (
 		"/var/lib/pgsql/*/data/pg_hba.conf",
 		"/var/lib/pgsql/data/pg_hba.conf",
 	}
+	// binDirs: where the database clients are looked for, never $PATH.
+	binDirs   = []string{"/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/local/bin", "/usr/local/mysql/bin"}
 	rootMyCnf = "/root/.my.cnf"
 )
 
+// clientEnv is the whole environment of the database clients: nothing of
+// the agent's own (no PG* or MYSQL_* passed through).
+var clientEnv = []string{
+	"PATH=/usr/bin:/usr/sbin:/bin:/sbin:/usr/local/bin:/usr/local/mysql/bin",
+	"LANG=C",
+	"HOME=/root",
+	"PGCONNECT_TIMEOUT=5",
+}
+
 const grantHostsQuery = "SELECT DISTINCT Host FROM mysql.user"
 
-func runMySQLQuery() ([]byte, error) {
-	bin, err := exec.LookPath("mysql")
-	if err != nil {
-		if bin, err = exec.LookPath("mariadb"); err != nil {
-			return nil, err
+// findBin returns the first of names found in binDirs, "" if none.
+func findBin(names ...string) string {
+	for _, n := range names {
+		for _, d := range binDirs {
+			p := filepath.Join(d, n)
+			if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
+				return p
+			}
 		}
+	}
+	return ""
+}
+
+// runClient runs a database client with the timeout, the minimal
+// environment and at most max bytes of output, a partial last line
+// dropped. A child that leaves a process holding its output does not keep
+// the agent waiting (WaitDelay): what it wrote is used.
+func runClient(max int, bin string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = clientEnv
+	cmd.WaitDelay = time.Second
+	var out bytes.Buffer
+	lw := &limitWriter{w: &out, n: max}
+	cmd.Stdout = lw
+	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
+	b := out.Bytes()
+	if lw.full {
+		b = trimPartialLine(b)
+	}
+	return b, err
+}
+
+func runMySQLQuery() ([]byte, error) {
+	bin := findBin("mysql", "mariadb")
+	if bin == "" {
+		return nil, errors.New("no mysql or mariadb client")
 	}
 	var args []string
 	if _, err := os.Stat(rootMyCnf); err == nil {
 		args = append(args, "--defaults-file="+rootMyCnf)
 	}
 	args = append(args, "--protocol=socket", "--connect-timeout=5", "-N", "-B", "-e", grantHostsQuery)
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdin = nil
-	var out bytes.Buffer
-	cmd.Stdout = &limitWriter{w: &out, n: maxAccessFile}
-	err = cmd.Run()
-	return out.Bytes(), err
+	return runClient(maxAccessFile, bin, args...)
 }
 
-func askHBAFile() string {
-	if _, err := exec.LookPath("psql"); err != nil {
-		return ""
+func askHBAFile() (string, int) {
+	runuser, psql := findBin("runuser"), findBin("psql")
+	if runuser == "" || psql == "" {
+		return "", 0
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "runuser", "-u", "postgres", "--", "psql", "-w", "-X", "-Atc", "SHOW hba_file")
-	cmd.Env = append(os.Environ(), "PGCONNECT_TIMEOUT=5")
-	out, err := cmd.Output()
+	out, err := runClient(4096, runuser, "-u", "postgres", "--", psql, "-w", "-X", "-At", "-c", "SHOW hba_file", "-c", "SHOW port")
 	if err != nil {
-		return ""
+		return "", 0
 	}
-	return strings.TrimSpace(string(out))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	port := 0
+	if len(lines) > 1 {
+		port, _ = strconv.Atoi(strings.TrimSpace(lines[1]))
+	}
+	return strings.TrimSpace(lines[0]), port
 }
 
 // ReadMySQLGrants returns the declared clients of MySQL from its accounts'
-// hosts and the host names left out. err is set when the query failed (no
+// hosts (locked and expired accounts too: the administrator granted them)
+// and the host names left out. err is set when the query failed (no
 // client, no server, no access).
 func ReadMySQLGrants() (out []Declared, names []string, err error) {
 	b, err := MySQLQuery()
@@ -132,12 +177,15 @@ func ParseGrantHosts(data string) (out []Declared, names []string) {
 }
 
 // ReadPGHBA returns the declared clients of PostgreSQL from pg_hba.conf
-// (the file PostgreSQL names, else the usual places). ok is false when no
-// file was found.
+// (the file PostgreSQL names, else the usual places), for the port
+// PostgreSQL listens on (SHOW port, else postgresql.conf next to the file,
+// else 5432). ok is false when no file was read. include directives are
+// not followed: their clients are not declared (the safe direction).
 func ReadPGHBA() (out []Declared, ok bool) {
 	var files []string
-	if f := PGHBAFile(); f != "" {
-		files = []string{f}
+	file, port := PGHBAFile()
+	if file != "" {
+		files = []string{file}
 	} else {
 		for _, pat := range PGHBAPaths {
 			m, _ := filepath.Glob(pat)
@@ -146,14 +194,16 @@ func ReadPGHBA() (out []Declared, ok bool) {
 	}
 	seen := map[string]bool{}
 	for _, path := range files {
-		f, err := os.Open(path)
+		b, err := readCapped(path, maxHBAFile)
 		if err != nil {
 			continue
 		}
-		b, _ := io.ReadAll(io.LimitReader(f, maxHBAFile))
-		f.Close()
 		ok = true
-		for _, d := range ParsePGHBA(string(b)) {
+		p := port
+		if p == 0 || file == "" {
+			p = confPort(filepath.Join(filepath.Dir(path), "postgresql.conf"))
+		}
+		for _, d := range ParsePGHBA(string(b), p) {
 			if !seen[d.Entry] && len(out) < maxAccessHosts {
 				seen[d.Entry] = true
 				out = append(out, d)
@@ -164,11 +214,54 @@ func ReadPGHBA() (out []Declared, ok bool) {
 	return out, ok
 }
 
+// readCapped reads at most max bytes of path, a partial last line dropped
+// when the file is longer.
+func readCapped(path string, max int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > max {
+		b = trimPartialLine(b[:max])
+	}
+	return b, nil
+}
+
+// confPort reads "port = N" from a postgresql.conf, 5432 when it has none.
+func confPort(path string) int {
+	b, err := readCapped(path, maxHBAFile)
+	if err != nil {
+		return pgPort
+	}
+	port := pgPort
+	for _, line := range strings.Split(string(b), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		k, v, found := strings.Cut(line, "=")
+		if !found || strings.TrimSpace(k) != "port" {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.Trim(strings.TrimSpace(v), "'")); err == nil && n > 0 && n < 65536 {
+			port = n
+		}
+	}
+	return port
+}
+
 // ParsePGHBA parses pg_hba.conf: the host, hostssl, hostnossl, hostgssenc
 // and hostnogssenc lines with an address or range of a public network and
 // a method other than reject. "all", samehost, samenet, host names and
 // include directives are left out.
-func ParsePGHBA(data string) []Declared {
+func ParsePGHBA(data string, port int) []Declared {
+	if port <= 0 {
+		port = pgPort
+	}
 	var out []Declared
 	for _, line := range strings.Split(data, "\n") {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
@@ -195,10 +288,18 @@ func ParsePGHBA(data string) []Declared {
 			continue
 		}
 		if e := specificEntry(addr); e != "" {
-			out = append(out, Declared{Entry: e, Host: f[3], Source: SourcePGHBA, Port: pgPort})
+			out = append(out, Declared{Entry: e, Host: f[3], Source: SourcePGHBA, Port: port})
 		}
 	}
 	return out
+}
+
+// trimPartialLine drops what follows the last newline of a cut output.
+func trimPartialLine(b []byte) []byte {
+	if i := bytes.LastIndexByte(b, '\n'); i >= 0 {
+		return b[:i+1]
+	}
+	return nil
 }
 
 // specificEntry is hostEntry with a single-address range (/32, /128) as
@@ -213,19 +314,22 @@ func specificEntry(h string) string {
 	return e
 }
 
-// limitWriter keeps the first n bytes and drops the rest.
+// limitWriter keeps the first n bytes and drops the rest (full).
 type limitWriter struct {
-	w io.Writer
-	n int
+	w    io.Writer
+	n    int
+	full bool
 }
 
 func (l *limitWriter) Write(p []byte) (int, error) {
 	k := len(p)
 	if l.n <= 0 {
+		l.full = l.full || k > 0
 		return k, nil
 	}
 	if len(p) > l.n {
 		p = p[:l.n]
+		l.full = true
 	}
 	n, err := l.w.Write(p)
 	l.n -= n

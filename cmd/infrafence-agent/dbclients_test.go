@@ -280,7 +280,7 @@ func withDeclaredSources(t *testing.T, grants []dbclients.Declared, grantsErr er
 func TestKnownDBClientDeclaredByDatabase(t *testing.T) {
 	withDBClients(t, nil, map[string]bool{})
 	grants, _ := dbclients.ParseGrantHosts("%\nlocalhost\n203.0.113.20\n198.%.%.%\n")
-	hba := dbclients.ParsePGHBA("host all all 198.51.100.30/32 scram-sha-256\n")
+	hba := dbclients.ParsePGHBA("host all all 198.51.100.30/32 scram-sha-256\n", 0)
 	oldCPanel := dbReadCPanel
 	dbReadCPanel = func() ([]dbclients.Declared, bool) { return nil, false }
 	t.Cleanup(func() { dbReadCPanel = oldCPanel })
@@ -297,7 +297,7 @@ func TestKnownDBClientDeclaredByDatabase(t *testing.T) {
 		{"198.51.100.30", 5432, "pg_hba"},
 		{"198.51.100.30", 3306, ""},
 		{"198.51.100.30", 0, "pg_hba"}, // a log of unknown type
-		{"198.18.7.7", 3306, ""},       // 198.%.%.%: wider than a /16
+		{"198.18.7.7", 3306, ""},       // 198.%.%.%: wider than a /16, left out
 		{"203.0.113.21", 3306, ""},
 	} {
 		if got := knownDBClient(c.ip, c.port); got != c.want {
@@ -321,7 +321,7 @@ func TestKnownDBClientDeclaredByDatabase(t *testing.T) {
 	for _, d := range sent.Declared {
 		got[d.Entry] = fmt.Sprintf("%d %s", d.Port, d.Source)
 	}
-	want := map[string]string{"203.0.113.20": "3306 mysql_grants", "198.0.0.0/8": "3306 mysql_grants", "198.51.100.30": "5432 pg_hba"}
+	want := map[string]string{"203.0.113.20": "3306 mysql_grants", "198.51.100.30": "5432 pg_hba"}
 	if !reflect.DeepEqual(got, want) || !sent.DeclaredRead {
 		t.Errorf("reported: %v", got)
 	}
@@ -342,5 +342,66 @@ func TestReadDeclaredFailures(t *testing.T) {
 	}
 	if got := knownDBClient("192.0.2.9", 3306); got != "declared_mysql_host" {
 		t.Errorf("cPanel host: %q", got)
+	}
+}
+
+// A source that fails keeps its entries of the last read, and they are
+// still reported (not removed in the dashboard); a source read again
+// replaces them.
+func TestReadDeclaredKeepsFailedSource(t *testing.T) {
+	oldDecl, oldCPanel := dbDeclared.Load(), dbReadCPanel
+	t.Cleanup(func() {
+		dbDeclared.Store(oldDecl)
+		dbReadCPanel = oldCPanel
+		dbGrantsFailing, dbHBAFailing = false, false
+	})
+	dbReadCPanel = func() ([]dbclients.Declared, bool) { return nil, false }
+	grants, _ := dbclients.ParseGrantHosts("203.0.113.20\n")
+	hba := dbclients.ParsePGHBA("host all all 198.51.100.30/32 md5\n", 5433)
+	withDeclaredSources(t, grants, nil, hba, true)
+	readDeclared()
+
+	// MySQL times out, pg_hba.conf is gone for a moment.
+	withDeclaredSources(t, nil, errors.New("signal: killed"), nil, false)
+	readDeclared()
+	if !dbGrantsFailing || !dbHBAFailing {
+		t.Error("failure not noted")
+	}
+	got := map[string]string{}
+	for _, x := range *dbDeclared.Load() {
+		got[x.Entry] = fmt.Sprintf("%d %s", x.ClientPort(), x.Source)
+	}
+	if !reflect.DeepEqual(got, map[string]string{"203.0.113.20": "3306 mysql_grants", "198.51.100.30": "5433 pg_hba"}) {
+		t.Fatalf("kept: %v", got)
+	}
+	// A PostgreSQL on 5433 still protects its pg_hba clients.
+	if knownDBClient("198.51.100.30", 5432) != "pg_hba" || knownDBClient("203.0.113.20", 3306) != "mysql_grant" {
+		t.Error("kept entries do not protect")
+	}
+
+	// Read again: the new answer replaces the old one.
+	withDeclaredSources(t, nil, nil, nil, true)
+	readDeclared()
+	if d := dbDeclared.Load(); len(*d) != 0 || dbGrantsFailing || dbHBAFailing {
+		t.Errorf("after recovery: %v", *d)
+	}
+}
+
+// A range wider than a /16 neither protects from bans nor holds back
+// closing the port.
+func TestWideDeclaredRangeIgnored(t *testing.T) {
+	withDBClients(t, nil, map[string]bool{})
+	oldCPanel := dbReadCPanel
+	t.Cleanup(func() { dbReadCPanel = oldCPanel })
+	dbReadCPanel = func() ([]dbclients.Declared, bool) {
+		return dbclients.ParseAccessHosts("198.%.%.%\n203.0.113.0/24\n", "cpanel_access_hosts"), true
+	}
+	withDeclaredSources(t, nil, nil, nil, false)
+	readDeclared()
+	if got := regularClientsNotAllowed(3306); !reflect.DeepEqual(got, []string{"203.0.113.0/24", "203.0.113.7"}) {
+		t.Errorf("blocking closing: %v", got)
+	}
+	if knownDBClient("198.18.1.1", 3306) != "" {
+		t.Error("wide range protects")
 	}
 }

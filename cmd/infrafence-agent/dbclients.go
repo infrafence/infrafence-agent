@@ -120,8 +120,14 @@ func watchDBClients(l *dbclients.Log, client func() *api.Client, sample, report 
 		l.ObserveConns(conns)
 		if now.Sub(lastDeclared) >= dbDeclaredEvery {
 			lastDeclared = now
-			// Host names are resolved (bounded): not in the sampling path.
-			go readDeclared()
+			// Host names are resolved and the databases asked (bounded):
+			// not in the sampling path, never two reads at once.
+			if dbDeclaredRunning.CompareAndSwap(false, true) {
+				go func() {
+					defer dbDeclaredRunning.Store(false)
+					readDeclared()
+				}()
+			}
 		}
 		if now.Sub(lastReport) >= report && !now.Before(retryAt) {
 			lastReport = now
@@ -141,31 +147,61 @@ func watchDBClients(l *dbclients.Log, client func() *api.Client, sample, report 
 }
 
 var (
-	dbDeclaredLogged, dbGrantsLogged, dbGrantsFailed, dbGrantNamesLogged, dbHBALogged sync.Once
+	dbDeclaredLogged, dbGrantsLogged, dbGrantNamesLogged, dbHBALogged sync.Once
+	// dbGrantsFailing, dbHBAFailing: the source failed at the last read (its
+	// previous entries are kept). Only readDeclared uses them, and reads
+	// never overlap (dbDeclaredRunning).
+	dbGrantsFailing, dbHBAFailing bool
+	dbDeclaredRunning             atomic.Bool
+	// dbWideLogged: the too wide entries already logged.
+	dbWideLogged = map[string]bool{}
 )
 
 // readDeclared reads the declared clients: the WHM access hosts, the hosts
-// of MySQL's accounts and pg_hba.conf's host lines. A source that cannot be
-// read is left out (logged once).
+// of MySQL's accounts and pg_hba.conf's host lines. A source that cannot
+// be read keeps its entries of the last read (a database restarting, a
+// timeout under load), logged once per failure streak. Ranges wider than
+// a /16 (IPv4) or a /48 (IPv6) are left out.
 func readDeclared() {
-	d, ok := dbReadCPanel()
-	if !ok {
-		d = []dbclients.Declared{}
+	var prev []dbclients.Declared
+	if p := dbDeclared.Load(); p != nil {
+		prev = *p
 	}
+	kept := func(source string) []dbclients.Declared {
+		var out []dbclients.Declared
+		for _, x := range prev {
+			if x.Source == source {
+				out = append(out, x)
+			}
+		}
+		return out
+	}
+
+	cp, _ := dbReadCPanel()
+	d := append([]dbclients.Declared(nil), cp...)
 	if len(d) > 0 {
 		n := len(d)
 		dbDeclaredLogged.Do(func() {
 			log.Printf("[dbclients] %d declared MySQL client(s) in the WHM access hosts", n)
 		})
 	}
-	if g, names, err := dbReadGrants(); err != nil {
-		dbGrantsFailed.Do(func() {
-			log.Printf("[dbclients] MySQL accounts not read (%v): their hosts are not declared clients", err)
-		})
+
+	g, names, err := dbReadGrants()
+	if err != nil {
+		g = kept(dbclients.SourceMySQLGrants)
+		if !dbGrantsFailing {
+			dbGrantsFailing = true
+			log.Printf("[dbclients] MySQL accounts not read (%v): the %d declared client(s) of the last read are kept", err, len(g))
+		}
 	} else {
+		if dbGrantsFailing {
+			dbGrantsFailing = false
+			log.Printf("[dbclients] MySQL accounts read again")
+		}
 		if len(g) > 0 {
+			n := len(g)
 			dbGrantsLogged.Do(func() {
-				log.Printf("[dbclients] %d declared MySQL client(s) in the accounts' hosts", len(g))
+				log.Printf("[dbclients] %d declared MySQL client(s) in the accounts' hosts", n)
 			})
 		}
 		if len(names) > 0 {
@@ -173,15 +209,52 @@ func readDeclared() {
 				log.Printf("[dbclients] MySQL accounts: host name(s) ignored, not resolved (only addresses and ranges count): %s", strings.Join(firstN(names, dbMessageMax), ", "))
 			})
 		}
-		d = append(d, g...)
 	}
-	if h, ok := dbReadHBA(); ok && len(h) > 0 {
-		dbHBALogged.Do(func() {
-			log.Printf("[dbclients] %d declared PostgreSQL client(s) in pg_hba.conf", len(h))
-		})
-		d = append(d, h...)
+	d = append(d, g...)
+
+	h, ok := dbReadHBA()
+	if !ok {
+		h = kept(dbclients.SourcePGHBA)
+		if !dbHBAFailing && len(h) > 0 {
+			log.Printf("[dbclients] pg_hba.conf not read: the %d declared client(s) of the last read are kept", len(h))
+		}
+		dbHBAFailing = true
+	} else {
+		if dbHBAFailing && len(kept(dbclients.SourcePGHBA)) > 0 {
+			log.Printf("[dbclients] pg_hba.conf read again")
+		}
+		dbHBAFailing = false
+		if len(h) > 0 {
+			n := len(h)
+			dbHBALogged.Do(func() {
+				log.Printf("[dbclients] %d declared PostgreSQL client(s) in pg_hba.conf", n)
+			})
+		}
 	}
-	dbDeclared.Store(&d)
+	d = append(d, h...)
+
+	out := d[:0:0]
+	for _, x := range d {
+		if !declaredSpecific(x.Entry) {
+			if key := x.Source + " " + x.Entry; !dbWideLogged[key] {
+				dbWideLogged[key] = true
+				log.Printf("[dbclients] %s %s (%s) ignored: wider than a /16 (IPv4) or a /48 (IPv6), it would exempt too many addresses", x.Source, x.Entry, x.Host)
+			}
+			continue
+		}
+		out = append(out, x)
+	}
+	dbDeclared.Store(&out)
+}
+
+// declaredSpecific: entry is an address, or a range of at least a /16
+// (IPv4) or a /48 (IPv6).
+func declaredSpecific(entry string) bool {
+	if _, n, err := net.ParseCIDR(entry); err == nil {
+		ones, bits := n.Mask.Size()
+		return bits == 32 && ones >= 16 || bits == 128 && ones >= 48
+	}
+	return net.ParseIP(entry) != nil
 }
 
 // reportDBClients sends what the dashboard does not have yet.
@@ -261,7 +334,7 @@ func knownDBClient(ip string, port int) string {
 	}
 	if d := dbDeclared.Load(); d != nil {
 		for _, x := range *d {
-			if port != 0 && x.ClientPort() != port || !declaredCovers(x.Entry, p) {
+			if !declaredFor(x, port) || !declaredCovers(x.Entry, p) {
 				continue
 			}
 			switch x.Source {
@@ -274,6 +347,21 @@ func knownDBClient(ip string, port int) string {
 		}
 	}
 	return ""
+}
+
+// declaredFor: x is a declared client of the database whose log line was
+// on port (the database's default port; 0: any). MySQL's and PostgreSQL's
+// own lists count for their database whatever port it listens on.
+func declaredFor(x dbclients.Declared, port int) bool {
+	switch {
+	case port == 0:
+		return true
+	case x.Source == dbclients.SourcePGHBA:
+		return port == 5432
+	case x.Source == dbclients.SourceMySQLGrants, x.Port == 0:
+		return port == dbMySQLPort
+	}
+	return x.ClientPort() == port
 }
 
 // declaredCovers: entry (an address or a range of at least a /16 or a

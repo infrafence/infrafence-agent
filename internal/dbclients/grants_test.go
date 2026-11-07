@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func entries(d []Declared) []string {
@@ -56,7 +57,7 @@ host    all       all   192.0.2.0/24        md5   # office
 include_dir conf.d
 hostssl all all 203.0.113.10/32
 `
-	got := ParsePGHBA(data)
+	got := ParsePGHBA(data, 0)
 	if want := []string{"203.0.113.7", "198.51.100.0/24", "192.0.2.0/24"}; !reflect.DeepEqual(entries(got), want) {
 		t.Fatalf("entries: %v", entries(got))
 	}
@@ -70,8 +71,7 @@ hostssl all all 203.0.113.10/32
 // The real query path, with a fake client on PATH: no client, an
 // authentication failure, and an answer read with root's option file.
 func TestReadMySQLGrants(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("PATH", dir)
+	dir := withBinDir(t)
 	if _, _, err := ReadMySQLGrants(); err == nil {
 		t.Fatal("no client: no error")
 	}
@@ -108,31 +108,99 @@ func TestReadPGHBA(t *testing.T) {
 	t.Cleanup(func() { PGHBAFile, PGHBAPaths = oldFile, oldPaths })
 
 	// No PostgreSQL to ask, no file.
-	PGHBAFile = func() string { return "" }
+	PGHBAFile = func() (string, int) { return "", 0 }
 	PGHBAPaths = []string{filepath.Join(dir, "*/main/pg_hba.conf")}
 	if got, ok := ReadPGHBA(); ok || len(got) != 0 {
 		t.Fatalf("no file: %v %v", got, ok)
 	}
 
-	// The usual place.
+	// The usual place, with the port of the postgresql.conf next to it.
 	p := filepath.Join(dir, "16/main/pg_hba.conf")
 	_ = os.MkdirAll(filepath.Dir(p), 0o755)
 	_ = os.WriteFile(p, []byte("host all all 203.0.113.7/32 md5\n"), 0o644)
-	if got, ok := ReadPGHBA(); !ok || !reflect.DeepEqual(entries(got), []string{"203.0.113.7"}) {
+	_ = os.WriteFile(filepath.Join(dir, "16/main/postgresql.conf"), []byte("#port = 5432\nport = 5433   # second cluster\n"), 0o644)
+	if got, ok := ReadPGHBA(); !ok || !reflect.DeepEqual(entries(got), []string{"203.0.113.7"}) || got[0].ClientPort() != 5433 {
 		t.Fatalf("usual path: %v %v", got, ok)
 	}
 
 	// The file PostgreSQL names wins.
 	named := filepath.Join(dir, "custom_hba.conf")
 	_ = os.WriteFile(named, []byte("host all all 198.51.100.0/24 md5\n"), 0o644)
-	PGHBAFile = func() string { return named }
-	if got, ok := ReadPGHBA(); !ok || !reflect.DeepEqual(entries(got), []string{"198.51.100.0/24"}) {
+	PGHBAFile = func() (string, int) { return named, 5434 }
+	if got, ok := ReadPGHBA(); !ok || !reflect.DeepEqual(entries(got), []string{"198.51.100.0/24"}) || got[0].ClientPort() != 5434 {
 		t.Fatalf("named: %v %v", got, ok)
 	}
+	// Without a port and a postgresql.conf: 5432.
+	PGHBAFile = func() (string, int) { return named, 0 }
+	if got, _ := ReadPGHBA(); len(got) != 1 || got[0].ClientPort() != 5432 {
+		t.Fatalf("default port: %v", got)
+	}
 	// A named file that cannot be read.
-	PGHBAFile = func() string { return filepath.Join(dir, "missing") }
+	PGHBAFile = func() (string, int) { return filepath.Join(dir, "missing"), 5432 }
 	if _, ok := ReadPGHBA(); ok {
 		t.Error("missing named file read")
 	}
 
+}
+
+// withBinDir makes a temporary directory the only place clients are looked
+// for.
+func withBinDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	old := binDirs
+	binDirs = []string{dir}
+	t.Cleanup(func() { binDirs = old })
+	return dir
+}
+
+// A client that leaves a background process holding its output does not
+// keep the agent waiting: the answer is used about a second after the
+// client exits.
+func TestClientGrandchildHoldsPipe(t *testing.T) {
+	dir := withBinDir(t)
+	_ = os.WriteFile(filepath.Join(dir, "mysql"), []byte("#!/bin/sh\nsleep 30 &\necho 203.0.113.7\n"), 0o755)
+	start := time.Now()
+	got, _, err := ReadMySQLGrants()
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("waited %v", took)
+	}
+	if err != nil || !reflect.DeepEqual(entries(got), []string{"203.0.113.7"}) {
+		t.Fatalf("got %v %v", got, err)
+	}
+}
+
+// The environment of a client is fixed: nothing of the agent's.
+func TestClientEnvironment(t *testing.T) {
+	dir := withBinDir(t)
+	t.Setenv("MYSQL_PWD", "secret")
+	t.Setenv("PGPASSWORD", "secret")
+	env := filepath.Join(dir, "env")
+	_ = os.WriteFile(filepath.Join(dir, "mysql"), []byte("#!/bin/sh\nenv > "+env+"\n"), 0o755)
+	if _, _, err := ReadMySQLGrants(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(env)
+	if e := string(b); strings.Contains(e, "secret") || !strings.Contains(e, "HOME=/root") || !strings.Contains(e, "LANG=C") {
+		t.Errorf("env: %q", e)
+	}
+}
+
+// Output cut at the limit loses its partial last line.
+func TestLimitDropsPartialLine(t *testing.T) {
+	var out strings.Builder
+	lw := &limitWriter{w: &out, n: 20}
+	_, _ = lw.Write([]byte("203.0.113.7\n203.0.113.80\n"))
+	if !lw.full || string(trimPartialLine([]byte(out.String()))) != "203.0.113.7\n" {
+		t.Fatalf("full %v, %q", lw.full, trimPartialLine([]byte(out.String())))
+	}
+	p := filepath.Join(t.TempDir(), "pg_hba.conf")
+	_ = os.WriteFile(p, []byte("host all all 203.0.113.7/32 md5\nhost all all 203.0.113.80/32 md5\n"), 0o644)
+	b, err := readCapped(p, 40)
+	if err != nil || string(b) != "host all all 203.0.113.7/32 md5\n" {
+		t.Fatalf("capped: %q %v", b, err)
+	}
+	if got := ParsePGHBA(string(b), 0); !reflect.DeepEqual(entries(got), []string{"203.0.113.7"}) {
+		t.Errorf("parsed: %v", entries(got))
+	}
 }
