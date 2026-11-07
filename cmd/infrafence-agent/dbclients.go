@@ -90,6 +90,8 @@ func startDBClients(client func() *api.Client, ver string) {
 var (
 	dbInbound     = netstate.InboundClients
 	dbReadCPanel  = dbclients.ReadCPanelAccessHosts
+	dbReadGrants  = dbclients.ReadMySQLGrants
+	dbReadHBA     = dbclients.ReadPGHBA
 	dbAllowListed = firewall.IsAllowListed
 	dbAllowNet    = firewall.IsAllowListedNet
 	dbSend        = func(c *api.Client, req api.DBClientsRequest) error { return c.ReportDBClients(req) }
@@ -138,17 +140,46 @@ func watchDBClients(l *dbclients.Log, client func() *api.Client, sample, report 
 	}
 }
 
-var dbDeclaredLogged sync.Once
+var (
+	dbDeclaredLogged, dbGrantsLogged, dbGrantsFailed, dbGrantNamesLogged, dbHBALogged sync.Once
+)
 
+// readDeclared reads the declared clients: the WHM access hosts, the hosts
+// of MySQL's accounts and pg_hba.conf's host lines. A source that cannot be
+// read is left out (logged once).
 func readDeclared() {
 	d, ok := dbReadCPanel()
 	if !ok {
 		d = []dbclients.Declared{}
 	}
 	if len(d) > 0 {
+		n := len(d)
 		dbDeclaredLogged.Do(func() {
-			log.Printf("[dbclients] %d declared MySQL client(s) in the WHM access hosts", len(d))
+			log.Printf("[dbclients] %d declared MySQL client(s) in the WHM access hosts", n)
 		})
+	}
+	if g, names, err := dbReadGrants(); err != nil {
+		dbGrantsFailed.Do(func() {
+			log.Printf("[dbclients] MySQL accounts not read (%v): their hosts are not declared clients", err)
+		})
+	} else {
+		if len(g) > 0 {
+			dbGrantsLogged.Do(func() {
+				log.Printf("[dbclients] %d declared MySQL client(s) in the accounts' hosts", len(g))
+			})
+		}
+		if len(names) > 0 {
+			dbGrantNamesLogged.Do(func() {
+				log.Printf("[dbclients] MySQL accounts: host name(s) ignored, not resolved (only addresses and ranges count): %s", strings.Join(firstN(names, dbMessageMax), ", "))
+			})
+		}
+		d = append(d, g...)
+	}
+	if h, ok := dbReadHBA(); ok && len(h) > 0 {
+		dbHBALogged.Do(func() {
+			log.Printf("[dbclients] %d declared PostgreSQL client(s) in pg_hba.conf", len(h))
+		})
+		d = append(d, h...)
 	}
 	dbDeclared.Store(&d)
 }
@@ -163,7 +194,7 @@ func reportDBClients(c *api.Client, l *dbclients.Log) error {
 	if d := dbDeclared.Load(); d != nil {
 		req.Declared = make([]api.DBDeclared, 0, len(*d))
 		for _, x := range *d {
-			req.Declared = append(req.Declared, api.DBDeclared{Port: dbMySQLPort, Entry: x.Entry, Host: x.Host, Source: x.Source})
+			req.Declared = append(req.Declared, api.DBDeclared{Port: x.ClientPort(), Entry: x.Entry, Host: x.Host, Source: x.Source})
 		}
 		req.DeclaredRead = true
 	}
@@ -190,13 +221,11 @@ func regularClientsNotAllowed(port int) []string {
 			out = append(out, c.IP)
 		}
 	}
-	if port == dbMySQLPort {
-		if d := dbDeclared.Load(); d != nil {
-			for _, x := range *d {
-				if !seen[x.Entry] && !dbAllowNet(x.Entry) {
-					seen[x.Entry] = true
-					out = append(out, x.Entry)
-				}
+	if d := dbDeclared.Load(); d != nil {
+		for _, x := range *d {
+			if x.ClientPort() == port && !seen[x.Entry] && !dbAllowNet(x.Entry) {
+				seen[x.Entry] = true
+				out = append(out, x.Entry)
 			}
 		}
 	}
@@ -204,21 +233,27 @@ func regularClientsNotAllowed(port int) []string {
 	return out
 }
 
-// knownDBClient is the database watcher's guard, on every server, panel or
-// not: "regular_client" for a regular client of a port of closablePorts
-// that held a connection open on those days (the sampler sees host and
-// published container ports alike; a client that only connects for a
-// moment, as a PHP page does, is protected by the whitelist),
-// "declared_mysql_host" for an address in a declared remote MySQL host (an
-// address or a range, cPanel/WHM only), "" when the address may be banned.
-func knownDBClient(ip string) string {
+// knownDBClient is the database watcher's guard for a failed login on
+// port, on every server, panel or not:
+//   - "regular_client": a regular client of a port of closablePorts that
+//     held a connection open on those days (the sampler sees host and
+//     published container ports alike);
+//   - a declared client of port: "declared_mysql_host" (the WHM access
+//     hosts), "mysql_grant" (the hosts of MySQL's accounts), "pg_hba"
+//     (pg_hba.conf), from the first minute and whatever its connections
+//     (a PHP page that connects for a moment). Declared ranges wider than
+//     a /16 (IPv4) or a /48 (IPv6) do not count;
+//
+// "" when the address may be banned. port 0 (a log of unknown type): a
+// declared client of any port.
+func knownDBClient(ip string, port int) string {
 	p := net.ParseIP(ip)
 	if p == nil {
 		return ""
 	}
 	l := dbClientLog.Load()
-	for _, port := range closablePortList() {
-		for _, c := range l.Held(port) {
+	for _, cp := range closablePortList() {
+		for _, c := range l.Held(cp) {
 			if net.ParseIP(c.IP).Equal(p) {
 				return "regular_client"
 			}
@@ -226,15 +261,29 @@ func knownDBClient(ip string) string {
 	}
 	if d := dbDeclared.Load(); d != nil {
 		for _, x := range *d {
-			if _, n, err := net.ParseCIDR(x.Entry); err == nil && n.Contains(p) {
-				return "declared_mysql_host"
+			if port != 0 && x.ClientPort() != port || !declaredCovers(x.Entry, p) {
+				continue
 			}
-			if net.ParseIP(x.Entry).Equal(p) {
-				return "declared_mysql_host"
+			switch x.Source {
+			case dbclients.SourceMySQLGrants:
+				return "mysql_grant"
+			case dbclients.SourcePGHBA:
+				return "pg_hba"
 			}
+			return "declared_mysql_host"
 		}
 	}
 	return ""
+}
+
+// declaredCovers: entry (an address or a range of at least a /16 or a
+// /48) contains p.
+func declaredCovers(entry string, p net.IP) bool {
+	if _, n, err := net.ParseCIDR(entry); err == nil {
+		ones, bits := n.Mask.Size()
+		return n.Contains(p) && (bits == 32 && ones >= 16 || bits == 128 && ones >= 48)
+	}
+	return net.ParseIP(entry).Equal(p)
 }
 
 // regularClientsMessage words a regular_clients refusal.

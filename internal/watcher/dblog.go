@@ -17,10 +17,12 @@ import (
 	"github.com/infrafence/infrafence-agent/internal/netstate"
 )
 
-// DBPattern pairs a compiled regex with the event reason.
+// DBPattern pairs a compiled regex with the event reason and the default
+// port of its database (for the declared clients of that port).
 type DBPattern struct {
 	Re     *regexp.Regexp
 	Reason string
+	Port   int
 }
 
 // dbPatterns contains all database auth detection patterns.
@@ -41,18 +43,18 @@ type DBPattern struct {
 //   - "Unauthorized ... client: X.X.X.X"
 var dbPatterns = []DBPattern{
 	// ── MySQL / MariaDB ───────────────────────────────────────────────
-	{Re: regexp.MustCompile(`Access denied for user '\S+'@'([\d.]+)'`), Reason: "db_brute_force"},
-	{Re: regexp.MustCompile(`Host '([\d.]+)' is blocked because of many connection errors`), Reason: "db_brute_force"},
-	{Re: regexp.MustCompile(`Aborted connection.*host:\s*'([\d.]+)'`), Reason: "db_suspicious"},
+	{Re: regexp.MustCompile(`Access denied for user '\S+'@'([\d.]+)'`), Reason: "db_brute_force", Port: 3306},
+	{Re: regexp.MustCompile(`Host '([\d.]+)' is blocked because of many connection errors`), Reason: "db_brute_force", Port: 3306},
+	{Re: regexp.MustCompile(`Aborted connection.*host:\s*'([\d.]+)'`), Reason: "db_suspicious", Port: 3306},
 
 	// ── PostgreSQL ────────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`FATAL:\s+password authentication failed for user.*host[= ]+"?([\d.]+)`), Reason: "db_brute_force"},
-	{Re: regexp.MustCompile(`FATAL:\s+no pg_hba\.conf entry for host "?([\d.]+)`), Reason: "db_brute_force"},
-	{Re: regexp.MustCompile(`could not receive data from client.*host[= ]+"?([\d.]+)`), Reason: "db_suspicious"},
+	{Re: regexp.MustCompile(`FATAL:\s+password authentication failed for user.*host[= ]+"?([\d.]+)`), Reason: "db_brute_force", Port: 5432},
+	{Re: regexp.MustCompile(`FATAL:\s+no pg_hba\.conf entry for host "?([\d.]+)`), Reason: "db_brute_force", Port: 5432},
+	{Re: regexp.MustCompile(`could not receive data from client.*host[= ]+"?([\d.]+)`), Reason: "db_suspicious", Port: 5432},
 
 	// ── MongoDB ───────────────────────────────────────────────────────
-	{Re: regexp.MustCompile(`(?:Failed to authenticate|Authentication failed).*client:\s*([\d.]+)`), Reason: "db_brute_force"},
-	{Re: regexp.MustCompile(`Unauthorized.*client:\s*([\d.]+)`), Reason: "db_brute_force"},
+	{Re: regexp.MustCompile(`(?:Failed to authenticate|Authentication failed).*client:\s*([\d.]+)`), Reason: "db_brute_force", Port: 27017},
+	{Re: regexp.MustCompile(`Unauthorized.*client:\s*([\d.]+)`), Reason: "db_brute_force", Port: 27017},
 }
 
 // DBLogPath holds a detected database log path and its type.
@@ -67,9 +69,10 @@ type DBWatcher struct {
 	onBan    BanFunc
 	onEvent  EventFunc
 	checkIP  CheckIPFunc
-	// knownClient says why an address must not be banned ("": it may be):
-	// a known client of a database port. See SetKnownClient.
-	knownClient func(ip string) string
+	// knownClient says why an address must not be banned for a failed
+	// login on port ("": it may be): a known client of the database. See
+	// SetKnownClient.
+	knownClient func(ip string, port int) string
 
 	mu          sync.Mutex
 	threshold   int
@@ -82,7 +85,7 @@ type DBWatcher struct {
 	// knownSeen: the guard's answer per address, for one window. dropped:
 	// the dropped connections (db_suspicious) per address, reported once a
 	// window.
-	knownSeen map[string]*dbKnown
+	knownSeen map[string]*dbKnown // key: address and port
 	dropped   map[string]*dbDropped
 }
 
@@ -300,7 +303,7 @@ func (w *DBWatcher) SetOnEvent(fn EventFunc) {
 // SetKnownClient sets the guard consulted before a ban (country included):
 // an address knownClient names a reason for is not banned; its attack is
 // still reported, with action "not_banned".
-func (w *DBWatcher) SetKnownClient(knownClient func(ip string) string) {
+func (w *DBWatcher) SetKnownClient(knownClient func(ip string, port int) string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.knownClient = knownClient
@@ -487,11 +490,13 @@ func (w *DBWatcher) tail(path string) error {
 
 func (w *DBWatcher) processLine(line string) {
 	var ip, reason string
+	port := 0
 	for _, p := range dbPatterns {
 		m := p.Re.FindStringSubmatch(line)
 		if len(m) >= 2 {
 			ip = m[1]
 			reason = p.Reason
+			port = p.Port
 			break
 		}
 	}
@@ -501,10 +506,10 @@ func (w *DBWatcher) processLine(line string) {
 	if isPrivateIP(ip) {
 		return
 	}
-	w.recordAttempt(ip, reason)
+	w.recordAttempt(ip, reason, port)
 }
 
-func (w *DBWatcher) recordAttempt(ip, reason string) {
+func (w *DBWatcher) recordAttempt(ip, reason string, port int) {
 	now := time.Now()
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -524,7 +529,7 @@ func (w *DBWatcher) recordAttempt(ip, reason string) {
 	// once a window)
 	if w.checkIP != nil {
 		if banReason := w.checkIP(ip); banReason != "" {
-			k := w.known(ip, now)
+			k := w.known(ip, port, now)
 			if k == nil || k.why == "" {
 				w.banned[ip] = true
 				if w.monitorMode {
@@ -595,7 +600,7 @@ func (w *DBWatcher) recordAttempt(ip, reason string) {
 		if w.monitorMode {
 			return
 		}
-		if k := w.known(ip, now); k != nil && k.why != "" {
+		if k := w.known(ip, port, now); k != nil && k.why != "" {
 			// An application with a wrong or just changed password: not
 			// cut off. Reported once per window.
 			log.Printf("[dbwatcher] not banning %s: known database client (%s, %d failed logins)", ip, k.why, count)
@@ -616,17 +621,18 @@ func (w *DBWatcher) recordAttempt(ip, reason string) {
 // known returns the guard's answer for ip, asked at most once a window;
 // nil without a guard and in monitor mode, which bans nothing. Caller must
 // hold w.mu.
-func (w *DBWatcher) known(ip string, now time.Time) *dbKnown {
+func (w *DBWatcher) known(ip string, port int, now time.Time) *dbKnown {
 	if w.knownClient == nil || w.monitorMode {
 		return nil
 	}
-	k := w.knownSeen[ip]
+	key := net.JoinHostPort(ip, strconv.Itoa(port))
+	k := w.knownSeen[key]
 	if k == nil || now.Sub(k.since) > w.window {
 		if w.knownSeen == nil {
 			w.knownSeen = make(map[string]*dbKnown)
 		}
-		k = &dbKnown{since: now, why: w.knownClient(ip)}
-		w.knownSeen[ip] = k
+		k = &dbKnown{since: now, why: w.knownClient(ip, port)}
+		w.knownSeen[key] = k
 	}
 	return k
 }

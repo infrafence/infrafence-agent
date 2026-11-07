@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -112,7 +113,7 @@ func TestDBSuspiciousNeverBans(t *testing.T) {
 func TestDBKnownClientNotBanned(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
 	var asked []string
-	w.SetKnownClient(func(ip string) string {
+	w.SetKnownClient(func(ip string, _ int) string {
 		asked = append(asked, ip)
 		if ip == "203.0.113.7" {
 			return "regular_client"
@@ -157,7 +158,7 @@ func TestDBKnownClientNotBanned(t *testing.T) {
 func TestDBKnownClientNotGeoblocked(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
 	w.SetCheckIP(func(ip string) string { return "geoblock_xx" })
-	w.SetKnownClient(func(ip string) string {
+	w.SetKnownClient(func(ip string, _ int) string {
 		if ip == "198.51.100.4" {
 			return "declared_mysql_host"
 		}
@@ -212,7 +213,7 @@ func TestDBKnownClientCached(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
 	w.SetCheckIP(func(ip string) string { return "geoblock_xx" })
 	asked := 0
-	w.SetKnownClient(func(ip string) string {
+	w.SetKnownClient(func(ip string, _ int) string {
 		asked++
 		return "regular_client"
 	})
@@ -229,7 +230,7 @@ func TestDBKnownClientCached(t *testing.T) {
 	}
 	// A window later it is asked again.
 	w.mu.Lock()
-	w.knownSeen["203.0.113.70"].since = time.Now().Add(-w.window - time.Second)
+	w.knownSeen["203.0.113.70:3306"].since = time.Now().Add(-w.window - time.Second)
 	w.mu.Unlock()
 	w.processLine(fmt.Sprintf(abortedLine, "203.0.113.70"))
 	collectDB(bans, evs)
@@ -244,7 +245,7 @@ func TestDBBanStateExpiry(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
 	known := "regular_client"
 	asked := 0
-	w.SetKnownClient(func(ip string) string {
+	w.SetKnownClient(func(ip string, _ int) string {
 		asked++
 		return known
 	})
@@ -255,7 +256,7 @@ func TestDBBanStateExpiry(t *testing.T) {
 		t.Fatalf("bans %v, asked %d", b, asked)
 	}
 	w.cleanup(time.Now().Add(w.window + time.Second))
-	if w.banned["203.0.113.80"] || w.knownSeen["203.0.113.80"] != nil || w.attempts["203.0.113.80"] != nil {
+	if w.banned["203.0.113.80"] || w.knownSeen["203.0.113.80:3306"] != nil || w.attempts["203.0.113.80"] != nil {
 		t.Fatal("state kept past the window")
 	}
 	known = ""
@@ -271,7 +272,7 @@ func TestDBBanStateExpiry(t *testing.T) {
 func TestDBKnownClientMonitorMode(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
 	w.SetMonitorMode(true)
-	w.SetKnownClient(func(ip string) string {
+	w.SetKnownClient(func(ip string, _ int) string {
 		t.Errorf("guard asked for %s", ip)
 		return ""
 	})
@@ -288,7 +289,9 @@ func TestDBKnownClientMonitorMode(t *testing.T) {
 // unknown address is.
 func TestDBKnownClientPostgreSQL(t *testing.T) {
 	w, bans, evs := newTestDBWatcher()
-	w.SetKnownClient(func(ip string) string {
+	ports := map[int]bool{}
+	w.SetKnownClient(func(ip string, port int) string {
+		ports[port] = true
 		if ip == "203.0.113.50" {
 			return "regular_client"
 		}
@@ -311,5 +314,9 @@ func TestDBKnownClientPostgreSQL(t *testing.T) {
 	}
 	if guarded != 1 {
 		t.Errorf("events: %+v", e)
+	}
+	// The guard is asked for PostgreSQL's port.
+	if !reflect.DeepEqual(ports, map[int]bool{5432: true}) {
+		t.Errorf("ports: %v", ports)
 	}
 }

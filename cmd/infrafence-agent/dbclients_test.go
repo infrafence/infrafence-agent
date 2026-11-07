@@ -185,14 +185,14 @@ func TestKnownDBClient(t *testing.T) {
 		"198.18.5.1":         "",
 		"not-an-ip":          "",
 	} {
-		if got := knownDBClient(ip); got != want {
+		if got := knownDBClient(ip, 3306); got != want {
 			t.Errorf("%s: %q, want %q", ip, got, want)
 		}
 	}
 	// Without a log or declared hosts nothing is known.
 	dbClientLog.Store(nil)
 	dbDeclared.Store(nil)
-	if got := knownDBClient("203.0.113.7"); got != "" {
+	if got := knownDBClient("203.0.113.7", 3306); got != "" {
 		t.Errorf("no data: %q", got)
 	}
 }
@@ -203,6 +203,7 @@ func TestKnownDBClient(t *testing.T) {
 func TestKnownDBClientNoPanel(t *testing.T) {
 	oldFile, oldDecl := dbclients.AccessHostsFile, dbDeclared.Load()
 	dbclients.AccessHostsFile = t.TempDir() + "/mysqlaccesshosts"
+	withDeclaredSources(t, nil, errors.New("no mysql client"), nil, false)
 	t.Cleanup(func() {
 		dbclients.AccessHostsFile = oldFile
 		dbDeclared.Store(oldDecl)
@@ -231,7 +232,7 @@ func TestKnownDBClientNoPanel(t *testing.T) {
 		"203.0.113.51": "regular_client", // MongoDB
 		"203.0.113.52": "",
 	} {
-		if got := knownDBClient(ip); got != want {
+		if got := knownDBClient(ip, 3306); got != want {
 			t.Errorf("%s: %q, want %q", ip, got, want)
 		}
 	}
@@ -257,7 +258,89 @@ func TestKnownDBClientNeedsHeldConnection(t *testing.T) {
 	if got := regularClientsNotAllowed(3306); !reflect.DeepEqual(got, []string{"203.0.113.90"}) {
 		t.Fatalf("regular for closing: %v", got)
 	}
-	if got := knownDBClient("203.0.113.90"); got != "" {
+	if got := knownDBClient("203.0.113.90", 3306); got != "" {
 		t.Errorf("known without a held connection: %q", got)
+	}
+}
+
+// withDeclaredSources replaces the MySQL accounts and pg_hba.conf readers.
+func withDeclaredSources(t *testing.T, grants []dbclients.Declared, grantsErr error, hba []dbclients.Declared, hbaOK bool) {
+	t.Helper()
+	oldG, oldH := dbReadGrants, dbReadHBA
+	dbReadGrants = func() ([]dbclients.Declared, []string, error) { return grants, nil, grantsErr }
+	dbReadHBA = func() ([]dbclients.Declared, bool) { return hba, hbaOK }
+	t.Cleanup(func() { dbReadGrants, dbReadHBA = oldG, oldH })
+}
+
+// The database itself declares its clients on any server: the hosts of
+// MySQL's accounts for 3306, pg_hba.conf for 5432. A client that connects
+// for a moment (no held connection, never seen) is protected from the
+// first minute, for its own database only; a range wider than a /16 is
+// not.
+func TestKnownDBClientDeclaredByDatabase(t *testing.T) {
+	withDBClients(t, nil, map[string]bool{})
+	grants, _ := dbclients.ParseGrantHosts("%\nlocalhost\n203.0.113.20\n198.%.%.%\n")
+	hba := dbclients.ParsePGHBA("host all all 198.51.100.30/32 scram-sha-256\n")
+	oldCPanel := dbReadCPanel
+	dbReadCPanel = func() ([]dbclients.Declared, bool) { return nil, false }
+	t.Cleanup(func() { dbReadCPanel = oldCPanel })
+	withDeclaredSources(t, grants, nil, hba, true)
+	readDeclared()
+
+	for _, c := range []struct {
+		ip   string
+		port int
+		want string
+	}{
+		{"203.0.113.20", 3306, "mysql_grant"},
+		{"203.0.113.20", 5432, ""},
+		{"198.51.100.30", 5432, "pg_hba"},
+		{"198.51.100.30", 3306, ""},
+		{"198.51.100.30", 0, "pg_hba"}, // a log of unknown type
+		{"198.18.7.7", 3306, ""},       // 198.%.%.%: wider than a /16
+		{"203.0.113.21", 3306, ""},
+	} {
+		if got := knownDBClient(c.ip, c.port); got != c.want {
+			t.Errorf("%s on %d: %q, want %q", c.ip, c.port, got, c.want)
+		}
+	}
+	// Closing 5432 waits for the pg_hba client too.
+	if got := regularClientsNotAllowed(5432); !reflect.DeepEqual(got, []string{"198.51.100.30"}) {
+		t.Errorf("5432: %v", got)
+	}
+
+	// Reported with their port and source.
+	var sent api.DBClientsRequest
+	oldSend := dbSend
+	dbSend = func(_ *api.Client, req api.DBClientsRequest) error { sent = req; return nil }
+	t.Cleanup(func() { dbSend = oldSend })
+	if err := reportDBClients(nil, dbClientLog.Load()); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, d := range sent.Declared {
+		got[d.Entry] = fmt.Sprintf("%d %s", d.Port, d.Source)
+	}
+	want := map[string]string{"203.0.113.20": "3306 mysql_grants", "198.0.0.0/8": "3306 mysql_grants", "198.51.100.30": "5432 pg_hba"}
+	if !reflect.DeepEqual(got, want) || !sent.DeclaredRead {
+		t.Errorf("reported: %v", got)
+	}
+}
+
+// A source that cannot be read leaves the others: the WHM hosts stay when
+// MySQL refuses the agent and there is no pg_hba.conf.
+func TestReadDeclaredFailures(t *testing.T) {
+	oldDecl, oldCPanel := dbDeclared.Load(), dbReadCPanel
+	t.Cleanup(func() { dbDeclared.Store(oldDecl); dbReadCPanel = oldCPanel })
+	dbReadCPanel = func() ([]dbclients.Declared, bool) {
+		return []dbclients.Declared{{Entry: "192.0.2.9", Host: "192.0.2.9", Source: "cpanel_access_hosts"}}, true
+	}
+	withDeclaredSources(t, nil, errors.New("exit status 1"), nil, false)
+	readDeclared()
+	if d := dbDeclared.Load(); d == nil || len(*d) != 1 || (*d)[0].Entry != "192.0.2.9" {
+		t.Fatalf("declared: %v", d)
+	}
+	if got := knownDBClient("192.0.2.9", 3306); got != "declared_mysql_host" {
+		t.Errorf("cPanel host: %q", got)
 	}
 }
