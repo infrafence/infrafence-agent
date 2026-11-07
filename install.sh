@@ -221,7 +221,7 @@ dep_install_failed() {
     echo -e "    apt-get update --fix-missing && apt-get install -y ca-certificates curl iptables"
     echo -e "    ${CYAN}# Then re-run the installer${NC}"
     echo ""
-    echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+    echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to support@infrafence.com:${NC}"
     echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
     echo ""
     echo -e "  Please include this info:"
@@ -532,7 +532,7 @@ download_binary() {
         echo -e "  • Firewall blocking github.com (the release download is served from"
         echo -e "    github.com and release-assets.githubusercontent.com)"
         echo ""
-        echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+        echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to support@infrafence.com:${NC}"
         echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
         echo ""
         echo -e "  Please include this info:"
@@ -558,7 +558,7 @@ download_binary() {
             rm -f "$tmp" "${tmp}.sha256"
             report_status "download_failed" "Checksum not available from ${checksum_url}"
             error "Could not download the checksum from ${checksum_url}, so the agent can't be verified and was not installed.
-  See https://infrafence.com/docs/troubleshooting or write to info@infrafence.com."
+  See https://infrafence.com/docs/troubleshooting or write to support@infrafence.com."
         fi
         expected="$(awk '{print $1}' "${tmp}.sha256" 2>/dev/null)"
         actual="$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')"
@@ -567,7 +567,7 @@ download_binary() {
             rm -f "$tmp"
             report_status "download_failed" "Checksum mismatch"
             error "Checksum mismatch: the downloaded agent is not the published release and was not installed.
-  See https://infrafence.com/docs/troubleshooting or write to info@infrafence.com."
+  See https://infrafence.com/docs/troubleshooting or write to support@infrafence.com."
         fi
         success "Checksum verified."
     fi
@@ -650,7 +650,7 @@ register_agent() {
         echo -e "  • Server URL is unreachable"
         echo -e "  • Server limit reached for your plan"
         echo ""
-        echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to info@infrafence.com:${NC}"
+        echo -e "  ${BOLD}If the problem persists, see the troubleshooting guide or write to support@infrafence.com:${NC}"
         echo -e "  ${CYAN}https://infrafence.com/docs/troubleshooting${NC}"
         echo ""
         echo -e "  Please include this info:"
