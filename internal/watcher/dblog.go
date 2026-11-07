@@ -67,6 +67,9 @@ type DBWatcher struct {
 	onBan    BanFunc
 	onEvent  EventFunc
 	checkIP  CheckIPFunc
+	// knownClient says why an address must not be banned ("": it may be):
+	// a known client of a database port. See SetKnownClient.
+	knownClient func(ip string) string
 
 	mu          sync.Mutex
 	threshold   int
@@ -76,7 +79,30 @@ type DBWatcher struct {
 	whitelist   map[string]bool
 	wlNets      []*net.IPNet
 	monitorMode bool
+	// knownSeen: the guard's answer per address, for one window. dropped:
+	// the dropped connections (db_suspicious) per address, reported once a
+	// window.
+	knownSeen map[string]*dbKnown
+	dropped   map[string]*dbDropped
 }
+
+// dbKnown is the guard's answer for an address, asked at since.
+type dbKnown struct {
+	since time.Time
+	why   string
+	// geo: the country ban it was spared was reported.
+	geo bool
+}
+
+// dbDropped counts the dropped connections of an address since the window
+// that started at since was reported.
+type dbDropped struct {
+	since time.Time
+	lines int
+}
+
+// dbMaxEntries bounds each per-address map of the watcher.
+const dbMaxEntries = 50000
 
 // detectDBLogPaths returns all detected database log paths.
 func detectDBLogPaths() []DBLogPath {
@@ -271,6 +297,15 @@ func (w *DBWatcher) SetOnEvent(fn EventFunc) {
 	w.onEvent = fn
 }
 
+// SetKnownClient sets the guard consulted before a ban (country included):
+// an address knownClient names a reason for is not banned; its attack is
+// still reported, with action "not_banned".
+func (w *DBWatcher) SetKnownClient(knownClient func(ip string) string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.knownClient = knownClient
+}
+
 func (w *DBWatcher) SetMonitorMode(enabled bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -335,29 +370,50 @@ func (w *DBWatcher) cleanupLoop() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		w.mu.Lock()
-		now := time.Now()
-		for ip, times := range w.attempts {
-			var recent []time.Time
-			for _, t := range times {
-				if now.Sub(t) <= w.window {
-					recent = append(recent, t)
-				}
-			}
-			if len(recent) == 0 {
-				delete(w.attempts, ip)
-				delete(w.banned, ip)
-			} else {
-				w.attempts[ip] = recent
+		w.cleanup(time.Now())
+	}
+}
+
+// cleanup forgets what is out of the window: attempts, and with them the
+// address's ban state, the guard's answers and old dropped-connection
+// counts (kept one window more, so the next event carries them).
+func (w *DBWatcher) cleanup(now time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for ip, times := range w.attempts {
+		var recent []time.Time
+		for _, t := range times {
+			if now.Sub(t) <= w.window {
+				recent = append(recent, t)
 			}
 		}
-		const maxEntries = 50000
-		if len(w.attempts) > maxEntries {
-			w.attempts = make(map[string][]time.Time)
-			w.banned = make(map[string]bool)
-			log.Printf("[dbwatcher] attempts map exceeded %d entries — reset", maxEntries)
+		if len(recent) == 0 {
+			delete(w.attempts, ip)
+			delete(w.banned, ip)
+		} else {
+			w.attempts[ip] = recent
 		}
-		w.mu.Unlock()
+	}
+	for ip, k := range w.knownSeen {
+		if now.Sub(k.since) > w.window {
+			delete(w.knownSeen, ip)
+		}
+	}
+	for ip, d := range w.dropped {
+		if now.Sub(d.since) > 2*w.window {
+			delete(w.dropped, ip)
+		}
+	}
+	if len(w.attempts) > dbMaxEntries {
+		w.attempts = make(map[string][]time.Time)
+		w.banned = make(map[string]bool)
+		log.Printf("[dbwatcher] attempts map exceeded %d entries — reset", dbMaxEntries)
+	}
+	if len(w.knownSeen) > dbMaxEntries {
+		w.knownSeen = nil
+	}
+	if len(w.dropped) > dbMaxEntries {
+		w.dropped = nil
 	}
 }
 
@@ -459,28 +515,67 @@ func (w *DBWatcher) recordAttempt(ip, reason string) {
 	if w.isWhitelisted(ip) {
 		return
 	}
+	severity := "warning"
+	if reason == "db_brute_force" {
+		severity = "critical"
+	}
 
-	// Geoblocking
+	// Geoblocking (a known client is not banned for its country: reported
+	// once a window)
 	if w.checkIP != nil {
 		if banReason := w.checkIP(ip); banReason != "" {
-			w.banned[ip] = true
-			if w.monitorMode {
-				if w.onEvent != nil {
-					go w.onEvent(ip, reason, "critical", map[string]string{"reason": banReason})
+			k := w.known(ip, now)
+			if k == nil || k.why == "" {
+				w.banned[ip] = true
+				if w.monitorMode {
+					if w.onEvent != nil {
+						go w.onEvent(ip, reason, "critical", map[string]string{"reason": banReason})
+					}
+				} else {
+					go w.onBan(ip, banReason, 1)
 				}
-			} else {
-				go w.onBan(ip, banReason, 1)
+				return
 			}
+			if !k.geo {
+				k.geo = true
+				log.Printf("[dbwatcher] not banning %s for its country: known database client (%s, %s)", ip, k.why, banReason)
+				if w.onEvent != nil {
+					go w.onEvent(ip, reason, severity, map[string]string{
+						"reason":     banReason,
+						"action":     "not_banned",
+						"not_banned": k.why,
+					})
+				}
+			}
+		}
+	}
+
+	// A dropped connection (db_suspicious) is not an attack: legitimate
+	// clients drop connections all the time. Reported once a window, with
+	// the lines since the last report, never counted toward a ban. A port
+	// scanner that only leaves such lines is not banned by this watcher.
+	if reason != "db_brute_force" {
+		d := w.dropped[ip]
+		if d != nil && now.Sub(d.since) <= w.window {
+			d.lines++
 			return
 		}
+		lines := 1
+		if d != nil {
+			lines += d.lines
+		}
+		if w.dropped == nil {
+			w.dropped = make(map[string]*dbDropped)
+		}
+		w.dropped[ip] = &dbDropped{since: now}
+		if w.onEvent != nil {
+			go w.onEvent(ip, reason, severity, map[string]string{"lines": strconv.Itoa(lines)})
+		}
+		return
 	}
 
 	// Report event
 	if w.onEvent != nil {
-		severity := "warning"
-		if reason == "db_brute_force" {
-			severity = "critical"
-		}
 		go w.onEvent(ip, reason, severity, map[string]string{})
 	}
 
@@ -497,8 +592,41 @@ func (w *DBWatcher) recordAttempt(ip, reason string) {
 	if len(recent) >= w.threshold {
 		w.banned[ip] = true
 		count := len(recent)
-		if !w.monitorMode {
-			go w.onBan(ip, reason, count)
+		if w.monitorMode {
+			return
 		}
+		if k := w.known(ip, now); k != nil && k.why != "" {
+			// An application with a wrong or just changed password: not
+			// cut off. Reported once per window.
+			log.Printf("[dbwatcher] not banning %s: known database client (%s, %d failed logins)", ip, k.why, count)
+			if w.onEvent != nil {
+				go w.onEvent(ip, reason, "critical", map[string]string{
+					"reason":     reason,
+					"attempts":   strconv.Itoa(count),
+					"action":     "not_banned",
+					"not_banned": k.why,
+				})
+			}
+			return
+		}
+		go w.onBan(ip, reason, count)
 	}
+}
+
+// known returns the guard's answer for ip, asked at most once a window;
+// nil without a guard and in monitor mode, which bans nothing. Caller must
+// hold w.mu.
+func (w *DBWatcher) known(ip string, now time.Time) *dbKnown {
+	if w.knownClient == nil || w.monitorMode {
+		return nil
+	}
+	k := w.knownSeen[ip]
+	if k == nil || now.Sub(k.since) > w.window {
+		if w.knownSeen == nil {
+			w.knownSeen = make(map[string]*dbKnown)
+		}
+		k = &dbKnown{since: now, why: w.knownClient(ip)}
+		w.knownSeen[ip] = k
+	}
+	return k
 }

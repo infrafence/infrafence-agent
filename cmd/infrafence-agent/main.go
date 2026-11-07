@@ -620,6 +620,8 @@ func runAgent() {
 				}
 				return ""
 			})
+			// Regular and declared clients are never banned (dbclients.go).
+			dbW.SetKnownClient(knownDBClient)
 			log.Printf("[dbwatcher] database service detected")
 		}
 	} else {
