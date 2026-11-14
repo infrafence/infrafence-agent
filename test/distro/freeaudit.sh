@@ -96,6 +96,16 @@ snap_procs() { ps -eo pid=,comm= | awk '{print $1, $2}' | sort; }
 if command -v systemctl >/dev/null; then
   timeout 150 systemctl is-system-running --wait >/dev/null 2>&1 || true
 fi
+# EL8's rpm keeps a Berkeley DB environment (/var/lib/rpm/__db.NNN) that
+# its first reader creates. A fresh image (GitHub's runners) has none, an
+# image built locally may: removed here (a cache rpm regenerates; nothing
+# uses rpm in this container now), every run checks the audit creating them.
+if ls /var/lib/rpm/__db.* >/dev/null 2>&1 && ! pgrep -x 'rpm|dnf|yum|dnf-automatic' >/dev/null; then
+  rm -f /var/lib/rpm/__db.*
+fi
+if [ -d /var/lib/rpm ]; then
+  log "rpm Berkeley DB environment files before the audit: $(find /var/lib/rpm -maxdepth 1 -name '__db.*' | wc -l)"
+fi
 mkdir -p /tmp/freeaudit-snap
 S=/tmp/freeaudit-snap
 snap_files >$S/files.before; snap_state >$S/state.before; snap_procs >$S/procs.before
@@ -135,30 +145,42 @@ changes() { comm -3 "$1" "$2" | sed -e 's/^\t/> /' -e 't' -e 's/^/< /'; }
 #   - a directory whose size alone changed (overlayfs reports a new size when
 #     a directory is copied up to the container's layer; mtime unchanged);
 #   - on RPM distributions, rpm's SQLite shared-memory index
-#     (rpmdb.sqlite-shm in /var/lib/rpm or /usr/lib/sysimage/rpm, or the
-#     Berkeley DB environment files __db.00N on EL8, same size: every reader of the rpm database
-#     updates it, the database itself is unchanged) and the mtime of dnf's
+#     (rpmdb.sqlite-shm in /var/lib/rpm or /usr/lib/sysimage/rpm) and, on
+#     EL8, the Berkeley DB environment files /var/lib/rpm/__db.NNN, created
+#     by the first reader of a fresh image or modified (same type, mode and
+#     owner; never one removed), with the mtime of /var/lib/rpm itself:
+#     every reader of the rpm database does this, the database is unchanged and the mtime of dnf's
 #     cache directories (dnf -C takes a lock file there and removes it);
 #   - lines appended to the system log by other programs (printed below;
 #     containers share the kernel, so rsyslog also logs the veth events of
 #     the containers starting next to this one) and rsyslog's journal
 #     cursor (/var/lib/rsyslog/imjournal.state).
 tolerated() {
+  # Input: path|type|size|mtime|mode|uid|side, side "<" (before only) or
+  # ">" (after only); a path in both snapshots comes as a before/after pair.
   awk -F'|' '
-    { key=$1 "|" $2; rest=$4 "|" $5 "|" $6; size=$3
-      if (seen[key] == "") { seen[key]=$0; r[key]=rest; s[key]=size; c[key]=$0; next }
+    { key=$1 "|" $2; rest=$4 "|" $5 "|" $6; own=$5 "|" $6; size=$3
+      if (seen[key] == "") { seen[key]=$0; r[key]=rest; o[key]=own; s[key]=size; side[key]=$7; next }
       # second occurrence of the same path: both lines are its before/after
-      sameMeta = (r[key] == rest)
+      sameMeta = (r[key] == rest); sameOwn = (o[key] == own)
       if ($2 == "d" && sameMeta) { delete seen[key]; next }          # size only
       if ($1 ~ /^\/(var\/lib|usr\/lib\/sysimage)\/rpm\/rpmdb\.sqlite-shm$/) { delete seen[key]; next }
-      if ($1 ~ /^\/var\/lib\/rpm\/__db\.[0-9]+$/ && s[key] == size) { delete seen[key]; next }
+      if ($1 ~ /^\/var\/lib\/rpm\/__db\.[0-9]+$/ && $2 == "f" && sameOwn) { delete seen[key]; next }
+      if ($1 == "/var/lib/rpm" && $2 == "d" && sameOwn) { delete seen[key]; next }
       if ($2 == "d" && $1 ~ /^\/var\/cache\/(dnf|yum)(\/|$)/) { delete seen[key]; next }
       if ($1 ~ /^\/var\/log\/(messages|syslog|kern\.log)$/) { logs[$1]=1; delete seen[key]; next }
       if ($1 ~ /^\/var\/lib\/rsyslog(\/imjournal\.state)?$/) { delete seen[key]; next }
-      print c[key]; print $0; delete seen[key] }
-    END { for (k in seen) print seen[k]; for (l in logs) print "LOG " l }'
+      print seen[key]; print $0; delete seen[key] }
+    END {
+      for (k in seen) {
+        split(seen[k], f, "|")
+        # created by rpm (EL8 Berkeley DB environment), never one removed
+        if (side[k] == ">" && f[2] == "f" && f[1] ~ /^\/var\/lib\/rpm\/__db\.[0-9]+$/) continue
+        print seen[k]
+      }
+      for (l in logs) print "LOG " l }'
 }
-changes $S/files.before $S/files.after | sed 's/^[<>] //' | sort | tolerated >$S/files.diff
+changes $S/files.before $S/files.after | sed -E 's/^([<>]) (.*)$/\2|\1/' | sort | tolerated >$S/files.diff
 for l in $(sed -n 's/^LOG //p' $S/files.diff); do
   before=$(awk -F'|' -v p="$l" '$1==p {print $3}' $S/files.before)
   log "appended to $l during the audit:"; tail -c +"$((before + 1))" "$l" | sed 's/^/    /' | head -20
