@@ -57,6 +57,24 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 > **[Consigue tu token en infrafence.com](https://infrafence.com/add-server)** — el plan Starter es gratuito e incluye 1 servidor con protección completa.
 
+## Auditoría de seguridad gratuita
+
+Sin cuenta. En el servidor, como root:
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh
+```
+
+Descarga el agente, verifica su checksum y la firma de la release (con `openssl`, como `install.sh`: sin `openssl` se detiene antes de descargar nada), ejecuta una auditoría puntual de solo lectura (como máximo un minuto, con baja prioridad) y borra el binario. No instala nada ni cambia nada: ningún servicio, ninguna regla de firewall, ningún paquete, ningún archivo de configuración.
+
+- **Qué lee:** la configuración de SSH, los puertos en escucha (bases de datos, Redis, API de Docker… abiertos a internet), las actualizaciones pendientes según la caché del gestor de paquetes, el firewall y la protección contra fuerza bruta presentes, las cuentas con UID 0 o sin contraseña, los archivos del sistema escribibles por todos, los ajustes de PHP arriesgados, y los inicios de sesión SSH fallidos y los ataques web de las últimas 24 horas en los logs.
+- **Qué envía:** ids de comprobaciones y datos breves (por ejemplo `ssh.password_auth: yes`), recuentos y las direcciones que atacaron el servidor. Las direcciones atacantes son las de los logs del servidor: si hubo inicios de sesión fallidos o peticiones sospechosas desde tu propia oficina, o a través de una CDN o un proxy delante del servidor, esa dirección puede aparecer en la lista (el dashboard descarta la dirección desde la que se envía el informe). Nunca el nombre del host, las direcciones del servidor, nombres de usuario distintos de root, contenidos de archivos ni secretos. Cada campo se muestra antes del envío y, en una terminal, espera 5 segundos antes de enviar (Ctrl+C cancela, no se envía nada); recibes un enlace privado al resultado, válido 7 días.
+- **No enviar nada:** añade `--no-upload` y el informe solo se muestra en el terminal:
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh -s -- --no-upload
+```
+
 ---
 
 ## Qué detecta

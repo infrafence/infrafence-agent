@@ -341,6 +341,7 @@ func checkUsers() []Finding {
 		Title:          "Non-root users with UID 0",
 		Description:    fmt.Sprintf("Found %d non-root user(s) with UID 0", len(uid0Users)),
 		Recommendation: "Remove or fix users with UID 0 besides root",
+		Details:        map[string]string{"count": strconv.Itoa(len(uid0Users))},
 		Passed:         len(uid0Users) == 0,
 	})
 
@@ -362,6 +363,7 @@ func checkUsers() []Finding {
 			Title:          "Users with empty passwords",
 			Description:    fmt.Sprintf("Found %d user(s) with empty password hashes", emptyPw),
 			Recommendation: "Set passwords or lock accounts without passwords",
+			Details:        map[string]string{"count": strconv.Itoa(emptyPw)},
 			Passed:         emptyPw == 0,
 		})
 	}

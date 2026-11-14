@@ -628,3 +628,8 @@ func (s *scanner) scanLast(out string) {
 		s.add(Login{IP: ip, User: cleanUser(f[0]), Time: t}, "last")
 	}
 }
+
+// LineTime returns the time at the start of a syslog-format line (RFC 3339,
+// journalctl -o short-iso, or "Mmm dd hh:mm:ss" dated as ParseLine does
+// against ref).
+func LineTime(line string, ref time.Time) (time.Time, bool) { return lineTime(line, ref) }

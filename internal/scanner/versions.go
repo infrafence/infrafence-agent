@@ -31,24 +31,7 @@ func checkOSVersion() []Finding {
 		prettyName = id + " " + version
 	}
 
-	// EOL versions map
-	eolVersions := map[string][]string{
-		"ubuntu": {"14.04", "16.04", "18.04", "19.04", "19.10", "20.10", "21.04", "21.10", "22.10", "23.04", "23.10"},
-		"debian": {"7", "8", "9", "10"},
-		"centos": {"5", "6", "7", "8"},
-		"rhel":   {"6", "7"},
-		"amzn":   {"1"},
-	}
-
-	eol := false
-	if versions, ok := eolVersions[id]; ok {
-		for _, v := range versions {
-			if version == v {
-				eol = true
-				break
-			}
-		}
-	}
+	eol := OSEndOfLife(id, version)
 
 	severity := "info"
 	if eol {
@@ -65,6 +48,20 @@ func checkOSVersion() []Finding {
 		Details:        map[string]string{"os": id, "version": version, "eol": fmt.Sprintf("%v", eol)},
 		Passed:         !eol,
 	}}
+}
+
+// eolVersions are the releases without security updates any more (end of
+// standard support; Ubuntu ESM and Debian ELTS are paid extensions), as of
+// November 2026: Ubuntu 20.04 (May 2025) and the interim releases through
+// 25.04 (January 2026), Debian 11 (LTS until August 2026), Fedora up to 42
+// (May 2026), CentOS Stream 8 (May 2024), Amazon Linux 2 (June 2026).
+var eolVersions = map[string][]string{
+	"ubuntu": {"14.04", "16.04", "18.04", "19.04", "19.10", "20.04", "20.10", "21.04", "21.10", "22.10", "23.04", "23.10", "24.10", "25.04"},
+	"debian": {"7", "8", "9", "10", "11"},
+	"centos": {"5", "6", "7", "8"},
+	"rhel":   {"6", "7"},
+	"amzn":   {"1", "2"},
+	"fedora": {"36", "37", "38", "39", "40", "41", "42"},
 }
 
 // ─── Package Update Helpers ───
