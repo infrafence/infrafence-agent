@@ -57,6 +57,24 @@ Möchtest du zuerst sehen, was passieren würde? Füge `--dry-run` hinzu (kein T
 
 > **[Hol dir dein Token auf infrafence.com](https://infrafence.com/add-server)** — der Starter-Tarif ist kostenlos und umfasst 1 Server mit vollem Schutz.
 
+## Kostenloser Sicherheits-Audit
+
+Ohne Konto. Auf dem Server, als root:
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh
+```
+
+Er lädt den Agent herunter, prüft Prüfsumme und Release-Signatur (mit `openssl`, wie `install.sh`: ohne `openssl` bricht er ab, bevor etwas heruntergeladen wird), führt einen einmaligen, rein lesenden Audit aus (höchstens eine Minute, mit niedriger Priorität) und löscht das Binary wieder. Er installiert nichts und ändert nichts: kein Dienst, keine Firewall-Regel, kein Paket, keine Konfigurationsdatei.
+
+- **Was er liest:** die SSH-Konfiguration, die offenen Ports (Datenbanken, Redis, Docker-API… aus dem Internet erreichbar), ausstehende Updates aus dem Cache des Paketmanagers, die vorhandene Firewall und Brute-Force-Abwehr, Konten mit UID 0 oder ohne Passwort, für alle beschreibbare Systemdateien, riskante PHP-Einstellungen sowie die fehlgeschlagenen SSH-Logins und Web-Angriffe der letzten 24 Stunden in den Logs.
+- **Was er sendet:** Check-IDs und kurze Fakten (zum Beispiel `ssh.password_auth: yes`), Zählwerte und die Adressen, die den Server angegriffen haben. Die Angreiferadressen sind die aus den Logs des Servers: Kamen fehlgeschlagene Logins oder verdächtige Anfragen aus Ihrem eigenen Büro oder über ein CDN oder einen Proxy vor dem Server, kann diese Adresse in der Liste stehen (das Dashboard verwirft die Adresse, von der der Bericht hochgeladen wird). Nie den Hostnamen, die Adressen des Servers, andere Benutzernamen als root, Dateiinhalte oder Geheimnisse. Jedes Feld wird vor dem Senden angezeigt, und in einem Terminal wartet er vorher 5 Sekunden (Strg+C bricht ab, nichts wird gesendet); Sie erhalten einen privaten Link zum Ergebnis, 7 Tage gültig.
+- **Nichts senden:** mit `--no-upload` wird der Bericht nur im Terminal ausgegeben:
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh -s -- --no-upload
+```
+
 ---
 
 ## Was erkannt wird

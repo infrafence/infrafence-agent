@@ -63,6 +63,10 @@ jobs:
           # Built-in WAF rules, read by the dashboard's WAF page
           go run ./cmd/wafcatalog -version "${VERSION}" > build/waf-catalog.json
 
+          # The free server audit script (infrafence.com/audit.sh redirects
+          # to this release asset)
+          cp audit.sh build/audit.sh
+
       - name: Generate checksums
         working-directory: build
         run: |
@@ -70,6 +74,7 @@ jobs:
           sha256sum infrafence-agent-linux-arm64 > infrafence-agent-linux-arm64.sha256
           sha256sum infrafence-agent-linux-amd64-k8s > infrafence-agent-linux-amd64-k8s.sha256
           sha256sum infrafence-agent-linux-arm64-k8s > infrafence-agent-linux-arm64-k8s.sha256
+          sha256sum audit.sh > audit.sh.sha256
           cat *.sha256 > checksums.txt
 
       - name: Install Cosign
@@ -94,6 +99,9 @@ jobs:
             --output-signature infrafence-agent-linux-arm64-k8s.sig \
             infrafence-agent-linux-arm64-k8s
           cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
+            --output-signature audit.sh.sig \
+            audit.sh
+          cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes \
             --output-signature checksums.txt.sig \
             checksums.txt
 
@@ -105,6 +113,7 @@ jobs:
             build/infrafence-agent-linux-arm64
             build/infrafence-agent-linux-amd64-k8s
             build/infrafence-agent-linux-arm64-k8s
+            build/audit.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -119,6 +128,11 @@ jobs:
             ### Install
             ```bash
             curl -fsSL https://infrafence.com/install.sh | sudo bash -s -- --token <YOUR_TOKEN>
+            ```
+
+            ### Free server audit (read-only, installs nothing)
+            ```bash
+            curl -fsSL https://infrafence.com/audit.sh | sh
             ```
 
             ### Docker
@@ -155,6 +169,9 @@ jobs:
             build/checksums.txt.sig
             build/waf-catalog.json
             install.sh
+            build/audit.sh
+            build/audit.sh.sha256
+            build/audit.sh.sig
 
   docker:
     name: Docker Image

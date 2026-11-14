@@ -195,14 +195,17 @@ type ExposedDBPort struct {
 }
 
 // dbPorts are the database ports checked, in report order.
-var dbPorts = []struct {
-	port int
-	name string
-}{
+var dbPorts = []PortService{
 	{3306, "MySQL/MariaDB"},
 	{5432, "PostgreSQL"},
 	{6379, "Redis"},
 	{27017, "MongoDB"},
+}
+
+// PortService is a TCP port and the service that normally listens on it.
+type PortService struct {
+	Port int
+	Name string
 }
 
 // Replaced in tests.
@@ -218,10 +221,24 @@ func ExposedDBPortList() []ExposedDBPort {
 	return exposedDBPorts(dbSockets(), dbHasPublicV6())
 }
 
+// ExposedPortList is ExposedDBPortList for the ports of table, in table
+// order (same rules, same read-only source).
+func ExposedPortList(table []PortService) []ExposedDBPort {
+	return exposedPorts(dbSockets(), dbHasPublicV6(), table)
+}
+
 func exposedDBPorts(socks []netstate.Conn, publicV6 bool) []ExposedDBPort {
+	return exposedPorts(socks, publicV6, dbPorts)
+}
+
+func exposedPorts(socks []netstate.Conn, publicV6 bool, table []PortService) []ExposedDBPort {
 	const listen = 0x0A
 	var exposed []ExposedDBPort
-	for _, db := range dbPorts {
+	for _, entry := range table {
+		db := struct {
+			port int
+			name string
+		}{entry.Port, entry.Name}
 		var binds []string
 		seen := map[string]bool{}
 		ipv4 := false

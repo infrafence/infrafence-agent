@@ -67,6 +67,7 @@ func main() {
 	traefikLog := flag.String("traefik-log", "", "with -docker-sock: coolify-proxy's access log, off (\"\"), file or stdout (docker.go)")
 	traefikOut := flag.String("traefik-out", "", "with -traefik-log=stdout: the file the real Traefik's output goes to, served as the container's logs")
 	shopAddr := flag.String("shop", "", "serve a shop backend (200 to everything) on this address instead")
+	sigPub := flag.String("sig-pub", "", "sign the binary with a throwaway key (served at .sig) and write its public key here")
 	flag.Parse()
 	if *shopAddr != "" {
 		log.Fatal(http.ListenAndServe(*shopAddr, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -111,7 +112,29 @@ func main() {
 		checksum.Store(r.URL.Query().Get("mode"))
 		reply(w, map[string]any{"status": "ok"})
 	})
+	releaseSig := ""
+	if *sigPub != "" {
+		releaseSig = releaseSigner(bin, *sigPub)
+	}
+	audits := &auditStore{}
+	mux.HandleFunc("/api/v1/audit/report", audits.handleAuditReport)
+	mux.HandleFunc("/audit-state", audits.handleState)
+	mux.HandleFunc("/audit-last", audits.handleLast)
+	// Every request for a release file, for tests that must download nothing.
+	var releaseHits atomic.Int64
+	mux.HandleFunc("/release-hits", func(w http.ResponseWriter, r *http.Request) {
+		reply(w, map[string]any{"hits": releaseHits.Load()})
+	})
 	mux.HandleFunc("/releases/", func(w http.ResponseWriter, r *http.Request) {
+		releaseHits.Add(1)
+		if strings.HasSuffix(r.URL.Path, ".sig") {
+			if releaseSig == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = io.WriteString(w, releaseSig)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, ".sha256") {
 			switch checksum.Load() {
 			case "missing":

@@ -100,6 +100,9 @@ func main() {
 	case "preflight":
 		cmdPreflight(os.Args[2:])
 
+	case "audit":
+		cmdAudit(os.Args[2:])
+
 	case "uninstall":
 		cmdUninstall(os.Args[2:])
 
@@ -131,6 +134,8 @@ func printUsage() {
 	fmt.Println("  infrafence-agent version              print the installed version")
 	fmt.Println("  infrafence-agent check")
 	fmt.Println("  infrafence-agent preflight [--json]   read-only host compatibility scan")
+	fmt.Println("  infrafence-agent audit [--upload URL | --no-upload] [--json]")
+	fmt.Println("                                        free read-only security audit of this server")
 	fmt.Println("  infrafence-agent uninstall --clean    remove every change InfraFence made to this host")
 	fmt.Println("  infrafence-agent boot-sets [--install] create the ipsets saved iptables rulesets reference (run at boot)")
 	fmt.Println("  infrafence-agent panel <command> [args] --json   for the WHM and Plesk plugins (root only):")

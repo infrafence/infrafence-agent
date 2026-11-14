@@ -57,6 +57,24 @@ Vous voulez d'abord voir ce qu'il ferait ? Ajoutez `--dry-run` (sans token) : il
 
 > **[Obtenez votre jeton sur infrafence.com](https://infrafence.com/add-server)** — l'offre Starter est gratuite et inclut 1 serveur avec protection complète.
 
+## Audit de sécurité gratuit
+
+Sans compte. Sur le serveur, en root :
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh
+```
+
+Il télécharge l'agent, vérifie sa somme de contrôle et la signature de la release (avec `openssl`, comme `install.sh` : sans `openssl` il s'arrête avant de télécharger quoi que ce soit), lance un audit ponctuel en lecture seule (une minute au plus, en basse priorité) et supprime le binaire. Il n'installe rien et ne change rien : aucun service, aucune règle de pare-feu, aucun paquet, aucun fichier de configuration.
+
+- **Ce qu'il lit :** la configuration SSH, les ports en écoute (bases de données, Redis, API Docker… ouverts à internet), les mises à jour en attente d'après le cache du gestionnaire de paquets, le pare-feu et la protection contre la force brute en place, les comptes en UID 0 ou sans mot de passe, les fichiers système modifiables par tous, les réglages PHP risqués, ainsi que les connexions SSH échouées et les attaques web des dernières 24 heures dans les journaux.
+- **Ce qu'il envoie :** des identifiants de contrôles et des faits courts (par exemple `ssh.password_auth: yes`), des comptages et les adresses qui ont attaqué le serveur. Les adresses des attaquants sont celles des journaux du serveur : si des connexions échouées ou des requêtes suspectes venaient de votre propre bureau, ou passaient par un CDN ou un proxy devant le serveur, cette adresse peut figurer dans la liste (le dashboard écarte l'adresse depuis laquelle le rapport est envoyé). Jamais le nom d'hôte, les adresses du serveur, les noms d'utilisateur autres que root, le contenu de fichiers ni de secrets. Chaque champ est affiché avant l'envoi et, dans un terminal, il attend 5 secondes avant d'envoyer (Ctrl+C annule, rien n'est envoyé) ; vous recevez un lien privé vers le résultat, valable 7 jours.
+- **Ne rien envoyer :** ajoutez `--no-upload` et le rapport est seulement affiché dans le terminal :
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh -s -- --no-upload
+```
+
 ---
 
 ## Ce qu'il détecte

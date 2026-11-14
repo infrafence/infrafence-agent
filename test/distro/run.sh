@@ -4,7 +4,10 @@
 # has (rsyslog only where the distribution installs it), then
 # test/distro/inside.sh — real install.sh, SSH brute force from another
 # network namespace, detection, firewall ban, blocked connection, clean
-# uninstall. Needs Docker. Usage: test/distro/run.sh [distro...]
+# uninstall. Before that, test/distro/freeaudit.sh: the free server audit
+# (audit.sh, `infrafence-agent audit`) on the host as it was, read-only.
+# Needs Docker. Usage: test/distro/run.sh [distro...]
+# ONLY_AUDIT=1 runs the audit step alone (quicker, not the release gate).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -40,7 +43,8 @@ version=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -ldflags "-s -w -X main.version=${version}-test" -o "$work/agent" ./cmd/infrafence-agent || exit 1
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$work/mockapi" ./test/distro/mockapi || exit 1
 CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$work/mkmmdb" ./test/distro/mkmmdb || exit 1
-cp install.sh test/distro/*.sh "$work/"
+CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$work/auditcheck" ./test/distro/auditcheck || exit 1
+cp install.sh audit.sh test/distro/*.sh "$work/"
 
 want=("$@")
 results=()
@@ -83,6 +87,18 @@ while IFS='|' read -r name image pm rsyslog; do
     docker exec "$cid" systemctl is-system-running 2>/dev/null | grep -qE 'running|degraded' && break
     sleep 1
   done
+  # ── the free server audit, on the host before anything is installed ──
+  aout=$(docker exec "$cid" timeout 900 bash /distro/freeaudit.sh 2>&1)
+  echo "$aout" | grep -v '^AUDITRESULT' | tail -80
+  aline=$(echo "$aout" | grep '^AUDITRESULT' | tail -1)
+  [ -n "$aline" ] || aline="AUDITRESULT audit=no-result"
+  [[ "$aline" == "AUDITRESULT audit=ok"* ]] || status=1
+  if [ "${ONLY_AUDIT:-}" = 1 ]; then
+    results+=("RESULT distro=$name ${aline#AUDITRESULT } arch=$goarch")
+    docker rm -f "$cid" >/dev/null
+    continue
+  fi
+
   # A distro that hangs (a package prompt, a stuck service) fails on its own instead of
   # stopping the whole matrix.
   out=$(docker exec -e DISTRO="$name" "$cid" timeout 3600 bash /distro/inside.sh 2>&1)
@@ -118,7 +134,7 @@ while IFS='|' read -r name image pm rsyslog; do
   echo "$bout" | grep -v '^BOOTRESULT' | tail -60
   [ -n "$boot" ] || boot="BOOTRESULT boot=no-result"
   [[ "$boot" == "BOOTRESULT boot=ok"* || "$boot" == "BOOTRESULT boot=skip"* ]] || status=1
-  results+=("$line ${boot#BOOTRESULT } arch=$goarch")
+  results+=("$line ${boot#BOOTRESULT } ${aline#AUDITRESULT } arch=$goarch")
   docker rm -f "$cid" >/dev/null
 done <<<"$MATRIX"
 

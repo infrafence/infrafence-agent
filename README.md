@@ -57,6 +57,24 @@ Want to see what it would do first? Add `--dry-run` (no token needed): it downlo
 
 > **[Get your token at infrafence.com](https://infrafence.com/add-server)** — the Starter plan is free and includes 1 server with full protection.
 
+## Free security audit
+
+No account needed. On the server, as root:
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh
+```
+
+It downloads the agent, verifies its checksum and release signature (with `openssl`, as `install.sh` does: without `openssl` it stops before downloading anything), runs a one-shot read-only audit (at most a minute, at low priority) and deletes the binary. It installs nothing and changes nothing: no service, no firewall rule, no package, no configuration file.
+
+- **What it reads:** the SSH configuration, the listening ports (databases, Redis, Docker API… open to the internet), pending updates from the package manager's cache, the firewall and brute-force protection in place, accounts with UID 0 or no password, world-writable system files, risky PHP settings, and the failed SSH logins and web attacks of the last 24 hours in the logs.
+- **What it sends:** check ids and short facts (for example `ssh.password_auth: yes`), counts, and the addresses that attacked the server. The attacking addresses are the ones in the server's logs: if failed logins or suspicious requests came from your own office, or through a CDN or proxy in front of the server, that address can be in the list (the dashboard drops the address the report is uploaded from). Never the host name, the server's addresses, user names other than root, file contents or secrets. Every field is printed before it is sent, and in a terminal it waits 5 seconds first (Ctrl+C cancels, nothing is sent); you get a private link to the result, valid for 7 days.
+- **Send nothing:** add `--no-upload` and the report is printed in the terminal only:
+
+```bash
+curl -fsSL https://infrafence.com/audit.sh | sh -s -- --no-upload
+```
+
 ---
 
 ## What it detects
