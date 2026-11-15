@@ -269,6 +269,40 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 ---
 
+## Routers and firewalls
+
+The same dashboard also protects networks from the router or the firewall in front of them. They connect like a server, with their own install token.
+
+### OpenWrt and GL.iNet routers
+
+`infrafence-router` is a separate, light agent for the router. It blocks your bans and the InfraFence network threat feed at the router's firewall for every device behind it, blocks malware, phishing and crypto-mining domains in the router's DNS (dnsmasq), and reports devices on your network that talk to command-and-control servers or mining pools. A new router starts in **Learning**: it reports everything and blocks nothing until you switch it to Full protection.
+
+**Supported:** OpenWrt 21.02 to 25.12 and GL.iNet firmware 4.x; MIPS, MIPSel, ARMv7, ARM64 or x86-64; 16 MB of flash with 4 MB free and 128 MB of RAM.
+
+In the dashboard open **Servers → Add server → Router (OpenWrt / GL.iNet)** for a token, then on the router, as root over SSH:
+
+```sh
+wget -qO- https://pkg.infrafence.com/router-install.sh | sh -s -- --token <YOUR_TOKEN>
+```
+
+The installer checks the router first and changes nothing if a check fails, then adds the signed InfraFence feed and installs the agent (and the LuCI page, *Services → InfraFence*). On GL.iNet the agent then also shows in *Applications → Plug-ins*. After a firmware upgrade, run the command again. Details: [Router agent](https://infrafence.com/docs/router-agent).
+
+### OPNsense firewalls
+
+The `os-infrafence` plugin installs the agent on an OPNsense firewall. It fills only its own pf tables (bans, threat feed, blocked countries) behind block-only rules on the interfaces you choose, never adds a pass rule and never changes your rules or `config.xml`. It reads the firewall log, Suricata, SSH, GUI and VPN logins, and checks the firewall configuration read-only.
+
+**Supported:** OPNsense 26.1 and 26.7, amd64 and aarch64.
+
+In the dashboard open **Servers → Add server → OPNsense** for a token, then on the firewall, as root (over SSH or *Diagnostics → Command Prompt*):
+
+```sh
+fetch -o - https://pkg.infrafence.com/opnsense-install.sh | sh
+```
+
+It adds the signed InfraFence repository and installs the plugin; updates then arrive from *System → Firmware* like any plugin. Open *Services → InfraFence*, choose the interfaces, paste the token and connect. Details: [OPNsense](https://infrafence.com/docs/opnsense).
+
+---
+
 ## Configuration
 
 Almost everything is configured from the dashboard and reaches the servers in about a second: brute-force thresholds, ban duration, monitor mode, WAF rules, bot choices, whitelist, blocked countries, malware scan schedule, DNS inspection, web server changes, threat-list blocking, auto-updates. Full reference: [Configuration](https://infrafence.com/docs/configuration).
