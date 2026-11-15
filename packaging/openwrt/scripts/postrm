@@ -1,0 +1,11 @@
+#!/bin/sh
+[ -n "$IPKG_INSTROOT" ] && exit 0
+[ "$1" = "upgrade" ] && exit 0
+if uci -q get firewall.infrafence >/dev/null; then
+	uci -q delete firewall.infrafence
+	uci -q commit firewall
+fi
+rm -rf /tmp/infrafence /var/run/infrafence
+# /etc/infrafence (registration, device key secret) is kept for a
+# reinstall; remove it to forget this router: rm -rf /etc/infrafence
+exit 0

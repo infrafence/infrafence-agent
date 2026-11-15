@@ -1,0 +1,19 @@
+#!/bin/sh
+# Not while building a firmware image.
+[ -n "$IPKG_INSTROOT" ] && exit 0
+# Run the firewall include after every firewall reload (removed by postrm).
+if ! uci -q get firewall.infrafence >/dev/null; then
+	uci -q batch <<-'UCI'
+		set firewall.infrafence=include
+		set firewall.infrafence.type='script'
+		set firewall.infrafence.path='/usr/share/infrafence/firewall.include'
+		set firewall.infrafence.reload='1'
+		set firewall.infrafence.fw4_compatible='1'
+		commit firewall
+	UCI
+fi
+mkdir -p /etc/infrafence && chmod 700 /etc/infrafence
+/etc/init.d/infrafence enable
+# Upgrade: the new binary takes over; first install: starts once registered.
+/etc/init.d/infrafence restart
+exit 0

@@ -277,13 +277,16 @@ type RegisterRequest struct {
 	OS           string `json:"os"`
 	OSVersion    string `json:"os_version"`
 	Version      string `json:"version"`
-	// Appliance builds only (the server agent leaves them out): what kind
-	// of agent registers ("opnsense"), the mode picked at install
-	// ("protect" or "monitor"; an older dashboard ignores it and the
-	// token's mode applies) and the platform details.
-	Kind     string    `json:"kind,omitempty"`
-	Mode     string    `json:"mode,omitempty"`
-	Platform *Platform `json:"platform,omitempty"`
+	// Set by the appliance (OPNsense) and router builds only; the server agent
+	// leaves them empty, so its register body is unchanged. Kind: "opnsense" or
+	// "router"; Mode: the mode picked at install ("protect" or "monitor"; an
+	// older dashboard ignores it and the token's mode applies).
+	Kind         string    `json:"kind,omitempty"`
+	Mode         string    `json:"mode,omitempty"`
+	Platform     *Platform `json:"platform,omitempty"`
+	Board        string    `json:"board,omitempty"`
+	Arch         string    `json:"arch,omitempty"`
+	Capabilities []string  `json:"capabilities,omitempty"`
 }
 
 // Platform describes an appliance (register and heartbeat).
@@ -369,12 +372,13 @@ type HeartbeatRequest struct {
 	// is off and what to change (watcher.WebDetection).
 	WebDetection any `json:"web_detection,omitempty"`
 
-	// Appliance builds only: the agent kind, what this agent can do (the
-	// dashboard hides the rest) and the appliance's state. Absent from the
-	// server agent's heartbeat.
-	Kind         string   `json:"kind,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
-	Appliance    any      `json:"appliance,omitempty"`
+	// Appliance and router builds only: the agent kind, what this agent can do
+	// (the dashboard hides the rest) and its state. Absent from the server
+	// agent's heartbeat.
+	Kind         string      `json:"kind,omitempty"`
+	Capabilities []string    `json:"capabilities,omitempty"`
+	Appliance    any         `json:"appliance,omitempty"`
+	RouterInfo   *RouterInfo `json:"router_info,omitempty"`
 }
 
 // VerifyDNS: the domain has no document root on the host, so its trust

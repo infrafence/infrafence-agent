@@ -58,6 +58,16 @@ type state struct {
 	InfoCalls map[string]int `json:"info_calls"`
 	// SSHLogins is the latest login history the agent sent.
 	SSHLogins json.RawMessage `json:"ssh_logins,omitempty"`
+	// Router agent (test/router): the register body, the latest device
+	// inventory, the rule acknowledgements and the domain list requests.
+	RegisterBody  json.RawMessage   `json:"register_body,omitempty"`
+	RouterDevices json.RawMessage   `json:"router_devices,omitempty"`
+	RuleAcks      []json.RawMessage `json:"rule_acks,omitempty"`
+	DomainLists   int               `json:"domain_list_requests"`
+	SyncQueries   []string          `json:"sync_queries,omitempty"`
+	// domains is the router domain list served at
+	// /api/v1/agent/router/domains (set through /set-domains).
+	domains []byte
 	// extra holds fields set through /set-sync, merged into every sync
 	// reply; version bumps on each change so the agent syncs again.
 	extra   map[string]json.RawMessage
@@ -73,6 +83,7 @@ func main() {
 	traefikOut := flag.String("traefik-out", "", "with -traefik-log=stdout: the file the real Traefik's output goes to, served as the container's logs")
 	shopAddr := flag.String("shop", "", "serve a shop backend (200 to everything) on this address instead")
 	sigPub := flag.String("sig-pub", "", "sign the binary with a throwaway key (served at .sig) and write its public key here")
+	feedDir := flag.String("feed", "", "serve this directory at /feed/ (the router package feed, test/router)")
 	flag.Parse()
 	if *shopAddr != "" {
 		log.Fatal(http.ListenAndServe(*shopAddr, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -155,7 +166,7 @@ func main() {
 		_, _ = w.Write(bin)
 	})
 	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 		var reg map[string]any
 		if json.Unmarshal(body, &reg) == nil {
 			if _, ok := reg["install_token"]; ok {
@@ -167,6 +178,7 @@ func main() {
 		st.Registered = true
 		if json.Valid(body) {
 			st.LastRegister = body
+			st.RegisterBody = body
 		}
 		st.mu.Unlock()
 		reply(w, map[string]any{"token": "distro-test-token", "agent": map[string]any{"id": 1}})
@@ -185,6 +197,9 @@ func main() {
 	mux.HandleFunc("/api/v1/agent/sync", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.Syncs++
+		if q := r.URL.RawQuery; q != "" && len(st.SyncQueries) < 20 {
+			st.SyncQueries = append(st.SyncQueries, q)
+		}
 		out := map[string]any{
 			"status": "ok",
 			"config": map[string]any{"bf_threshold": 5, "bf_window": 60, "monitor_mode": false},
@@ -471,6 +486,57 @@ func main() {
 		keep(&st.MalwareCompletes, r)
 		reply(w, map[string]any{"status": "ok"})
 	})
+	// Router agent: the domain list (ETag'd, If-None-Match answered 304),
+	// the device inventory and rule acknowledgements.
+	mux.HandleFunc("/set-domains", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+		st.mu.Lock()
+		st.domains = body
+		st.version++
+		st.mu.Unlock()
+		sum := sha256.Sum256(body)
+		reply(w, map[string]any{"status": "ok", "etag": `"` + hex.EncodeToString(sum[:8]) + `"`})
+	})
+	mux.HandleFunc("/api/v1/agent/router/domains", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		st.DomainLists++
+		body := st.domains
+		st.mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer distro-test-token" {
+			http.Error(w, `{"message":"Unauthenticated."}`, http.StatusUnauthorized)
+			return
+		}
+		sum := sha256.Sum256(body)
+		tag := `"` + hex.EncodeToString(sum[:8]) + `"`
+		w.Header().Set("ETag", tag)
+		if r.Header.Get("If-None-Match") == tag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(body)
+	})
+	mux.HandleFunc("/api/v1/agent/router-devices", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if json.Valid(body) {
+			st.mu.Lock()
+			st.RouterDevices = body
+			st.mu.Unlock()
+		}
+		reply(w, map[string]any{"status": "ok"})
+	})
+	mux.HandleFunc("/api/v1/agent/rules/", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+		st.mu.Lock()
+		if json.Valid(body) && len(st.RuleAcks) < 200 {
+			st.RuleAcks = append(st.RuleAcks, json.RawMessage(`{"path":`+strconv.Quote(r.URL.Path)+`,"body":`+string(body)+`}`))
+		}
+		st.mu.Unlock()
+		reply(w, map[string]any{"status": "ok"})
+	})
+	if *feedDir != "" {
+		mux.Handle("/feed/", http.StripPrefix("/feed/", http.FileServer(http.Dir(*feedDir))))
+	}
 	mux.HandleFunc("/state", func(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -482,8 +548,30 @@ func main() {
 		reply(w, map[string]any{"status": "ok"})
 	})
 
+	// Test control: /ratelimit?path=/api/v1/agent/router-devices&on=1
+	// answers 429 (Retry-After: 60) on that path until on=0 (router test).
+	var limitedMu sync.Mutex
+	limited := map[string]bool{}
+	var limitedHits atomic.Int64
+	mux.HandleFunc("/ratelimit", func(w http.ResponseWriter, r *http.Request) {
+		limitedMu.Lock()
+		limited[r.URL.Query().Get("path")] = r.URL.Query().Get("on") == "1"
+		limitedMu.Unlock()
+		reply(w, map[string]any{"status": "ok", "hits": limitedHits.Load()})
+	})
+
 	log.Printf("mockapi listening on %s", *addr)
 	log.Fatal(http.ListenAndServe(*addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limitedMu.Lock()
+		isLimited := limited[r.URL.Path]
+		limitedMu.Unlock()
+		if isLimited {
+			limitedHits.Add(1)
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, `{"message":"Too Many Attempts."}`, http.StatusTooManyRequests)
+			return
+		}
 		if offline.Load() && strings.HasPrefix(r.URL.Path, "/api/") {
 			http.Error(w, "offline", http.StatusServiceUnavailable)
 			return

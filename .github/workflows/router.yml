@@ -1,0 +1,117 @@
+name: Router agent (OpenWrt)
+
+# The OpenWrt / GL.iNet router agent (cmd/infrafence-router): unit tests,
+# binaries for every router architecture, the opkg and apk packages and
+# feeds, and the end-to-end test on real OpenWrt images in QEMU
+# (test/router/run.sh). Pull requests and manual runs only: nothing here
+# publishes a feed or attaches to a release. The launch pull request adds
+# the publishing job (packaging/openwrt/README.md, "Launch").
+on:
+  pull_request:
+    paths:
+      - "cmd/infrafence-router/**"
+      - "internal/router/**"
+      - "internal/api/**"
+      - "internal/config/**"
+      - "internal/backoff/**"
+      - "packaging/openwrt/**"
+      - "test/router/**"
+      - "test/distro/mockapi/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/router.yml"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "QEMU targets (space separated; empty: all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - name: Vet and test
+        run: |
+          go vet ./cmd/infrafence-router/... ./internal/router/... ./internal/api/... ./packaging/...
+          go test -race ./cmd/infrafence-router/... ./internal/router/... ./internal/api/... ./packaging/...
+
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - name: Binaries
+        run: |
+          version=$(git describe --tags --always | sed 's/^v//')
+          packaging/openwrt/build-binaries.sh build/bin "${version}-router"
+          for f in build/bin/*; do printf '%s %s gzip=%s\n' "$(basename "$f")" "$(stat -c %s "$f")" "$(gzip -9c "$f" | wc -c)"; done | tee build/sizes.txt
+      # Throwaway keys: these packages are for testing, not for routers.
+      # The release keys are only used by the launch's publishing job.
+      - name: Packages and feeds (test keys)
+        run: |
+          mkdir -p build/keys
+          go run ./packaging/openwrt/owrtpkg keygen -sec build/keys/usign.sec -pub build/keys/usign.pub -c "InfraFence CI test feed"
+          openssl ecparam -name prime256v1 -genkey -noout -out build/keys/apk.sec
+          openssl ec -in build/keys/apk.sec -pubout -out build/keys/apk.pub
+          version=$(git describe --tags --always | sed 's/^v//')
+          USIGN_SEC=build/keys/usign.sec USIGN_PUB=build/keys/usign.pub APK_SEC=build/keys/apk.sec APK_PUB=build/keys/apk.pub \
+            packaging/openwrt/build-packages.sh build/bin "${version}-router" build/feed
+          rm build/keys/*.sec
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: router-packages
+          path: |
+            build/bin
+            build/feed
+            build/sizes.txt
+          retention-days: 14
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86-24.10, x86-25.12, malta-le-24.10, x86-21.02-fw3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/infrafence-router-test
+          key: openwrt-images-${{ matrix.target }}-v1
+      - name: QEMU end-to-end
+        if: github.event_name != 'workflow_dispatch' || inputs.targets == '' || contains(inputs.targets, matrix.target)
+        run: LOGDIR=$PWD/logs test/router/run.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: router-e2e-${{ matrix.target }}
+          path: logs
+          retention-days: 14

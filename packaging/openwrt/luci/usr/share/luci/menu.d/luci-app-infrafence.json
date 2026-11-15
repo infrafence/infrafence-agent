@@ -1,0 +1,14 @@
+{
+	"admin/services/infrafence": {
+		"title": "InfraFence",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "infrafence/status"
+		},
+		"depends": {
+			"acl": [ "luci-app-infrafence" ],
+			"uci": { "infrafence": true }
+		}
+	}
+}
