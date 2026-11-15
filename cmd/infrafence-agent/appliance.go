@@ -752,6 +752,9 @@ func (a *appliance) onFilter(r opnsense.FilterRecord) {
 		d := s.Details()
 		d["detection"] = "filterlog"
 		d["interface"] = r.Interface
+		// The dashboard keeps such sources out of reputation, network
+		// bans, AutoMode and aggregates.
+		d["unauthenticated_source"] = "true"
 		// Blocked packets never completed a handshake: the source can be
 		// forged, so a scan is reported, never banned here (unlike the
 		// server agent's port_scan_ban, which sees accepted SYNs only).
@@ -797,6 +800,10 @@ func (a *appliance) onIDS(al opnsense.IDSAlert) {
 		"interface":    al.Interface,
 		"engine":       "suricata",
 	}
+	// Outside TCP (UDP, ICMP, ...) nothing proves the source address.
+	if !strings.EqualFold(al.Proto, "tcp") {
+		d["unauthenticated_source"] = "true"
+	}
 	if al.Alert.Rev > 0 {
 		d["rev"] = strconv.Itoa(al.Alert.Rev)
 	}
@@ -836,7 +843,8 @@ func (a *appliance) reportBlocks(now time.Time) {
 		}
 		return strings.Join(parts, ",")
 	}
-	d := map[string]string{"from": s.From, "to": s.To, "blocked": strconv.Itoa(s.Blocked),
+	// Blocked packets: every listed source may be forged.
+	d := map[string]string{"unauthenticated_source": "true", "from": s.From, "to": s.To, "blocked": strconv.Itoa(s.Blocked),
 		"distinct_sources": strconv.Itoa(s.DistinctSources), "top_sources": join(s.TopSources), "top_ports": join(s.TopPorts)}
 	if s.Truncated {
 		d["truncated"] = "true"

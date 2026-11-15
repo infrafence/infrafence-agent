@@ -544,3 +544,43 @@ func positiveEntries(list []string) []string {
 	}
 	return out
 }
+
+func TestApplianceUnauthenticatedSourceFlag(t *testing.T) {
+	a, _, dash := testAppliance(t)
+	a.sync()
+	// filterlog: port scan and the blocks summary carry the flag.
+	for p := 2000; p < 2020; p++ {
+		a.onFilter(opnsense.FilterRecord{Action: "block", Dir: "in", Interface: "vtnet1", Proto: "tcp", Src: "45.155.205.98", Dst: "85.1.2.3", DstPort: p})
+	}
+	a.reportBlocks(time.Now())
+	// IDS: UDP flagged, TCP not.
+	udp, _ := opnsense.ParseEve(`{"event_type":"alert","src_ip":"45.155.205.50","src_port":53,"dest_ip":"85.1.2.3","dest_port":5060,"proto":"UDP","alert":{"signature_id":1,"signature":"x","severity":2}}`)
+	tcp, _ := opnsense.ParseEve(`{"event_type":"alert","src_ip":"45.155.205.51","src_port":5,"dest_ip":"85.1.2.3","dest_port":443,"proto":"TCP","alert":{"signature_id":2,"signature":"y","severity":2}}`)
+	a.onIDS(udp)
+	a.onIDS(tcp)
+	// Authenticated or TCP-handshake sources: no flag.
+	for i := 0; i < 3; i++ {
+		a.onAuth(opnsense.AuthEvent{Service: "ssh", Result: "failure", IP: "45.155.205.233", Reason: "brute_force_ssh"})
+	}
+	a.onAuth(opnsense.AuthEvent{Service: "opnsense-gui", Result: "success", IP: "62.4.1.9", User: "root"})
+	flush(t, a)
+	flag := func(e api.EventRequest) bool { return e.Details["unauthenticated_source"] == "true" }
+	for _, typ := range []string{"port_scan", "fw_blocks"} {
+		ev := dash.eventsOf(typ)
+		if len(ev) != 1 || !flag(ev[0]) {
+			t.Errorf("%s: %+v", typ, ev)
+		}
+	}
+	for _, e := range dash.eventsOf("ids_alert") {
+		if want := e.SourceIP == "45.155.205.50"; flag(e) != want {
+			t.Errorf("ids_alert %s flag=%v", e.SourceIP, flag(e))
+		}
+	}
+	for _, typ := range []string{"brute_force", "admin_login"} {
+		for _, e := range dash.eventsOf(typ) {
+			if flag(e) {
+				t.Errorf("%s from an authenticated source flagged: %+v", typ, e)
+			}
+		}
+	}
+}
