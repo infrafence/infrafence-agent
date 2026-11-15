@@ -2,6 +2,10 @@
 <?php
 
 /*
+ * Copyright (c) 2026 ComCart S.r.l. SPDX-License-Identifier: BSD-2-Clause (see LICENSE). The InfraFence agent this plugin runs is licensed separately (BSL 1.1).
+ */
+
+/*
  * Registers the agent once. The install token comes from the root-only
  * spool file the GUI controller wrote (never configd parameters, never
  * argv) and reaches the agent on stdin; the spool file is removed first.

@@ -118,3 +118,9 @@ Plugin updates then arrive through System › Firmware like any plugin.
   - checks bans, brute force, port scan, IDS, Learning, filter reload, reboot and uninstall
 
   In CI it runs on demand: Actions › OPNsense › Run workflow › opnsense_vm.
+
+## Licence
+
+The plugin (`packaging/opnsense/plugin/`) is licensed under the BSD 2-Clause License, see
+`packaging/opnsense/plugin/LICENSE`, as OPNsense's community plugins require. The InfraFence agent it
+installs and runs stays under the repository's licence (BSL 1.1, `LICENSE` at the root).

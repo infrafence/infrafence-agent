@@ -1,6 +1,10 @@
 <?php
 
 /*
+ * Copyright (c) 2026 ComCart S.r.l. SPDX-License-Identifier: BSD-2-Clause (see LICENSE). The InfraFence agent this plugin runs is licensed separately (BSL 1.1).
+ */
+
+/*
  * os-infrafence plugin hooks. Function names start with the file name.
  * A PHP error here makes OPNsense skip the plugin (/tmp/PHP_errors.log).
  */
