@@ -1,0 +1,61 @@
+#!/usr/bin/expect -f
+# Boots an OpenWrt image in QEMU (serial console) and runs the test phases
+# of guest.sh in it: install, reboot, after-reboot, uninstall.
+# Usage: expect boot.exp <target> <file with the qemu command line>
+set timeout 900
+log_user 1
+set target [lindex $argv 0]
+set f [open [lindex $argv 1]]
+set qemu [string trim [read $f]]
+close $f
+set prompt {root@[^:]*:[^#]*# $}
+
+proc boot {} {
+	global prompt
+	expect {
+		"Please press Enter to activate this console." {}
+		timeout { puts "\nBOOT-TIMEOUT"; exit 2 }
+	}
+	sleep 2
+	send "\r"
+	expect -re $prompt
+	# Wait until procd brought the LAN up (the console comes first).
+	# Kernel messages on the console would break the prompt matching.
+	send "dmesg -n 1; ubus -t 120 wait_for network.interface.lan; sleep 8; echo BOOT''ED\r"
+	expect "BOOTED"
+	expect -re $prompt
+}
+
+proc phase {name} {
+	global prompt target
+	set timeout 1500
+	send "sh /root/guest.sh $name $target 2>&1; echo PHASE''-END\r"
+	expect {
+		"PHASE-END" {}
+		timeout { puts "\nPHASE-TIMEOUT $name"; exit 3 }
+	}
+	expect -re $prompt
+}
+
+eval spawn $qemu
+boot
+# The LAN is QEMU's user network: the router is 10.0.2.15, QEMU's host
+# (the mock dashboard and the package feed) 10.0.2.2, its DNS 10.0.2.3.
+# Set in UCI so it survives the reboot.
+send "uci set network.lan.proto=static; uci set network.lan.ipaddr=10.0.2.15; uci set network.lan.netmask=255.255.255.0; uci set network.lan.gateway=10.0.2.2; uci -q delete network.lan.dns; uci add_list network.lan.dns=10.0.2.3; uci commit network; /etc/init.d/network restart; sleep 10; echo NET''OK\r"
+expect "NETOK"
+expect -re $prompt
+send "for i in 1 2 3 4 5 6 7 8 9 10; do wget -q -T 10 -O /root/guest.sh http://10.0.2.2:8080/feed/guest.sh && break; sleep 6; done; test -s /root/guest.sh && echo FET''CHED\r"
+expect {
+	"FETCHED" {}
+	timeout { puts "\nFETCH-TIMEOUT"; exit 4 }
+}
+expect -re $prompt
+phase install
+send "reboot\r"
+boot
+phase after-reboot
+phase uninstall
+send "poweroff\r"
+set timeout 120
+expect eof
