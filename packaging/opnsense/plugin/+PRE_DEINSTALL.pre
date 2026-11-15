@@ -1,0 +1,7 @@
+# Copyright (c) 2026 ComCart S.r.l. SPDX-License-Identifier: BSD-2-Clause (see LICENSE). The InfraFence agent this plugin runs is licensed separately (BSL 1.1).
+# Stop the agent, empty its own three tables and remove the aliases. The
+# rules go away with the plugin hook (they are never written to
+# config.xml): the filter is reloaded once the files are gone.
+/usr/local/etc/rc.d/infrafence onestop > /dev/null 2>&1 || true
+/usr/local/sbin/infrafence-agent appliance flush > /dev/null 2>&1 || true
+/usr/local/opnsense/scripts/OPNsense/InfraFence/setup.php uninstall || true

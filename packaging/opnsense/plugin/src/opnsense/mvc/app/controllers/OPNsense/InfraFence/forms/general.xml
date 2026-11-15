@@ -1,0 +1,38 @@
+<!-- Copyright (c) 2026 ComCart S.r.l. SPDX-License-Identifier: BSD-2-Clause (see LICENSE). The InfraFence agent this plugin runs is licensed separately (BSL 1.1). -->
+<form>
+    <field>
+        <id>general.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>general.mode</id>
+        <label>Mode at registration</label>
+        <type>dropdown</type>
+        <help>Learning detects and reports but blocks nothing: start with it, then switch to Full protection from the Status tab or the dashboard.</help>
+    </field>
+    <field>
+        <id>general.interfaces</id>
+        <label>Block on interfaces</label>
+        <type>select_multiple</type>
+        <help>Inbound traffic from InfraFence's banned, threat-feed and country addresses is blocked on these interfaces (WAN by default).</help>
+    </field>
+    <field>
+        <id>general.blockoutbound</id>
+        <label>Block LAN to banned</label>
+        <type>checkbox</type>
+        <help>Also stop LAN hosts from reaching banned and threat-feed addresses (command-and-control servers).</help>
+    </field>
+    <field>
+        <id>general.logblocks</id>
+        <label>Log blocked packets</label>
+        <type>checkbox</type>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>general.server_url</id>
+        <label>Dashboard URL</label>
+        <type>text</type>
+        <advanced>true</advanced>
+    </field>
+</form>

@@ -1,0 +1,8 @@
+<134>1 2026-11-15T09:12:01+01:00 fw1.example.lan filterlog 50512 - [meta sequenceId="1"] 96,,,02f4bab031b57d1e30553ce08e0ec131,vtnet1,match,block,in,4,0x0,,242,54321,0,none,6,tcp,40,45.155.205.233,85.1.2.3,51234,3389,0,S,1449382391,,1024,,
+<134>1 2026-11-15T09:12:02+01:00 fw1.example.lan filterlog 50512 - [meta sequenceId="2"] 96,,,02f4bab031b57d1e30553ce08e0ec131,vtnet1,match,block,in,4,0x0,,52,20000,0,DF,17,udp,76,80.94.95.10,85.1.2.3,40000,5060,56
+<134>1 2026-11-15T09:12:03+01:00 fw1.example.lan filterlog 50512 - [meta sequenceId="3"] 96,,,02f4bab031b57d1e30553ce08e0ec131,vtnet1,match,block,in,4,0x0,,50,0,0,none,1,icmp,28,193.32.162.5,85.1.2.3,request,512,1
+<134>1 2026-11-15T09:12:04+01:00 fw1.example.lan filterlog 50512 - [meta sequenceId="4"] 4,,,0f89f5ac2b4ec3b8d5f4e84c3b08b7d7,vtnet1,match,block,in,6,0x00,0x00000,52,tcp,6,40,2a03:b0c0:3:d0::1a4:1,2a01:4f8:1:2::3,44321,22,0,S,1234,,64800,,mss;sackOK;TS;nop;wscale
+<134>1 2026-11-15T09:12:05+01:00 fw1.example.lan filterlog 50512 - [meta sequenceId="5"] 77,,,a1b2c3d4e5f60718293a4b5c6d7e8f90,vtnet0,match,pass,in,4,0x0,,64,1,0,DF,6,tcp,60,192.168.10.20,93.184.216.34,50000,443,0,S,1,,64240,,mss
+Nov 15 09:12:06 fw1 filterlog[50512]: 96,,,02f4bab031b57d1e30553ce08e0ec131,vtnet1,match,block,in,4,0x0,,242,54322,0,none,6,tcp,40,45.155.205.233,85.1.2.3,51234,23,0,S,1449382391,,1024,,
+<134>1 2026-11-15T09:12:07+01:00 fw1.example.lan filterlog 50512 - [meta sequenceId="6"] garbage
+<38>1 2026-11-15T09:12:08+01:00 fw1.example.lan sshd 1234 - [meta sequenceId="7"] not a filter line

@@ -1,0 +1,8 @@
+InfraFence connects this firewall to the InfraFence dashboard. The agent
+reads the pf filter log, Suricata alerts, SSH, web GUI and OpenVPN login
+failures, reports them, and blocks attackers (local and network-wide
+bans, threat feed, blocked countries) through three pf tables behind
+the infrafence_* aliases. The plugin only adds block rules; it never
+opens anything.
+
+WWW: https://infrafence.com

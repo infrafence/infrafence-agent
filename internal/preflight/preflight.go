@@ -483,7 +483,7 @@ func diskFreeMB(path string) (uint64, bool) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, false
 	}
-	return st.Bavail * uint64(st.Bsize) / (1 << 20), true
+	return uint64(st.Bavail) * uint64(st.Bsize) / (1 << 20), true
 }
 
 // PackageOperationsRunning lists package operations running right now on

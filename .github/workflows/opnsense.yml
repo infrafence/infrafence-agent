@@ -1,0 +1,137 @@
+name: OPNsense
+
+# The OPNsense product (appliance build + os-infrafence plugin): unit tests,
+# FreeBSD amd64/arm64 builds, a pf integration test and the packages on a
+# FreeBSD VM. Only on pull requests and by hand: it publishes nothing and
+# attaches nothing to releases (the launch pull request adds that to
+# release.yml). The full OPNsense VM test (test/opnsense/run.sh) runs on
+# demand with "opnsense_vm".
+on:
+  pull_request:
+    paths:
+      - "internal/pf/**"
+      - "internal/opnsense/**"
+      - "internal/platform/**"
+      - "internal/api/**"
+      - "internal/config/**"
+      - "cmd/infrafence-agent/appliance*"
+      - "cmd/infrafence-agent/register*"
+      - "cmd/infrafence-agent/main.go"
+      - "packaging/opnsense/**"
+      - "test/opnsense/**"
+      - "test/distro/mockapi/**"
+      - ".github/workflows/opnsense.yml"
+  workflow_dispatch:
+    inputs:
+      opnsense_vm:
+        description: "Also run the OPNsense VM end-to-end test (about 20 min with KVM)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+      - name: Unit tests
+        run: go test ./internal/pf/... ./internal/opnsense/... ./internal/platform/... ./internal/api/... ./internal/config/...
+      - name: Appliance tests
+        run: go test -run 'Appliance|RegisterArgs|RegisterJSON' ./cmd/infrafence-agent/
+      - name: FreeBSD vet
+        run: |
+          GOOS=freebsd GOARCH=amd64 go vet ./...
+          GOOS=freebsd GOARCH=arm64 go vet ./...
+      - name: FreeBSD builds
+        run: |
+          mkdir -p dist
+          v=$(sed -n 's/^var version = "\(.*\)"/\1/p' cmd/infrafence-agent/main.go)
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=freebsd GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$v" \
+              -o dist/infrafence-agent-freebsd-$arch ./cmd/infrafence-agent
+          done
+          CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -trimpath -o dist/mockapi-freebsd-amd64 ./test/distro/mockapi
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: freebsd-binaries
+          path: dist/
+          retention-days: 7
+
+  freebsd:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # OPNsense 26.1 runs on FreeBSD 14, 26.7 on FreeBSD 15.
+        release: ["14.3", "15"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: freebsd-binaries
+          path: dist
+      - name: pf integration test and packages (FreeBSD ${{ matrix.release }} VM)
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: ${{ matrix.release }}
+          usesh: true
+          prepare: pkg install -y curl
+          run: |
+            set -e
+            chmod +x dist/*
+            PF_TEST_FORCE=1 AGENT_BIN=dist/infrafence-agent-freebsd-amd64 MOCKAPI=dist/mockapi-freebsd-amd64 sh test/opnsense/pf-freebsd.sh
+            v=$(./dist/infrafence-agent-freebsd-amd64 version | sed 's/.* v//')
+            sh packaging/opnsense/build-pkgs.sh -b dist/infrafence-agent-freebsd-amd64 -v "$v" -a amd64 -o dist/pkgs
+            pkg info -F dist/pkgs/os-infrafence-*.pkg
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: opnsense-packages-${{ matrix.release }}
+          path: dist/pkgs/
+          retention-days: 7
+
+  opnsense-vm:
+    if: github.event_name == 'workflow_dispatch' && inputs.opnsense_vm
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: freebsd-binaries
+          path: dist
+      - name: KVM and QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86 bzip2
+      - name: OPNsense image (checksum verified)
+        run: |
+          base=https://pkg.opnsense.org/releases/26.7
+          curl -fsSLO $base/OPNsense-26.7-nano-amd64.img.bz2
+          # Pinned: the checksum file comes from the same server as the image.
+          echo "28d5e2f37e40d87468a924e3006ef10e2ddc6de485b85333d9e3958c84d0cb9d  OPNsense-26.7-nano-amd64.img.bz2" | sha256sum -c -
+      - name: End-to-end
+        run: |
+          chmod +x dist/*
+          go build -o mockapi ./test/distro/mockapi
+          OPN_IMG=$PWD/OPNsense-26.7-nano-amd64.img.bz2 AGENT_BIN=$PWD/dist/infrafence-agent-freebsd-amd64 MOCKAPI=$PWD/mockapi \
+            bash test/opnsense/run.sh $RUNNER_TEMP/opnsense
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: opnsense-vm-artifacts
+          path: ${{ runner.temp }}/opnsense/artifacts/
+          retention-days: 14
