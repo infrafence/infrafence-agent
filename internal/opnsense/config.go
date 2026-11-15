@@ -253,7 +253,13 @@ func ParseConfig(root *Node) *Config {
 	}
 
 	c.IDSEnabled = on(root.Str("OPNsense/IDS/general/enabled"))
-	c.IPSMode = on(root.Str("OPNsense/IDS/general/ips"))
+	// IPS: "ips" up to 25.x, "mode" (pcap = IDS, netmap/divert = IPS) in 26.x.
+	switch root.Str("OPNsense/IDS/general/mode") {
+	case "netmap", "divert":
+		c.IPSMode = true
+	default:
+		c.IPSMode = on(root.Str("OPNsense/IDS/general/ips"))
+	}
 	for _, v := range root.All("virtualip/vip") {
 		if v.Str("mode") == "carp" {
 			c.CARP = true

@@ -29,10 +29,12 @@ class Console:
         self.log = open(os.path.join(logdir, "console.log"), "a", errors="replace")
 
     def line(self, text):
-        # One character at a time: the emulated UART drops bursts.
+        # One character at a time: the emulated UART drops bursts (and more
+        # while the guest is busy: see run()).
+        delay = float(os.environ.get("CONSOLE_CHAR_DELAY", "0.006"))
         for ch in text + "\r":
             self.s.sendall(ch.encode())
-            time.sleep(0.003)
+            time.sleep(delay)
 
     def expect(self, patterns, timeout):
         """Waits for one of the regexps; returns (index, text before, match)."""
@@ -75,8 +77,15 @@ class Console:
         self.line("PS1='%s'; export PS1; stty -echo" % PROMPT)
         self.expect(re.escape(PROMPT), 60)
 
+    def sync(self, timeout):
+        """Waits for a fresh prompt: the shell is idle and reads input."""
+        self.buf = ""
+        self.line("")
+        self.expect(re.escape(PROMPT), timeout)
+
     def run(self, cmd, timeout):
         mark = "IFDONE%d" % int(time.time() * 1000)
+        self.sync(min(timeout, 120))
         self.buf = ""
         self.line("( %s ) 2>&1; echo %s:$?" % (cmd, mark))
         _, out, m = self.expect(r"^%s:(\d+)$" % mark, timeout)

@@ -119,3 +119,49 @@ Wired in `release.yml` (job `edge-opnsense`), off until the repository variable 
 The plugin (`packaging/opnsense/plugin/`) is licensed under the BSD 2-Clause License, see
 `packaging/opnsense/plugin/LICENSE`, as OPNsense's community plugins require. The InfraFence agent it
 installs and runs stays under the repository's licence (BSL 1.1, `LICENSE` at the root).
+
+## Soak test on a shared host
+
+`test/opnsense/soak-remote.sh` runs OPNsense 26.7 with the plugin for days on a Docker host reached over SSH, emulated by QEMU. No KVM is needed. It writes a health line every 10 minutes.
+
+```sh
+test/opnsense/soak-remote.sh root@HOST start 7    # build here, upload, start a 7-day soak
+test/opnsense/soak-remote.sh root@HOST status     # container, last soak.log and health.log lines
+test/opnsense/soak-remote.sh root@HOST stop       # stop (the VM shuts down cleanly); data kept, `start` resumes
+test/opnsense/soak-remote.sh root@HOST cleanup    # remove container, image and /srv/opnsense-soak
+```
+
+**What it may touch on the host.** Nothing but the container `infrafence-opnsense-soak`, the image `infrafence-opnsense-soak:1` (both labelled `org.infrafence.soak`) and `SOAK_DIR` (default `/srv/opnsense-soak`). That directory is marked with `.infrafence-opnsense-soak`, and `cleanup` refuses to remove a directory without the marker. The host builds and downloads nothing:
+- the image, agent, mock dashboard, OPNsense image (SHA-256 pinned) and ET Open rules are prepared on the operator's machine
+- they are uploaded with `rsync`, and the image is loaded with `docker load`
+- the SSH user must be root or have passwordless sudo
+
+**Isolation and limits.**
+- Network: `--network none`. The VM's two NICs use QEMU's user-mode networking. They reach only a mock dashboard (`test/distro/mockapi`) and a file server on the container's own loopback (10.0.2.2 from the VM). There is no Internet access, no host network, no published port, no Docker network and no iptables rule. The production InfraFence cannot be reached even by mistake.
+- Limits: `--cpus=3 --memory=6g --memory-swap=6g` (no swap), `--oom-score-adj 1000` (the OOM killer picks it first), `--pids-limit 512`.
+- Hardening: read-only root, all capabilities dropped, `no-new-privileges`, and QEMU under `nice 19` with the idle I/O class.
+- Restarts: `--restart unless-stopped`. After a host reboot the soak resumes on its persistent disk (`disk.img`), and the end date stays the same.
+
+**What runs in the VM.**
+- `os-infrafence` is installed from a locally signed repository built in the VM, and registered against the mock in Full protection. It blocks on WAN.
+- Suricata runs in IDS mode on WAN with the uploaded ET Open rules, installed offline.
+- Every tick:
+  - 6 SSH failures from a new public address, which becomes a ban
+  - a port scan in the filter log
+  - a WAN fetch that ET Open sid 2100498 alerts on
+- A filter reload every 6 h and a VM reboot every 24 h.
+
+**Files in `SOAK_DIR`.**
+- `health.log`: one JSON line per tick with three blocks:
+  - `vm`: agent alive/pid/RSS/CPU, agent starts and panics, pf tables referenced and their entry counts, protection, Suricata running, eve alerts, VM free memory and load
+  - `dashboard`: heartbeats, syncs, bans reported, events by type, agent RSS reported
+  - `container`: memory, QEMU alive
+- Lines with `"event"` mark QEMU crashes and planned reboots.
+- `logs/soak.log` and `run/console.log` (the serial console).
+
+**Settings.** `SOAK_DIR`, `SOAK_CPUS` (3), `SOAK_MEMORY` (6g), `SOAK_VM_MEM` (4096), `SOAK_TICK_SECONDS` (600), `SOAK_REBOOT_HOURS` (24), `SOAK_RELOAD_HOURS` (6). For a short local test:
+
+```sh
+SOAK_DIR=$HOME/soak SOAK_MEMORY=3g SOAK_VM_MEM=2304 SOAK_MINUTES=45 SOAK_TICK_SECONDS=120 SOAK_REBOOT_MINUTES=20 \
+    test/opnsense/soak-remote.sh local start
+```
