@@ -1,0 +1,28 @@
+{
+	"luci-app-infrafence": {
+		"description": "Grant access to the InfraFence router agent",
+		"read": {
+			"file": {
+				"/var/run/infrafence/status.json": [ "read" ],
+				"/tmp/run/infrafence/status.json": [ "read" ]
+			},
+			"ubus": {
+				"file": [ "read" ],
+				"uci": [ "get" ]
+			},
+			"uci": [ "infrafence" ]
+		},
+		"write": {
+			"file": {
+				"/tmp/infrafence-enrol": [ "write" ],
+				"/usr/sbin/infrafence-router register --token-file /tmp/infrafence-enrol": [ "exec" ],
+				"/etc/init.d/infrafence restart": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "write", "exec" ],
+				"uci": [ "set", "add", "delete", "rename", "order", "changes", "revert", "commit", "apply", "confirm", "rollback" ]
+			},
+			"uci": [ "infrafence" ]
+		}
+	}
+}

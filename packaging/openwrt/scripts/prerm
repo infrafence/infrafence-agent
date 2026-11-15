@@ -1,0 +1,8 @@
+#!/bin/sh
+[ -n "$IPKG_INSTROOT" ] && exit 0
+# opkg passes "upgrade" when the package is replaced by a newer version.
+[ "$1" = "upgrade" ] && exit 0
+/etc/init.d/infrafence stop
+/etc/init.d/infrafence disable
+/usr/sbin/infrafence-router cleanup >/dev/null 2>&1
+exit 0

@@ -277,6 +277,12 @@ type RegisterRequest struct {
 	OS           string `json:"os"`
 	OSVersion    string `json:"os_version"`
 	Version      string `json:"version"`
+	// Router agent only (cmd/infrafence-router); the server agent leaves
+	// them empty, so its register body is unchanged.
+	Kind         string   `json:"kind,omitempty"` // "router"
+	Board        string   `json:"board,omitempty"`
+	Arch         string   `json:"arch,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // ReverbConfig holds the WebSocket connection details for real-time push.
@@ -352,6 +358,9 @@ type HeartbeatRequest struct {
 	// WebDetection: which access logs web attack detection reads, or why it
 	// is off and what to change (watcher.WebDetection).
 	WebDetection any `json:"web_detection,omitempty"`
+	// Router agent only: kind "router" and its state (router.go).
+	Kind       string      `json:"kind,omitempty"`
+	RouterInfo *RouterInfo `json:"router_info,omitempty"`
 }
 
 // VerifyDNS: the domain has no document root on the host, so its trust

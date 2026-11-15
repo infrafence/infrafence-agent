@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run by fw3/fw4 after every firewall (re)load: the agent checks its own
+# rules at once (fw3 flushes chains; fw4 leaves table inet infrafence alone).
+[ -x /etc/init.d/infrafence ] && /etc/init.d/infrafence reload >/dev/null 2>&1
+exit 0

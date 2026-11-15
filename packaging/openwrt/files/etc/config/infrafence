@@ -1,0 +1,18 @@
+# InfraFence router agent. The agent token is not here (UCI is readable
+# through rpcd): it is in /etc/infrafence/config.json, mode 0600.
+config agent 'main'
+	option enabled '1'
+	option server_url 'https://infrafence.com'
+	# Read DNS lookups on the LAN bridge (kernel-filtered packet socket,
+	# nothing logged) to spot infected devices.
+	option dns_capture '1'
+	# Block listed malicious domains through dnsmasq in Full protection.
+	option dns_blocking '1'
+	# LAN bridge; empty: br-lan.
+	option lan_interface ''
+	# 0: from the router's RAM (20 000 bans / 100 000 domains on 128 MB).
+	option max_bans '0'
+	option max_domains '0'
+	# DHCP host names are sent only if the organization opted in
+	# ('dashboard'); 'never' keeps them on the router regardless.
+	option device_names 'dashboard'
