@@ -1,6 +1,6 @@
 # OpenWrt / GL.iNet packages of the router agent
 
-`cmd/infrafence-router` ships as OpenWrt packages from a signed InfraFence feed. Nothing here is published yet: the router agent launches together with the home network check, and until then the feed, the installer URL and the release job stay unpublished.
+`cmd/infrafence-router` ships as OpenWrt packages from a signed InfraFence feed. Nothing here is published yet: the router agent launches together with the home network check, and until then the release jobs that publish the feed and the installer stay off (`EDGE_PUBLISH`, see `deploy/README.md`).
 
 ## Packages
 
@@ -34,35 +34,27 @@ https://pkg.infrafence.com/openwrt/
   24.10/<arch>/*.ipk
   25.12/<arch>/packages.adb           apk v3 feed: OpenWrt 25.12+
   25.12/<arch>/*.apk
+https://pkg.infrafence.com/router-install.sh
 ```
 
 The "24.10" feed serves every opkg release (21.02–24.10): the agent is one static binary and the packages only depend on `ca-bundle`.
 
-## Keys
+## Keys and publishing
 
-Two signing keys, handled like the release cosign key (GitHub Actions secrets, never in the repository, never on a laptop after creation):
+Two signing keys, `OPENWRT_USIGN_KEY` (usign, signs `Packages`) and `OPENWRT_APK_KEY` (EC P-256, signs `.apk` and `packages.adb`), secrets of the `release` environment. `deploy/pkg-keygen.sh` creates them, commits the public halves as `packaging/openwrt/keys/usign.pub` and `packaging/openwrt/keys/apk.pem` (they go into `infrafence-keyring` and to `keys/` on the feed) and pins them in `router-install.sh` (`USIGN_FP`, `APK_KEY_SHA256`). A key rotation ships a new `infrafence-keyring` with both public keys first, then switches the signing key.
 
-| Secret | What | Create once |
-|---|---|---|
-| `OPENWRT_USIGN_KEY` | usign secret key (signs `Packages`) | `go run ./packaging/openwrt/owrtpkg keygen -sec usign.sec -pub usign.pub -c "InfraFence OpenWrt feed"` |
-| `OPENWRT_APK_KEY` | EC P-256 private key, PEM (signs `.apk` and `packages.adb`) | `openssl ecparam -name prime256v1 -genkey -noout -out apk.sec && openssl ec -in apk.sec -pubout -out apk.pem` |
+The release workflow's `edge-openwrt` job builds and signs the feed on every tag and publishes it to `pkg.infrafence.com` (`deploy/README.md`); `edge-site` publishes the installer and the keys, `edge-assets` attaches the installer to the GitHub release. All of it is off until the repository variable `EDGE_PUBLISH` is `true`.
 
-Commit the two **public** keys as `packaging/openwrt/keys/usign.pub` and `packaging/openwrt/keys/apk.pem` (they go into `infrafence-keyring` and to `keys/` on the feed), store the secret ones as the two secrets (environment `release`, required reviewers), then delete the local copies. A key rotation ships a new `infrafence-keyring` with both public keys first, then switches the signing key.
+## Launch
 
-## Launch (what the launch pull request does)
-
-1. Create the keys (above); add the secrets; commit the public keys.
-2. Add a `publish` job to `.github/workflows/router.yml` (or to `release.yml`, on tags), environment `release`:
-   - `build-binaries.sh` with the tag's version, `cosign sign-blob` each binary with `COSIGN_PRIVATE_KEY` like `release.yml` does;
-   - `build-packages.sh` with `USIGN_SEC`/`APK_SEC` written from the secrets to a `0600` temp dir and `USIGN_PUB`/`APK_PUB` from `packaging/openwrt/keys/`;
-   - upload `build/feed/` to the bucket behind `pkg.infrafence.com/openwrt/` (keep the previous version's files for a day: routers mid-update fetch the old index);
-   - upload `packaging/openwrt/router-install.sh` as `https://get.infrafence.com/router.sh`.
-3. Dashboard: the router contract (`agents.kind`, router sync, domain list endpoint, device endpoint, events, "Add router" page) live first — the dashboard is released before the agent, as in RELEASING.md.
-4. Docs, in the launch pull request only (not before: the product is hidden until launch): the `CHANGELOG.md` entry, the READMEs (5 languages) and the site: requirements (16 MB flash with 4 MB free, 128 MB RAM), the one-liner, LuCI, GL.iNet *Applications → Plug-ins* (the installer adds the feed to `customfeeds.conf`), "after a firmware upgrade, run the one-liner again".
+1. Keys (above), secrets and server: `deploy/README.md`.
+2. Dashboard: the router contract (`agents.kind`, router sync, domain list endpoint, device endpoint, events, "Add router" page) live first — the dashboard is released before the agent, as in RELEASING.md.
+3. Docs, in the launch pull request only (not before: the product is hidden until launch): the `CHANGELOG.md` entry, the READMEs (5 languages) and the site: requirements (16 MB flash with 4 MB free, 128 MB RAM), the one-liner, LuCI, GL.iNet *Applications → Plug-ins* (the installer adds the feed to `customfeeds.conf`), "after a firmware upgrade, run the one-liner again".
+4. Set `EDGE_PUBLISH=true` and tag the release.
 5. GL.iNet: ask for a listing in their plug-in catalogue once the feed is stable.
 
-Until then the workflow builds packages with throwaway keys on pull requests and manual runs, and uploads them as workflow artifacts only.
+Until then `router.yml` builds packages with throwaway keys on pull requests and manual runs, and uploads them as workflow artifacts only.
 
 ## Installer
 
-`router-install.sh` (published as `get.infrafence.com/router.sh`): checks OpenWrt, opkg/apk, the architecture, ≥ 4 MB free flash and ≥ 100 MB RAM, fw4/fw3 (installs `ipset kmod-ipt-ipset` on fw3), adds the feed key and the feed (`/etc/opkg/customfeeds.conf` or `/etc/apk/repositories.d/infrafence.list`), installs the packages and enrols with `--token`. `--feed URL` points it at another feed (the QEMU test uses the mock dashboard's).
+`router-install.sh` (published as `https://pkg.infrafence.com/router-install.sh`): checks OpenWrt, opkg/apk, the architecture, ≥ 4 MB free flash and ≥ 100 MB RAM, fw4/fw3 (installs `ipset kmod-ipt-ipset` on fw3), adds the feed key and the feed (`/etc/opkg/customfeeds.conf` or `/etc/apk/repositories.d/infrafence.list`), installs the packages and enrols with `--token`. `--feed URL` points it at another feed (the QEMU test uses the mock dashboard's); the default feed's keys are pinned, another feed's key is trusted as served over HTTPS (plain HTTP is refused unless `INFRAFENCE_ALLOW_HTTP_FEED=1`, for the test).

@@ -314,3 +314,188 @@ jobs:
           # manifest by hand, that produces a manifest with the provenance
           # layer listed twice (verified: this is what was happening).
           helm push "${CHART_TGZ}" oci://ghcr.io/infrafence/charts
+
+  # ---- Edge packages: OpenWrt / GL.iNet routers and OPNsense ----------------
+  # Off until the edge launch: none of these jobs runs (and a release is
+  # exactly as before) until the repository variable EDGE_PUBLISH is set to
+  # "true". Plain X.Y.Z tags only. They sign with the keys in the "release"
+  # environment and publish to https://pkg.infrafence.com over SSH, one
+  # tarball per product, through the server's forced command
+  # (deploy/pkg-publish.sh). Secrets, variables and server setup:
+  # deploy/README.md.
+  edge-openwrt:
+    name: OpenWrt feed
+    if: vars.EDGE_PUBLISH == 'true' && !contains(github.ref_name, '-')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - name: Version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Binaries
+        run: packaging/openwrt/build-binaries.sh build/bin "$VERSION"
+      - name: Packages and signed feeds
+        env:
+          OPENWRT_USIGN_KEY: ${{ secrets.OPENWRT_USIGN_KEY }}
+          OPENWRT_APK_KEY: ${{ secrets.OPENWRT_APK_KEY }}
+        run: |
+          set -euo pipefail
+          for f in packaging/openwrt/keys/usign.pub packaging/openwrt/keys/apk.pem; do
+            [ -s "$f" ] || { echo "::error::$f is not committed (deploy/pkg-keygen.sh)"; exit 1; }
+          done
+          [ -n "$OPENWRT_USIGN_KEY" ] && [ -n "$OPENWRT_APK_KEY" ] || { echo "::error::OPENWRT_USIGN_KEY / OPENWRT_APK_KEY missing"; exit 1; }
+          keys=$(mktemp -d)
+          trap 'rm -rf "$keys"' EXIT
+          (umask 077
+           printf '%s\n' "$OPENWRT_USIGN_KEY" > "$keys/usign.sec"
+           printf '%s\n' "$OPENWRT_APK_KEY" > "$keys/apk.sec")
+          # The secret keys must be the halves of the committed public keys
+          # (which the installers pin): a mismatch would publish a feed no
+          # router accepts.
+          echo probe > "$keys/probe"
+          go run ./packaging/openwrt/owrtpkg sign -sec "$keys/usign.sec" -m "$keys/probe"
+          go run ./packaging/openwrt/owrtpkg verify -pub packaging/openwrt/keys/usign.pub -m "$keys/probe" >/dev/null \
+            || { echo "::error::OPENWRT_USIGN_KEY does not match packaging/openwrt/keys/usign.pub"; exit 1; }
+          openssl ec -in "$keys/apk.sec" -pubout 2>/dev/null | cmp -s - packaging/openwrt/keys/apk.pem \
+            || { echo "::error::OPENWRT_APK_KEY does not match packaging/openwrt/keys/apk.pem"; exit 1; }
+          USIGN_SEC="$keys/usign.sec" USIGN_PUB=packaging/openwrt/keys/usign.pub \
+          APK_SEC="$keys/apk.sec" APK_PUB=packaging/openwrt/keys/apk.pem \
+            packaging/openwrt/build-packages.sh build/bin "$VERSION" build/pkgroot/openwrt
+      - name: Publish to pkg.infrafence.com
+        env:
+          PKG_DEPLOY_HOST: ${{ vars.PKG_DEPLOY_HOST }}
+          PKG_DEPLOY_USER: ${{ vars.PKG_DEPLOY_USER }}
+          PKG_DEPLOY_KNOWN_HOSTS: ${{ vars.PKG_DEPLOY_KNOWN_HOSTS }}
+          PKG_DEPLOY_SSH_KEY: ${{ secrets.PKG_DEPLOY_SSH_KEY }}
+        run: deploy/pkg-upload.sh openwrt "$VERSION" build/pkgroot
+
+  edge-opnsense:
+    name: OPNsense repository
+    if: vars.EDGE_PUBLISH == 'true' && !contains(github.ref_name, '-')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version and prerequisites
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          for f in packaging/opnsense/build-pkgs.sh packaging/opnsense/make-repo.sh packaging/opnsense/infrafence-repo.pub; do
+            [ -s "$f" ] || { echo "::error::$f is not on this commit (OPNsense packaging, deploy/pkg-keygen.sh)"; exit 1; }
+          done
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          cache-dependency-path: go.sum
+      - name: FreeBSD binaries
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=freebsd GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+              -o dist/infrafence-agent-freebsd-$arch ./cmd/infrafence-agent
+          done
+      - name: Repository key
+        env:
+          OPNSENSE_REPO_KEY: ${{ secrets.OPNSENSE_REPO_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$OPNSENSE_REPO_KEY" ] || { echo "::error::OPNSENSE_REPO_KEY missing"; exit 1; }
+          # Inside the workspace so the FreeBSD VM sees it; removed in the VM
+          # before the copy back and again in the cleanup step below.
+          (umask 077; mkdir -p .repo-key; printf '%s\n' "$OPNSENSE_REPO_KEY" > .repo-key/key.pem)
+          openssl rsa -in .repo-key/key.pem -pubout 2>/dev/null | cmp -s - packaging/opnsense/infrafence-repo.pub \
+            || { echo "::error::OPNSENSE_REPO_KEY does not match packaging/opnsense/infrafence-repo.pub"; exit 1; }
+      - name: Packages and signed repository (FreeBSD VM)
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        with:
+          release: "14.3"
+          usesh: true
+          envs: "VERSION"
+          run: |
+            set -e
+            trap 'rm -rf .repo-key' EXIT
+            chmod +x dist/infrafence-agent-freebsd-*
+            sh packaging/opnsense/build-pkgs.sh -b dist/infrafence-agent-freebsd-amd64 -v "$VERSION" -a amd64 -o dist/pkgs-amd64
+            sh packaging/opnsense/build-pkgs.sh -b dist/infrafence-agent-freebsd-arm64 -v "$VERSION" -a aarch64 -o dist/pkgs-aarch64
+            sh packaging/opnsense/make-repo.sh -k .repo-key/key.pem -r dist/repo/opnsense -a amd64 dist/pkgs-amd64/*.pkg
+            sh packaging/opnsense/make-repo.sh -k .repo-key/key.pem -r dist/repo/opnsense -a aarch64 dist/pkgs-aarch64/*.pkg
+      - name: Remove the repository key
+        if: always()
+        run: rm -rf .repo-key
+      - name: Publish to pkg.infrafence.com
+        env:
+          PKG_DEPLOY_HOST: ${{ vars.PKG_DEPLOY_HOST }}
+          PKG_DEPLOY_USER: ${{ vars.PKG_DEPLOY_USER }}
+          PKG_DEPLOY_KNOWN_HOSTS: ${{ vars.PKG_DEPLOY_KNOWN_HOSTS }}
+          PKG_DEPLOY_SSH_KEY: ${{ secrets.PKG_DEPLOY_SSH_KEY }}
+        run: deploy/pkg-upload.sh opnsense "$VERSION" dist/repo
+
+  edge-site:
+    name: pkg.infrafence.com index, keys and installers
+    if: vars.EDGE_PUBLISH == 'true' && !contains(github.ref_name, '-')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and publish
+        env:
+          PKG_DEPLOY_HOST: ${{ vars.PKG_DEPLOY_HOST }}
+          PKG_DEPLOY_USER: ${{ vars.PKG_DEPLOY_USER }}
+          PKG_DEPLOY_KNOWN_HOSTS: ${{ vars.PKG_DEPLOY_KNOWN_HOSTS }}
+          PKG_DEPLOY_SSH_KEY: ${{ secrets.PKG_DEPLOY_SSH_KEY }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          deploy/pkg-site.sh build/pkgroot "$VERSION"
+          deploy/pkg-upload.sh site "$VERSION" build/pkgroot
+
+  edge-assets:
+    name: Edge installers on the release
+    if: vars.EDGE_PUBLISH == 'true' && !contains(github.ref_name, '-')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - name: Sign and attach the installers
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/edge
+          cp packaging/openwrt/router-install.sh build/edge/
+          if [ -f packaging/opnsense/opnsense-install.sh ]; then cp packaging/opnsense/opnsense-install.sh build/edge/; fi
+          cd build/edge
+          for f in *.sh; do
+            sha256sum "$f" > "$f.sha256"
+            cosign sign-blob --key env://COSIGN_PRIVATE_KEY --yes --output-signature "$f.sig" "$f"
+          done
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber ./*.sh ./*.sh.sha256 ./*.sh.sig
