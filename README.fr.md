@@ -269,6 +269,40 @@ curl -fsSL https://github.com/infrafence/infrafence-agent/releases/latest/downlo
 
 ---
 
+## Routeurs et pare-feu
+
+Le même tableau de bord protège aussi des réseaux entiers, depuis le routeur ou le pare-feu placé devant eux. Ils se connectent comme un serveur, avec leur propre jeton d'installation.
+
+### Routeurs OpenWrt et GL.iNet
+
+`infrafence-router` est un agent séparé et léger pour le routeur. Il bloque vos bannissements et le flux de menaces du réseau InfraFence sur le pare-feu du routeur, pour chaque appareil derrière lui, bloque dans le DNS du routeur (dnsmasq) les domaines de malware, de phishing et de minage de cryptomonnaie, et signale les appareils de votre réseau qui communiquent avec des serveurs de commande et de contrôle ou des pools de minage. Un nouveau routeur démarre en **Apprentissage** : il signale tout et ne bloque rien tant que vous ne le passez pas en Protection complète.
+
+**Pris en charge :** OpenWrt 21.02 à 25.12 et firmware GL.iNet 4.x ; MIPS, MIPSel, ARMv7, ARM64 ou x86-64 ; 16 Mo de flash dont 4 Mo libres et 128 Mo de RAM.
+
+Dans le tableau de bord, ouvrez **Serveurs → Ajouter un serveur → Router (OpenWrt / GL.iNet)** pour obtenir un jeton, puis sur le routeur, en root via SSH :
+
+```sh
+wget -qO- https://pkg.infrafence.com/router-install.sh | sh -s -- --token <YOUR_TOKEN>
+```
+
+L'installateur vérifie d'abord le routeur et ne change rien si une vérification échoue, puis ajoute le dépôt signé d'InfraFence et installe l'agent (et la page LuCI, *Services → InfraFence*). Sur GL.iNet, l'agent apparaît aussi dans *Applications → Plug-ins*. Après une mise à jour du firmware, relancez la commande. Détails : [Agent routeur](https://infrafence.com/fr/documentation/agent-routeur).
+
+### Pare-feu OPNsense
+
+Le plugin `os-infrafence` installe l'agent sur un pare-feu OPNsense. Il ne remplit que ses propres tables pf (bannissements, flux de menaces, pays bloqués), derrière des règles qui ne font que bloquer, sur les interfaces de votre choix ; il n'ajoute jamais de règle pass et ne modifie jamais vos règles ni `config.xml`. Il lit le journal du pare-feu, Suricata, les connexions SSH, à la GUI et VPN, et vérifie la configuration du pare-feu en lecture seule.
+
+**Pris en charge :** OPNsense 26.1 et 26.7, amd64 et aarch64.
+
+Dans le tableau de bord, ouvrez **Serveurs → Ajouter un serveur → OPNsense** pour obtenir un jeton, puis sur le pare-feu, en root (via SSH ou depuis *Diagnostics → Command Prompt*) :
+
+```sh
+fetch -o - https://pkg.infrafence.com/opnsense-install.sh | sh
+```
+
+Il ajoute le dépôt signé d'InfraFence et installe le plugin ; les mises à jour arrivent ensuite par *System → Firmware*, comme pour tout plugin. Ouvrez *Services → InfraFence*, choisissez les interfaces, collez le jeton et connectez. Détails : [OPNsense](https://infrafence.com/fr/documentation/opnsense).
+
+---
+
 ## Configuration
 
 Presque tout se règle depuis le tableau de bord et arrive sur les serveurs en une seconde environ : seuils de force brute, durée des bannissements, mode surveillance, règles WAF, choix sur les bots, liste blanche, pays bloqués, planification des analyses de malwares, inspection DNS, modifications du serveur web, blocage par listes de menaces, mises à jour automatiques. Référence complète : [Configuration](https://infrafence.com/fr/documentation/configuration).
