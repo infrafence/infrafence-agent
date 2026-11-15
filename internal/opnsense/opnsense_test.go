@@ -103,6 +103,23 @@ func TestExposedConfig(t *testing.T) {
 	}
 }
 
+func TestIPSMode26(t *testing.T) {
+	for xml, want := range map[string]bool{
+		`<opnsense><OPNsense><IDS><general><enabled>1</enabled><mode>pcap</mode></general></IDS></OPNsense></opnsense>`:   false,
+		`<opnsense><OPNsense><IDS><general><enabled>1</enabled><mode>netmap</mode></general></IDS></OPNsense></opnsense>`: true,
+		`<opnsense><OPNsense><IDS><general><enabled>1</enabled><mode>divert</mode></general></IDS></OPNsense></opnsense>`: true,
+		`<opnsense><OPNsense><IDS><general><enabled>1</enabled><ips>1</ips></general></IDS></OPNsense></opnsense>`:        true,
+	} {
+		root, err := ParseXML(strings.NewReader(xml))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c := ParseConfig(root); c.IPSMode != want || !c.IDSEnabled {
+			t.Errorf("%s: ips %v", xml, c.IPSMode)
+		}
+	}
+}
+
 func TestGUIExposureNeedsRule(t *testing.T) {
 	c := load(t, "config-exposed.xml")
 	c.Rules = nil
