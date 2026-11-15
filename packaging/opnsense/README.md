@@ -73,13 +73,15 @@ sh packaging/opnsense/make-repo.sh -k infrafence-repo.key -r ./repo -a amd64 pkg
 sh packaging/opnsense/make-repo.sh -k infrafence-repo.key -r ./repo -a aarch64 pkgs-arm64/*.pkg
 ```
 
-Layout, served as static files:
+Layout on `https://pkg.infrafence.com` (published by the release workflow, `deploy/README.md`):
 
 ```
-repo/FreeBSD:14:amd64/latest/{meta.conf,meta.txz,packagesite.pkg,data.pkg,All/*.pkg}
-repo/FreeBSD:14:aarch64/latest/...
-repo/FreeBSD:15:amd64/latest/...
-repo/FreeBSD:15:aarch64/latest/...
+/opnsense/FreeBSD:14:amd64/latest/{meta.conf,packagesite.pkg,data.pkg,All/*.pkg}
+/opnsense/FreeBSD:14:aarch64/latest/...
+/opnsense/FreeBSD:15:amd64/latest/...
+/opnsense/FreeBSD:15:aarch64/latest/...
+/keys/infrafence-repo.pub
+/opnsense-install.sh
 ```
 
 The customer side is `opnsense-install.sh`. It:
@@ -89,21 +91,14 @@ The customer side is `opnsense-install.sh`. It:
 
 Plugin updates then arrive through System › Firmware like any plugin.
 
-## Publishing at launch (not done)
+## Publishing at launch
 
-1. Generate the repository key as above. Store the private key as the GitHub secret `OPNSENSE_REPO_KEY`, commit `infrafence-repo.pub` here, and put its SHA-256 into `KEY_SHA256` in `opnsense-install.sh` (the script refuses to run until then).
-2. Add a `freebsd` job to `release.yml`. On the tag, it:
-   - builds `infrafence-agent-freebsd-{amd64,arm64}`
-   - adds both to `checksums.txt` and cosign-signs them like the Linux binaries
-   - builds the packages in the FreeBSD VM (as in `opnsense.yml`)
-   - runs `make-repo.sh` with the secret
-   - uploads `repo/` to the static host
-3. Host `pkg.infrafence.com` over HTTPS with:
-   - `repo/`
-   - `infrafence-repo.pub`
-   - `opnsense-install.sh`, served from the tagged commit
-4. Turn on the dashboard's "Add server → OPNsense" tab (see the dashboard contract).
-5. Publish both `FreeBSD:14:*` (26.1) and `FreeBSD:15:*` (26.7) directories; `make-repo.sh` writes both majors. Watch the roadmap for FreeBSD 16.
+Wired in `release.yml` (job `edge-opnsense`), off until the repository variable `EDGE_PUBLISH` is `true`; see `deploy/README.md`:
+1. `deploy/pkg-keygen.sh` creates the key, commits `infrafence-repo.pub` here and sets `KEY_SHA256` in `opnsense-install.sh` (the script refuses to run until then). The private key is the secret `OPNSENSE_REPO_KEY` of the `release` environment.
+2. On a tag, the job builds `infrafence-agent-freebsd-{amd64,arm64}`, the packages and the signed repository in a FreeBSD VM, and publishes `opnsense/` to `pkg.infrafence.com`; `edge-site` publishes the key and `opnsense-install.sh`, `edge-assets` attaches the installer to the release.
+3. Turn on the dashboard's "Add server → OPNsense" tab (see the dashboard contract).
+4. Both `FreeBSD:14:*` (26.1) and `FreeBSD:15:*` (26.7) are published; `make-repo.sh` writes both majors. Watch the roadmap for FreeBSD 16.
+5. The plugin version (`build-pkgs.sh -p`, default 0.1) must go up when the plugin changes, or firewalls will not upgrade it.
 
 ## Tests
 

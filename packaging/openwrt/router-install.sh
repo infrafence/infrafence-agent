@@ -1,7 +1,7 @@
 #!/bin/sh
 # InfraFence router agent installer for OpenWrt and GL.iNet routers.
 #
-#   wget -qO- https://get.infrafence.com/router.sh | sh -s -- --token <install token>
+#   wget -qO- https://pkg.infrafence.com/router-install.sh | sh -s -- --token <install token>
 #   (or INFRAFENCE_TOKEN=<install token> in the environment)
 #
 # Checks the router (OpenWrt release, package manager, architecture, free
@@ -11,10 +11,14 @@
 # is changed when a check fails.
 set -eu
 
-FEED=${INFRAFENCE_FEED:-https://pkg.infrafence.com/openwrt}
-# The feed's usign key fingerprint, pinned at launch (empty: trust the key
-# fetched over HTTPS on first use).
+DEFAULT_FEED=https://pkg.infrafence.com/openwrt
+FEED=${INFRAFENCE_FEED:-$DEFAULT_FEED}
+# The InfraFence feed keys, pinned here (deploy/pkg-keygen.sh writes them at
+# launch): the usign key fingerprint (opkg) and the SHA-256 of the apk key.
+# The default feed is refused until they are set; another feed (--feed)
+# trusts the key it serves over HTTPS on first use.
 USIGN_FP=""
+APK_KEY_SHA256=""
 TOKEN=${INFRAFENCE_TOKEN:-}
 SERVER=""
 NAME=""
@@ -41,6 +45,13 @@ http://*) [ "${INFRAFENCE_ALLOW_HTTP_FEED:-}" = 1 ] || die "the feed must use ht
 esac
 case $FEED in *[!A-Za-z0-9:/._~%-]*) die "invalid feed URL: $FEED" ;; esac
 FEED=${FEED%/}
+if [ "$FEED" = "$DEFAULT_FEED" ]; then
+	[ -n "$USIGN_FP" ] && [ -n "$APK_KEY_SHA256" ] || die "this installer has no pinned feed keys yet (the InfraFence feed is not published)"
+else
+	USIGN_FP=""
+	APK_KEY_SHA256=""
+	say "feed $FEED: its signing key is trusted as served (not pinned)"
+fi
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -f /etc/openwrt_release ] || die "this is not an OpenWrt (or GL.iNet) router"
@@ -115,6 +126,10 @@ if [ $pm = opkg ]; then
 	opkg install $pkgs
 else
 	fetch "$FEED/keys/apk.pem" "$tmp/apk.pem" || die "cannot download the feed key from $FEED"
+	if [ -n "$APK_KEY_SHA256" ]; then
+		sum=$(sha256sum "$tmp/apk.pem" | cut -d' ' -f1)
+		[ "$sum" = "$APK_KEY_SHA256" ] || die "the feed key ($sum) is not InfraFence's ($APK_KEY_SHA256)"
+	fi
 	mkdir -p /etc/apk/keys /etc/apk/repositories.d
 	cp "$tmp/apk.pem" /etc/apk/keys/infrafence-feed.pem
 	echo "$FEED/$feed_rel/$arch/packages.adb" >/etc/apk/repositories.d/infrafence.list
