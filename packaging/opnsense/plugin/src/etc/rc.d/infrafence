@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# PROVIDE: infrafence
+# REQUIRE: NETWORKING syslogd
+# KEYWORD: shutdown
+#
+# /etc/rc.conf.d/infrafence is rendered by configd from the plugin settings.
+
+. /etc/rc.subr
+
+name=infrafence
+rcvar=infrafence_enable
+load_rc_config $name
+
+: ${infrafence_enable:="NO"}
+: ${infrafence_config:="/usr/local/etc/infrafence/config.json"}
+
+pidfile="/var/run/${name}.pid"
+procname="/usr/sbin/daemon"
+command="/usr/sbin/daemon"
+# daemon(8): restart the agent 5 s after it exits (-r -R 5), its output to
+# syslog with the tag "infrafence" (-S -T), which the plugin's syslog hook
+# writes to /var/log/infrafence/.
+command_args="-r -R 5 -S -T ${name} -P ${pidfile} /usr/local/sbin/infrafence-agent start"
+start_precmd="${name}_prestart"
+
+infrafence_prestart()
+{
+	if [ ! -s "${infrafence_config}" ]; then
+		echo "${name}: not registered yet (${infrafence_config} missing)"
+		return 1
+	fi
+	export INFRAFENCE_CONFIG="${infrafence_config}"
+}
+
+run_rc_command "$1"

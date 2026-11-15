@@ -1,0 +1,4 @@
+# Create the External (advanced) aliases the rules reference (idempotent),
+# then reload the filter so OPNsense declares their tables.
+/usr/local/opnsense/scripts/OPNsense/InfraFence/setup.php install
+/usr/local/sbin/configctl filter reload > /dev/null

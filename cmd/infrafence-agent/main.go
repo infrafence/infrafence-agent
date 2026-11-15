@@ -88,14 +88,24 @@ func main() {
 
 	switch os.Args[1] {
 	case "register":
-		if len(os.Args) < 5 {
-			fmt.Fprintf(os.Stderr, "usage: infrafence-agent register <server_url> <agent_name> <install_token>\n")
+		serverURL, name, token, mode, err := parseRegisterArgs(os.Args[2:], os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\nusage: infrafence-agent register [--token-stdin] [--mode protect|monitor] <server_url> <agent_name> [<install_token>]\n", err)
 			os.Exit(1)
 		}
-		runRegister(os.Args[2], os.Args[3], os.Args[4])
+		runRegister(serverURL, name, token, mode)
 
 	case "start":
+		if runtime.GOOS == "freebsd" {
+			// OPNsense: the appliance run loop (appliance.go), none of the
+			// server agent's Linux components.
+			runAppliance()
+			return
+		}
 		runAgent()
+
+	case "appliance":
+		cmdAppliance(os.Args[2:])
 
 	case "preflight":
 		cmdPreflight(os.Args[2:])
@@ -129,7 +139,7 @@ func main() {
 
 func printUsage() {
 	fmt.Println("Usage:")
-	fmt.Println("  infrafence-agent register <server_url> <agent_name> <install_token>")
+	fmt.Println("  infrafence-agent register [--token-stdin] [--mode protect|monitor] <server_url> <agent_name> [<install_token>]")
 	fmt.Println("  infrafence-agent start")
 	fmt.Println("  infrafence-agent version              print the installed version")
 	fmt.Println("  infrafence-agent check")
@@ -142,10 +152,13 @@ func printUsage() {
 	fmt.Println("      status | bans | unban <ip> | allow <ip> | allowlist | disallow <ip> | findings | events |")
 	fmt.Println("      coexistence | sites | scan <path> | map [--hours 24|168] | score")
 	fmt.Println("      (changes need --actor <panel user>)")
+	if runtime.GOOS == "freebsd" {
+		fmt.Println("  infrafence-agent appliance status|bans|findings | mode <protect|monitor> | flush   (OPNsense plugin)")
+	}
 }
 
 // runRegister performs first-boot registration and saves the config.
-func runRegister(serverURL, name, installToken string) {
+func runRegister(serverURL, name, installToken, mode string) {
 	hostname, _ := os.Hostname()
 	osInfo := detectOS()
 
@@ -153,7 +166,7 @@ func runRegister(serverURL, name, installToken string) {
 
 	log.Printf("Registering agent '%s' at %s...", name, serverURL)
 
-	resp, err := client.Register(api.RegisterRequest{
+	req := api.RegisterRequest{
 		InstallToken: installToken,
 		Name:         name,
 		Hostname:     hostname,
@@ -161,7 +174,11 @@ func runRegister(serverURL, name, installToken string) {
 		OS:           osInfo.name,
 		OSVersion:    osInfo.version,
 		Version:      version,
-	})
+	}
+	// The appliance build says what it is (appliance.go); the server agent
+	// sends the request as before.
+	kind := applianceRegister(&req, mode)
+	resp, err := client.Register(req)
 	if err != nil {
 		log.Fatalf("Registration failed: %v", err)
 	}
@@ -173,6 +190,7 @@ func runRegister(serverURL, name, installToken string) {
 		ReverbURL:    resp.Reverb.URL,
 		ReverbAppKey: resp.Reverb.AppKey,
 		AuthEndpoint: resp.Reverb.AuthEndpoint,
+		Kind:         kind,
 	}
 
 	if err := config.Save(cfg); err != nil {
@@ -180,7 +198,7 @@ func runRegister(serverURL, name, installToken string) {
 	}
 
 	log.Printf("Agent registered successfully (id=%d)", resp.Agent.ID)
-	log.Printf("Config saved to %s", os.Getenv("INFRAFENCE_CONFIG"))
+	log.Printf("Config saved to %s", config.Path())
 	log.Println("Run 'infrafence-agent start' to begin monitoring.")
 }
 

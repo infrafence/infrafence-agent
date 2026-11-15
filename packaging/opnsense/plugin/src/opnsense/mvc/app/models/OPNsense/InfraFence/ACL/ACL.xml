@@ -1,0 +1,9 @@
+<acl>
+    <page-services-infrafence>
+        <name>Services: InfraFence</name>
+        <patterns>
+            <pattern>ui/infrafence/*</pattern>
+            <pattern>api/infrafence/*</pattern>
+        </patterns>
+    </page-services-infrafence>
+</acl>

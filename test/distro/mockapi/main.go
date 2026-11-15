@@ -26,7 +26,12 @@ import (
 type state struct {
 	mu         sync.Mutex
 	Registered bool `json:"registered"`
-	Heartbeats int  `json:"heartbeats"`
+	// LastRegister is the body of the latest registration (the install
+	// token blanked).
+	LastRegister json.RawMessage `json:"last_register,omitempty"`
+	// Modes are the bodies of /api/v1/agent/mode (appliance GUI).
+	Modes      []json.RawMessage `json:"modes,omitempty"`
+	Heartbeats int               `json:"heartbeats"`
 	// LastHeartbeat is the body of the latest heartbeat.
 	LastHeartbeat json.RawMessage `json:"last_heartbeat,omitempty"`
 	Syncs         int             `json:"syncs"`
@@ -150,8 +155,19 @@ func main() {
 		_, _ = w.Write(bin)
 	})
 	mux.HandleFunc("/api/v1/agents/register", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reg map[string]any
+		if json.Unmarshal(body, &reg) == nil {
+			if _, ok := reg["install_token"]; ok {
+				reg["install_token"] = "(set)"
+			}
+			body, _ = json.Marshal(reg)
+		}
 		st.mu.Lock()
 		st.Registered = true
+		if json.Valid(body) {
+			st.LastRegister = body
+		}
 		st.mu.Unlock()
 		reply(w, map[string]any{"token": "distro-test-token", "agent": map[string]any{"id": 1}})
 	})
@@ -189,6 +205,30 @@ func main() {
 			out["config"] = cfg
 		}
 		reply(w, out)
+	})
+	// The appliance GUI's mode switch: recorded, and applied to the sync's
+	// config like the dashboard would (monitor_mode), bumping the version.
+	mux.HandleFunc("/api/v1/agent/mode", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Mode string `json:"mode"`
+		}
+		raw, _ := io.ReadAll(r.Body)
+		if json.Unmarshal(raw, &body) != nil || (body.Mode != "protect" && body.Mode != "monitor") {
+			http.Error(w, "bad mode", http.StatusUnprocessableEntity)
+			return
+		}
+		st.mu.Lock()
+		st.Modes = append(st.Modes, raw)
+		cfg := map[string]any{"bf_threshold": 5, "bf_window": 60}
+		if old, ok := st.extra["config"]; ok {
+			_ = json.Unmarshal(old, &cfg)
+		}
+		cfg["monitor_mode"] = body.Mode == "monitor"
+		b, _ := json.Marshal(cfg)
+		st.extra["config"] = b
+		st.version++
+		st.mu.Unlock()
+		reply(w, map[string]any{"status": "ok", "mode": body.Mode})
 	})
 	// Test control: top-level keys of the posted object replace those of the
 	// sync reply (null removes one; send the whole "config" to change it).

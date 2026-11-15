@@ -1,0 +1,6 @@
+rm -f /etc/rc.conf.d/infrafence
+/usr/local/sbin/configctl filter reload > /dev/null 2>&1 || true
+# The emptied tables are no longer referenced: drop them (only ours).
+for t in infrafence_bans infrafence_threat infrafence_geo; do
+	/sbin/pfctl -t "$t" -T kill > /dev/null 2>&1 || true
+done

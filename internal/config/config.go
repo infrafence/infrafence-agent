@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 )
 
-const defaultPath = "/etc/infrafence/config.json"
+// defaultPath is where the config lives without INFRAFENCE_CONFIG
+// (path_freebsd.go: /usr/local/etc on FreeBSD).
+var defaultPath = "/etc/infrafence/config.json"
 
 type Config struct {
 	ServerURL    string `json:"server_url"`
@@ -19,6 +21,9 @@ type Config struct {
 	// Panel turns on the hosting panel socket and commands on a host
 	// without cPanel/WHM or Plesk (where they are on by themselves).
 	Panel bool `json:"panel,omitempty"`
+	// Kind is what registered: "" or "server" for the server agent,
+	// "opnsense" for the firewall appliance (FreeBSD build only).
+	Kind string `json:"kind,omitempty"`
 }
 
 func path() string {
@@ -60,3 +65,6 @@ func Save(cfg *Config) error {
 
 	return os.WriteFile(p, data, 0o600)
 }
+
+// Path is the config file in use (INFRAFENCE_CONFIG or the default).
+func Path() string { return path() }

@@ -1,0 +1,6 @@
+<28>1 2026-11-15T09:30:01+01:00 fw1.example.lan openvpn_server1 7001 - [meta sequenceId="30"] 80.94.95.11:41234 TLS Auth Error: Auth Username/Password verification failed for peer
+<28>1 2026-11-15T09:30:02+01:00 fw1.example.lan openvpn_server1 7001 - [meta sequenceId="31"] 80.94.95.11:41235 TLS Error: TLS handshake failed
+<28>1 2026-11-15T09:30:03+01:00 fw1.example.lan openvpn 7002 - [meta sequenceId="32"] user 'bob' could not authenticate.
+<28>1 2026-11-15T09:30:04+01:00 fw1.example.lan openvpn_server1 7001 - [meta sequenceId="33"] [AF_INET6]2001:67c:2e8:22::c100:68b:1194 TLS Error: TLS handshake failed
+<28>1 2026-11-15T09:30:05+01:00 fw1.example.lan openvpn_server1 7001 - [meta sequenceId="34"] alice/80.94.95.12:5000 VERIFY ERROR: depth=0, error=certificate has expired
+<4>1 2026-11-15T09:31:00+01:00 fw1.example.lan kernel - - [meta sequenceId="35"] wg0: Invalid handshake initiation from 80.94.95.13:51820

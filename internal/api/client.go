@@ -277,6 +277,22 @@ type RegisterRequest struct {
 	OS           string `json:"os"`
 	OSVersion    string `json:"os_version"`
 	Version      string `json:"version"`
+	// Appliance builds only (the server agent leaves them out): what kind
+	// of agent registers ("opnsense"), the mode picked at install
+	// ("protect" or "monitor"; an older dashboard ignores it and the
+	// token's mode applies) and the platform details.
+	Kind     string    `json:"kind,omitempty"`
+	Mode     string    `json:"mode,omitempty"`
+	Platform *Platform `json:"platform,omitempty"`
+}
+
+// Platform describes an appliance (register and heartbeat).
+type Platform struct {
+	Product string `json:"product,omitempty"` // "OPNsense"
+	Version string `json:"version,omitempty"` // "26.7.1"
+	Kernel  string `json:"kernel,omitempty"`  // "14.3-RELEASE-p4"
+	Arch    string `json:"arch,omitempty"`    // amd64, arm64
+	ABI     string `json:"abi,omitempty"`
 }
 
 // ReverbConfig holds the WebSocket connection details for real-time push.
@@ -352,6 +368,13 @@ type HeartbeatRequest struct {
 	// WebDetection: which access logs web attack detection reads, or why it
 	// is off and what to change (watcher.WebDetection).
 	WebDetection any `json:"web_detection,omitempty"`
+
+	// Appliance builds only: the agent kind, what this agent can do (the
+	// dashboard hides the rest) and the appliance's state. Absent from the
+	// server agent's heartbeat.
+	Kind         string   `json:"kind,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Appliance    any      `json:"appliance,omitempty"`
 }
 
 // VerifyDNS: the domain has no document root on the host, so its trust
@@ -791,6 +814,21 @@ func (c *Client) Register(req RegisterRequest) (*RegisterResponse, error) {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// ModeRequest asks the dashboard to switch this agent's mode, from the
+// appliance's own GUI. The dashboard stays the source of truth: the agent
+// applies the mode from the next sync.
+type ModeRequest struct {
+	Mode   string `json:"mode"`   // "protect" or "monitor"
+	Actor  string `json:"actor"`  // the GUI user, as the appliance reports it
+	Source string `json:"source"` // "opnsense-gui"
+}
+
+// SetMode posts a mode change (POST /api/v1/agent/mode). An older
+// dashboard answers 404: IsNotFound(err).
+func (c *Client) SetMode(req ModeRequest) error {
+	return c.post("/api/v1/agent/mode", c.token, req, nil)
 }
 
 func (c *Client) Heartbeat(req HeartbeatRequest) (*HeartbeatResponse, error) {

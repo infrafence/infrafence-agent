@@ -1,0 +1,15 @@
+<38>1 2026-11-15T09:20:01+01:00 fw1.example.lan sshd 81234 - [meta sequenceId="10"] Invalid user admin from 45.155.205.233 port 50122
+<38>1 2026-11-15T09:20:02+01:00 fw1.example.lan sshd 81234 - [meta sequenceId="11"] Failed password for invalid user admin from 45.155.205.233 port 50122 ssh2
+<38>1 2026-11-15T09:20:03+01:00 fw1.example.lan sshd 81234 - [meta sequenceId="12"] Failed password for root from 2a03:b0c0:3:d0::1a4:1 port 50124 ssh2
+<38>1 2026-11-15T09:20:04+01:00 fw1.example.lan sshd 81234 - [meta sequenceId="13"] error: PAM: Authentication error for illegal user oracle from 45.155.205.233
+<38>1 2026-11-15T09:20:05+01:00 fw1.example.lan sshd 81240 - [meta sequenceId="14"] Accepted publickey for root from 192.168.10.20 port 50200 ssh2: ED25519 SHA256:abc
+<36>1 2026-11-15T09:21:01+01:00 fw1.example.lan audit 61000 - [meta sequenceId="15"] user root could not authenticate for WebGui. [using OPNsense\Auth\Services\WebGui + OPNsense\Auth\Local] at 80.94.95.10
+<36>1 2026-11-15T09:21:02+01:00 fw1.example.lan audit 61000 - [meta sequenceId="16"] /index.php: Web GUI authentication error for 'admin' from 80.94.95.10
+<37>1 2026-11-15T09:21:03+01:00 fw1.example.lan audit 61000 - [meta sequenceId="17"] /index.php: Successful login for user 'root' from: 192.168.10.20
+<37>1 2026-11-15T09:21:04+01:00 fw1.example.lan audit 61000 - [meta sequenceId="18"] user root authenticated successfully for WebGui [using OPNsense\Auth\Services\WebGui + OPNsense\Auth\Local] at 192.168.10.20
+<36>1 2026-11-15T09:21:05+01:00 fw1.example.lan audit 61000 - [meta sequenceId="19"] user root could not authenticate for WebGui. [using OPNsense\Auth\Services\WebGui + OPNsense\Auth\Local] at -
+<36>1 2026-11-15T09:21:06+01:00 fw1.example.lan audit 61000 - [meta sequenceId="20"] /api/core/system/status: user apikey could not authenticate for api
+<39>1 2026-11-15T11:35:06+00:00 OPNsense.internal audit 72172 - [meta sequenceId="23"] user root failed authentication for WebGui on OPNsense\Auth\Services\WebGui via OPNsense\Auth\Local
+<36>1 2026-11-15T11:35:06+00:00 OPNsense.internal audit 72172 - [meta sequenceId="24"] user root could not authenticate for WebGui. [using OPNsense\Auth\Services\WebGui + OPNsense\Auth\Local]
+<35>1 2026-11-15T11:35:06+00:00 OPNsense.internal audit 72172 - [meta sequenceId="25"] /index.php: Web GUI authentication error for 'root' from 127.0.0.1
+<38>1 2026-11-15T11:34:32+00:00 OPNsense.internal sshd 74608 - [meta sequenceId="7"] Failed password for root from 45.155.205.233 port 42426 ssh2

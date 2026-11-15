@@ -1,0 +1,6 @@
+# Stop the agent, empty its own three tables and remove the aliases. The
+# rules go away with the plugin hook (they are never written to
+# config.xml): the filter is reloaded once the files are gone.
+/usr/local/etc/rc.d/infrafence onestop > /dev/null 2>&1 || true
+/usr/local/sbin/infrafence-agent appliance flush > /dev/null 2>&1 || true
+/usr/local/opnsense/scripts/OPNsense/InfraFence/setup.php uninstall || true

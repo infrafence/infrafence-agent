@@ -1,0 +1,30 @@
+{
+    "product_abi": "26.7",
+    "product_arch": "amd64",
+    "product_check": {
+        "api_version":"2",
+        "connection":"ok",
+        "downgrade_packages":[],
+        "download_size":"52.1MiB",
+        "last_check":"Sat Nov 14 03:00:12 UTC 2026",
+        "needs_reboot":"0",
+        "new_packages":[],
+        "os_version":"FreeBSD 14.3-RELEASE-p4",
+        "product_id":"opnsense",
+        "product_target":"opnsense",
+        "product_version":"26.7.1",
+        "product_abi":"26.7",
+        "reinstall_packages":[],
+        "remove_packages":[],
+        "repository":"ok",
+        "upgrade_major_message":"",
+        "upgrade_major_version":"",
+        "upgrade_needs_reboot":"0",
+        "upgrade_packages":[{"name":"opnsense","repository":"OPNsense","current_version":"26.7.1","new_version":"26.7.3"},{"name":"openssl","repository":"OPNsense","current_version":"3.0.17","new_version":"3.0.18"}],
+        "upgrade_sets":[]
+    },
+    "product_latest": "26.7.3",
+    "product_name": "OPNsense",
+    "product_series": "26.7",
+    "product_version": "26.7.1"
+}
