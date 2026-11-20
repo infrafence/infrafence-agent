@@ -18,16 +18,21 @@ base_config='{"bf_threshold":5,"bf_window":60,"monitor_mode":false}'
 if curl -s -o /dev/null http://127.0.0.1/; then
   ip netns exec cl ip addr add "$flooder/24" dev veth1 2>/dev/null
   set_sync "{\"config\":${base_config%\}},\"waf_config\":{\"thresholds\":{\"http_flood\":200}}}}"
+  # A page that answers 200 (a 404 would be scored and banned by 404_flood first).
+  echo ok >/var/www/html/flood.html
   # Restart so the agent reads Apache's access log (installed after it started).
+  since=$(date '+%Y-%m-%d %H:%M:%S')
   systemctl restart infrafence-agent
   for _ in $(seq 1 30); do
-    journalctl -u infrafence-agent --no-pager -n 200 | grep -qE '\[webwatcher\] watching .*access' && break
+    journalctl -u infrafence-agent --no-pager --since "$since" | grep -qE '\[webwatcher\] watching .*access' && break
     sleep 1
   done
-  sleep 3
+  sleep 2
   # 400 requests on one connection (curl's URL range reuses it): the
   # connection count stays at 1, the request count crosses 200.
-  ip netns exec cl curl -s -o /dev/null --interface "$flooder" "http://203.0.113.1/flood?n=[1-400]"
+  ip netns exec cl curl -s -o /dev/null --interface "$flooder" "http://203.0.113.1/flood.html?n=[1-400]"
+  # ev: the details up to the first "}" (status_mix holds one); action and
+  # ban_seconds come before it (the keys are sorted).
   ev=""
   for _ in $(seq 1 30); do
     ev=$(curl -s "$api/state" | grep -o '{"type":"http_flood"[^}]*' | grep -F '"action":"banned"' | head -1)
@@ -40,7 +45,8 @@ if curl -s -o /dev/null http://127.0.0.1/; then
   curl -s "$api/state" | grep -o '"bans":\[[^]]*' | grep -q "\"ip_address\":\"$flooder\"[^}]*\"expires_at\":\"" && reported=yes
   log "http flood: event=${ev:+yes} banned=$banned reported_with_expiry=$reported"
   if [ -n "$ev" ] && [ "$banned" = yes ] && [ "$reported" = yes ] &&
-     grep -qF '"ban_seconds":"1800"' <<<"$ev" && grep -qF '"top_paths":"/flood (' <<<"$ev"; then
+     grep -qF '"ban_seconds":"1800"' <<<"$ev" &&
+     curl -s "$api/state" | grep -qF '"top_paths":"{\"/flood.html\":'; then
     R_HTTPFLOOD=ok
   else
     echo "$ev"
@@ -49,6 +55,7 @@ if curl -s -o /dev/null http://127.0.0.1/; then
   # Leave the server as waf.sh did.
   firewall_unban=$("$AGENT" panel unban "$flooder" --actor root 2>&1) || log "unban $flooder: $firewall_unban"
   ip netns exec cl ip addr del "$flooder/24" dev veth1 2>/dev/null
+  rm -f /var/www/html/flood.html
   set_sync "{\"config\":$base_config}"
 else
   R_HTTPFLOOD=skip

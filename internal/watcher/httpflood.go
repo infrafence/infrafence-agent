@@ -1,13 +1,14 @@
 package watcher
 
 import (
-	"fmt"
+	"encoding/json"
 	"log"
 	"net"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -30,9 +31,11 @@ const (
 	// httpFloodDefault requests in the window (10 per second for a minute),
 	// waf_config.thresholds["http_flood"] overrides it.
 	httpFloodDefault = 600
-	// httpFloodMin: a lower threshold from the dashboard is raised to it,
-	// so a typo cannot ban ordinary visitors.
-	httpFloodMin = 100
+	// httpFloodMin and httpFloodMax bound the threshold from the dashboard
+	// (its settings page enforces the same range, an API write may not): a
+	// value outside is clamped, so a typo cannot ban ordinary visitors.
+	httpFloodMin = 120
+	httpFloodMax = 10000
 
 	// The window is floodBuckets buckets of floodBucketSecs: 60 s, slid in
 	// 5 s steps (the count covers the last 55 to 60 seconds).
@@ -70,6 +73,40 @@ const (
 
 // floodBanSteps: first ban, again within 24 h, a third time (and later).
 var floodBanSteps = []time.Duration{30 * time.Minute, 6 * time.Hour, 24 * time.Hour}
+
+// floodBacklogBytes: a log chunk read at once beyond this is a backlog
+// (about 40,000 lines in half a second), not counted.
+const floodBacklogBytes = 8 << 20
+
+// floodStatic: a request http_flood does not count, a static file served
+// as such (by its extension, answered below 400). Not by path prefix, and
+// not a PHP script with a static-looking PATH_INFO: those run code.
+func floodStatic(uriLower string, status int) bool {
+	if status >= 400 || strings.Contains(uriLower, ".php") {
+		return false
+	}
+	path := uriLower
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	for _, ext := range staticExtensions {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// setFloodBacklog marks the lines of logPath being processed as a backlog.
+func (w *WebWatcher) setFloodBacklog(logPath string, on bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if on {
+		w.floodBacklog[logPath] = true
+	} else {
+		delete(w.floodBacklog, logPath)
+	}
+}
 
 // floodNow is replaced in tests.
 var floodNow = time.Now
@@ -174,7 +211,8 @@ func (t *floodTop) add(s string) {
 	}
 }
 
-// top is the n most frequent values, "value (count)" joined with ", ".
+// top is the n most frequent values with their counts, as a JSON object
+// ({"example.com":451}): event details are strings.
 func (t *floodTop) top(n int) string {
 	idx := make([]int, 0, floodTopSlots)
 	for i, s := range t.names {
@@ -183,14 +221,23 @@ func (t *floodTop) top(n int) string {
 		}
 	}
 	sort.SliceStable(idx, func(a, b int) bool { return t.counts[idx[a]] > t.counts[idx[b]] })
-	parts := make([]string, 0, n)
+	out := make(map[string]uint32, n)
 	for _, i := range idx {
-		if len(parts) == n {
+		if len(out) == n {
 			break
 		}
-		parts = append(parts, t.names[i]+" ("+strconv.FormatUint(uint64(t.counts[i]), 10)+")")
+		out[t.names[i]] = t.counts[i]
 	}
-	return strings.Join(parts, ", ")
+	return floodJSON(out)
+}
+
+// floodJSON encodes an event detail object (never fails for these maps).
+func floodJSON(m map[string]uint32) string {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // first is the most frequent value.
@@ -237,38 +284,36 @@ func (s *floodSample) sampled() uint32 {
 	return n
 }
 
+// statusMix is the requests per status class as a JSON object
+// ({"2xx":580,"4xx":20}; "other" for a status the log did not have).
 func (s *floodSample) statusMix() string {
-	var parts []string
+	out := map[string]uint32{}
 	for k := 1; k <= 5; k++ {
 		if s.status[k] > 0 {
-			parts = append(parts, fmt.Sprintf("%dxx=%d", k, s.status[k]))
+			out[strconv.Itoa(k)+"xx"] = s.status[k]
 		}
 	}
 	if s.status[0] > 0 {
-		parts = append(parts, fmt.Sprintf("other=%d", s.status[0]))
+		out["other"] = s.status[0]
 	}
-	return strings.Join(parts, ", ")
+	return floodJSON(out)
 }
 
 // floodClean bounds a logged value for an event: at most floodMaxField
-// bytes of valid UTF-8, control characters replaced. Returns s itself when
-// it is already clean (no allocation on the hot path).
+// bytes of valid UTF-8, control, format (bidi overrides, zero-width) and
+// line separator characters replaced. Returns s itself when it is printable
+// ASCII (no allocation on the hot path).
 func floodClean(s string) string {
-	clean := len(s) <= floodMaxField && utf8.ValidString(s)
-	if clean {
-		for i := 0; i < len(s); i++ {
-			if s[i] < 0x20 || s[i] == 0x7f {
-				clean = false
-				break
-			}
-		}
+	clean := len(s) <= floodMaxField
+	for i := 0; clean && i < len(s); i++ {
+		clean = s[i] >= 0x20 && s[i] < 0x7f
 	}
 	if clean {
 		return s
 	}
 	var b strings.Builder
 	for _, r := range s {
-		if r == utf8.RuneError || r < 0x20 || r == 0x7f {
+		if r == utf8.RuneError || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
 			r = '?'
 		}
 		if b.Len()+utf8.RuneLen(r) > floodMaxField {
@@ -285,6 +330,8 @@ type floodStrike struct {
 	active   bool      // the last ban is still in force (w.banned)
 	until    time.Time // the last ban's end
 	reported time.Time // the last report-only event
+	// undecided: the last crossing whose crawler claim DNS could not decide.
+	undecided time.Time
 }
 
 type floodState struct {
@@ -295,6 +342,8 @@ type floodState struct {
 	strikes    map[string]*floodStrike
 	// notes: exempt addresses already logged ("reason ip").
 	notes map[string]bool
+	// clampLogged: the out-of-range threshold last logged.
+	clampLogged int
 	// cdnReported: log file → last CDN edge event.
 	cdnReported map[string]time.Time
 }
@@ -317,6 +366,30 @@ func (f *floodState) drop(ip string) {
 	}
 }
 
+// floodEvictProbe: counters looked at to make room at the cap.
+const floodEvictProbe = 8
+
+// evictLow makes room at the cap: of a few counters (the map's random
+// iteration order), the one with the fewest requests goes, unless all have
+// a quarter of the threshold or more. So addresses sending one request a
+// minute cannot keep a flooder from being counted.
+func (f *floodState) evictLow(keepFrom uint32) bool {
+	victim, low, seen := "", uint32(0), 0
+	for ip, c := range f.ips {
+		if n := max(c.sum[0], c.sum[1]); victim == "" || n < low {
+			victim, low = ip, n
+		}
+		if seen++; seen == floodEvictProbe {
+			break
+		}
+	}
+	if victim == "" || low >= keepFrom {
+		return false
+	}
+	f.drop(victim)
+	return true
+}
+
 // prune drops the addresses idle for a whole window and the ban history
 // older than floodStrikeMemory.
 func (f *floodState) prune(now time.Time) {
@@ -328,7 +401,7 @@ func (f *floodState) prune(now time.Time) {
 		}
 	}
 	for ip, s := range f.strikes {
-		if !s.active && now.Sub(s.until) > floodStrikeMemory && now.Sub(s.reported) > floodReportEvery {
+		if !s.active && now.Sub(s.until) > floodStrikeMemory && now.Sub(s.reported) > floodReportEvery && now.Sub(s.undecided) > floodReportEvery {
 			delete(f.strikes, ip)
 		}
 	}
@@ -384,7 +457,13 @@ func (w *WebWatcher) SetNeverBan(fn func(ip string) bool) {
 // floodThreshold is the requests per minute that make a flood. Must be
 // called with w.mu held.
 func (w *WebWatcher) floodThreshold() int {
-	return max(w.wafThreshold(httpFloodType, httpFloodDefault), httpFloodMin)
+	v := w.wafThreshold(httpFloodType, httpFloodDefault)
+	c := min(max(v, httpFloodMin), httpFloodMax)
+	if c != v && w.flood.clampLogged != v {
+		w.flood.clampLogged = v
+		log.Printf("[webwatcher] http_flood threshold %d is outside %d-%d requests per minute: %d is used", v, httpFloodMin, httpFloodMax, c)
+	}
+	return c
 }
 
 // countFlood counts a request of ip (static resources excluded by the
@@ -402,7 +481,7 @@ func (w *WebWatcher) countFlood(ip, logPath, line, server string, e *accessLogEn
 			if now.Sub(f.lastPrune) >= floodPruneEvery {
 				f.prune(now)
 			}
-			if len(f.ips) >= floodMaxIPs {
+			if len(f.ips) >= floodMaxIPs && !f.evictLow(uint32(w.floodThreshold()/4)) {
 				if now.Sub(f.fullLogged) >= 10*time.Minute {
 					f.fullLogged = now
 					log.Printf("[webwatcher] http_flood: %d addresses counted at once, new ones are not counted until idle ones expire", floodMaxIPs)
@@ -512,8 +591,20 @@ func (w *WebWatcher) floodCrossed(ip, logPath, line, ua string, c *floodCounter,
 				d["fcrdns_verified"] = "false"
 				w.floodAct(ip, logPath, line, d, "")
 			default:
+				// DNS could not decide. The User-Agent is the client's and its
+				// reverse DNS may be made to fail on purpose: only the first
+				// crossing is spared, a flood still going on within the hour
+				// is banned.
 				d["fcrdns_verified"] = "unknown"
-				w.floodAct(ip, logPath, line, d, "dns_unavailable")
+				s := w.floodStrike(ip)
+				now := floodNow()
+				again := !s.undecided.IsZero() && now.Sub(s.undecided) <= floodReportEvery
+				s.undecided = now
+				if again {
+					w.floodAct(ip, logPath, line, d, "")
+				} else {
+					w.floodAct(ip, logPath, line, d, "dns_unavailable")
+				}
 			}
 		})
 		return
@@ -554,6 +645,9 @@ func (w *WebWatcher) floodAct(ip, logPath, line string, d map[string]string, not
 	} else {
 		s.n = 1
 	}
+	// The ban itself may still be refused by the ban path (protection
+	// switched off, already banned): neverBan has ruled out the addresses it
+	// refuses, so the event says what was asked.
 	step := min(s.n, len(floodBanSteps))
 	dur := floodBanSteps[step-1]
 	s.active, s.until = true, now.Add(dur)

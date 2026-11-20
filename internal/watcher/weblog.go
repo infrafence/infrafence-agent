@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/proxysites"
@@ -171,7 +172,10 @@ type WebWatcher struct {
 	cfWarned map[string]bool
 
 	// http_flood (httpflood.go): request counts per address, ban history.
-	flood      *floodState
+	flood *floodState
+	// floodBacklog: logs whose lines being processed now are a backlog (a
+	// replay, a large chunk read at once), not counted for http_flood.
+	floodBacklog map[string]bool
 	onTimedBan TimedBanFunc
 	neverBan   func(ip string) bool
 }
@@ -250,8 +254,17 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 		if info.Server == "" {
 			info.Server = serverOfLogPath(info.Path)
 		}
-		if !seen[info.Path] {
-			seen[info.Path] = true
+		// The same file under two names (a symlink, /usr/local/apache/logs
+		// and /var/log/apache2 on cPanel) is read once: its requests would
+		// count twice (http_flood).
+		key := info.Path
+		if !strings.HasPrefix(key, containerLogPrefix) {
+			if r, err := filepath.EvalSymlinks(key); err == nil {
+				key = r
+			}
+		}
+		if !seen[info.Path] && !seen[key] {
+			seen[info.Path], seen[key] = true, true
 			infos = append(infos, info)
 			if len(info.Domains) > 0 {
 				domainMap[info.Path] = info.Domains
@@ -960,7 +973,7 @@ func cpanelDomlogsIn(dir string) []LogPathInfo {
 				continue
 			}
 			if entry.IsDir() {
-				if depth == 0 {
+				if depth == 0 && rootOwnedDir(path) {
 					scan(path, 1)
 				}
 				continue
@@ -971,6 +984,13 @@ func cpanelDomlogsIn(dir string) []LogPathInfo {
 			}
 			info, err := os.Stat(path)
 			if err != nil || info.IsDir() || info.Size() == 0 {
+				continue
+			}
+			// In an account's directory only the web server's own files:
+			// regular (no symlink), owned by the agent's user (root), not
+			// writable by others. Lines written by someone else could ban any
+			// address.
+			if depth == 1 && !trustedLogFile(path) {
 				continue
 			}
 			// An account's directory also keeps old logs: only those still
@@ -1006,11 +1026,45 @@ func cpanelDomlogDomain(name string) (string, bool) {
 		}
 	}
 	domain := strings.TrimSuffix(name, "-ssl_log")
-	// The filename IS the domain name in cPanel domlogs.
-	if !strings.ContainsRune(domain, '.') || strings.ContainsAny(domain, " /_") {
+	// The filename IS the domain name in cPanel domlogs; one ending in a
+	// number (example.com.1, example.com.20260101) is a rotated copy.
+	tld := domain[strings.LastIndexByte(domain, '.')+1:]
+	if !strings.ContainsRune(domain, '.') || strings.ContainsAny(domain, " /_") || !isTLDLabel(tld) {
 		return "", false
 	}
 	return domain, true
+}
+
+// isTLDLabel: letters only, or an IDN label (xn--).
+func isTLDLabel(s string) bool {
+	if strings.HasPrefix(s, "xn--") {
+		return len(s) > 4
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return len(s) >= 2
+}
+
+// rootOwnedDir: a directory owned by the agent's user and not writable by
+// group or others.
+func rootOwnedDir(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.IsDir() && fi.Mode().Perm()&0o022 == 0 && ownedByMe(fi)
+}
+
+// trustedLogFile: a regular file (not a symlink) owned by the agent's user,
+// not writable by group or others.
+func trustedLogFile(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o022 == 0 && ownedByMe(fi)
+}
+
+func ownedByMe(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Geteuid()
 }
 
 // ── Docker container log detection ──────────────────────────────────
@@ -1247,6 +1301,7 @@ func NewWebWatcher(paths []string, domainMap map[string][]string, onBan BanFunc,
 		sources:       make(map[string]LogPathInfo),
 		cfWarned:      make(map[string]bool),
 		flood:         newFloodState(),
+		floodBacklog:  make(map[string]bool),
 	}
 }
 
@@ -1554,7 +1609,8 @@ func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error 
 
 	// WEBLOG_REPLAY=1 → process the entire existing file (for testing/backfill)
 	var offset int64
-	if os.Getenv("WEBLOG_REPLAY") == "1" {
+	replay := os.Getenv("WEBLOG_REPLAY") == "1"
+	if replay {
 		offset = 0
 		log.Printf("[webwatcher] REPLAY mode: processing %s from beginning (%d bytes)", filepath.Base(logPath), fi.Size())
 	} else {
@@ -1600,6 +1656,13 @@ func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error 
 			partial += string(buf[:n])
 			offset += int64(n)
 
+			// Lines of the past read at once (a replay, a tail that was held
+			// up) would all count as this second's requests for http_flood.
+			backlog := replay || n > floodBacklogBytes
+			replay = false
+			if backlog {
+				w.setFloodBacklog(logPath, true)
+			}
 			for {
 				idx := strings.IndexByte(partial, '\n')
 				if idx < 0 {
@@ -1607,6 +1670,9 @@ func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error 
 				}
 				w.processLine(logPath, partial[:idx])
 				partial = partial[idx+1:]
+			}
+			if backlog {
+				w.setFloodBacklog(logPath, false)
 			}
 		}
 
@@ -2014,7 +2080,7 @@ func (w *WebWatcher) processLine(logPath, line string) {
 	// Counted before the exemptions below (private addresses, whitelist),
 	// which the rule checks itself when an address crosses the threshold,
 	// so an exempt flood is logged rather than invisible.
-	if !w.banned[ip] && w.isTypeEnabled(httpFloodType) && !isStaticResource(uriRaw) {
+	if !w.banned[ip] && w.isTypeEnabled(httpFloodType) && !w.floodBacklog[logPath] && !floodStatic(uriRaw, entry.status) {
 		w.countFlood(ip, logPath, line, server, &entry)
 	}
 

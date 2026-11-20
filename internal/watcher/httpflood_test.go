@@ -97,8 +97,8 @@ func TestHTTPFloodBansAtThreshold(t *testing.T) {
 	d := e[0].d
 	want := map[string]string{
 		"requests": "600", "window_seconds": "60", "threshold": "600", "action": "banned",
-		"ban_level": "1", "ban_seconds": "1800", "top_hosts": "example.com (451)", "top_paths": "/page (451)",
-		"status_mix": "2xx=451", "sampled_requests": "451", "user_agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0",
+		"ban_level": "1", "ban_seconds": "1800", "top_hosts": `{"example.com":451}`, "top_paths": `{"/page":451}`,
+		"status_mix": `{"2xx":451}`, "sampled_requests": "451", "user_agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0",
 		"domain": "example.com", "log_file": "example.com", "method": "GET",
 	}
 	for k, v := range want {
@@ -152,7 +152,7 @@ func TestHTTPFloodAcrossVhostsAndServers(t *testing.T) {
 	waitFor(t, func() bool { e, _ := rec.snapshot(); return len(e) == 1 })
 	e, _ := rec.snapshot()
 	// Sampled from 150 requests on: 200 of example.com, then 250 of shop.
-	if got := e[0].d["top_hosts"]; got != "shop.example.com (250), example.com (201)" || e[0].d["sampled_requests"] != "451" {
+	if got := e[0].d["top_hosts"]; got != `{"example.com":201,"shop.example.com":250}` || e[0].d["sampled_requests"] != "451" {
 		t.Fatalf("top_hosts %q", got)
 	}
 }
@@ -161,10 +161,30 @@ func TestHTTPFloodSkipsStaticFiles(t *testing.T) {
 	w, rec, _ := newFloodWatcher(t)
 	for range 1000 {
 		w.processLine(floodLog, floodLine("203.0.113.15", "/wp-content/uploads/a.jpg", "Mozilla/5.0", 200))
+		w.processLine(floodLog, floodLine("203.0.113.15", "/style.css?ver=6", "Mozilla/5.0", 304))
 	}
 	settle()
 	if e, b := rec.snapshot(); len(e) != 0 || len(b) != 0 {
 		t.Fatalf("static files counted: events %v bans %v", e, b)
+	}
+	// What runs code is counted, whatever its path looks like.
+	for uri, status := range map[string]int{
+		"/wp-content/plugins/x/endpoint.php": 200, "/index.php/a.js": 200, "/static/missing.js": 404,
+	} {
+		if floodStatic(uri, status) {
+			t.Errorf("%s (%d) not counted", uri, status)
+		}
+	}
+}
+
+func TestHTTPFloodBacklogNotCounted(t *testing.T) {
+	w, rec, _ := newFloodWatcher(t)
+	w.setFloodBacklog(floodLog, true)
+	send(w, floodLog, "203.0.113.16", 2*httpFloodDefault)
+	w.setFloodBacklog(floodLog, false)
+	settle()
+	if e, b := rec.snapshot(); len(e) != 0 || len(b) != 0 || len(w.flood.ips) != 0 {
+		t.Fatalf("backlog counted: events %v bans %v", e, b)
 	}
 }
 
@@ -195,14 +215,14 @@ func TestHTTPFloodCDNEdge(t *testing.T) {
 		t.Fatalf("CDN edges: events %v bans %v", e, b)
 	}
 	d := e[0].d
-	if e[0].severity != "warning" || d["not_banned"] != "cdn_edge" || d["cdn"] != "cloudflare" || d["action"] != "reported" ||
+	if e[0].severity != "warning" || d["not_banned"] != "cdn_edge" || d["cdn"] != "Cloudflare" || d["action"] != "reported" ||
 		!strings.Contains(d["hint"], "mod_remoteip") {
 		t.Fatalf("CDN event %+v", e[0])
 	}
 	for ip, want := range map[string]string{
-		"162.158.1.1": "cloudflare", "2606:4700::1": "cloudflare", "151.101.1.1": "fastly", "192.88.134.5": "sucuri",
-		"23.40.1.1": "akamai", "130.176.1.1": "cloudfront", "45.60.1.1": "imperva", "35.191.1.1": "google_cloud_lb",
-		"45.32.67.144": "quic.cloud", "203.0.113.1": "", "8.8.8.8": "",
+		"162.158.1.1": "Cloudflare", "2606:4700::1": "Cloudflare", "151.101.1.1": "Fastly", "192.88.134.5": "Sucuri",
+		"23.40.1.1": "Akamai", "130.176.1.1": "Amazon CloudFront", "45.60.1.1": "Imperva", "35.191.1.1": "Google Cloud",
+		"45.32.67.144": "QUIC.cloud", "203.0.113.1": "", "8.8.8.8": "",
 	} {
 		if got := cdnProvider(ip); got != want {
 			t.Errorf("cdnProvider(%s) = %q, want %q", ip, got, want)
@@ -212,7 +232,7 @@ func TestHTTPFloodCDNEdge(t *testing.T) {
 
 func TestHTTPFloodCrawlers(t *testing.T) {
 	fakeDNS(t)
-	w, rec, _ := newFloodWatcher(t)
+	w, rec, now := newFloodWatcher(t)
 	googlebot := "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 	burst := func(ip string) {
 		for i := range httpFloodDefault {
@@ -240,6 +260,15 @@ func TestHTTPFloodCrawlers(t *testing.T) {
 	}
 	if !w.flood.notes["verified_crawler 66.249.66.1"] {
 		t.Errorf("real crawler not logged: %v", w.flood.notes)
+	}
+	// DNS still undecided at the next crossing within the hour: banned (a
+	// reverse zone made to fail must not shield a flood).
+	*now = now.Add(2 * time.Minute)
+	w.fcrdns = newFcrdnsCache(24 * time.Hour)
+	burst("203.0.113.60")
+	waitFor(t, func() bool { _, b := rec.snapshot(); return len(b) == 2 })
+	if _, b := rec.snapshot(); b[1] != "203.0.113.60 http_flood 30m0s" {
+		t.Fatalf("bans %v", b)
 	}
 }
 
@@ -316,7 +345,15 @@ func TestHTTPFloodConfig(t *testing.T) {
 	w.UpdateWAFConfig(&WAFConfig{EnabledTypes: []string{httpFloodType}, Thresholds: map[string]int{httpFloodType: 200}})
 	send(w, floodLog, "203.0.113.81", 200)
 	waitFor(t, func() bool { e, _ := rec.snapshot(); return len(e) == 1 && e[0].d["threshold"] == "200" })
-	// A threshold below the floor is raised to it.
+	// Outside 120-10,000 it is clamped.
+	w.mu.Lock()
+	for v, want := range map[int]int{1: httpFloodMin, 5000: 5000, 1 << 20: httpFloodMax} {
+		w.wafThresholds = map[string]int{httpFloodType: v}
+		if got := w.floodThreshold(); got != want {
+			t.Errorf("threshold %d: %d, want %d", v, got, want)
+		}
+	}
+	w.mu.Unlock()
 	w.UpdateWAFConfig(&WAFConfig{Thresholds: map[string]int{httpFloodType: 5}})
 	send(w, floodLog, "203.0.113.82", httpFloodMin-1)
 	settle()
@@ -331,15 +368,31 @@ func TestHTTPFloodMemoryCap(t *testing.T) {
 	w, _, now := newFloodWatcher(t)
 	e := accessLogEntry{method: "GET", uri: "/", status: 200, userAgent: "x"}
 	w.mu.Lock()
-	for i := range floodMaxIPs + 100 {
+	// A flooder past a quarter of the threshold is never evicted by
+	// addresses sending a request each.
+	for range 200 {
+		w.countFlood("203.0.113.89", floodLog, "", "apache", &e)
+	}
+	for i := range floodMaxIPs + 1000 {
 		w.countFlood(fmt.Sprintf("2001:db8::%x", i), floodLog, "", "apache", &e)
 	}
-	n := len(w.flood.ips)
+	n, kept := len(w.flood.ips), w.flood.ips["203.0.113.89"] != nil
 	w.mu.Unlock()
-	if n != floodMaxIPs {
-		t.Fatalf("%d addresses tracked, cap %d", n, floodMaxIPs)
+	if n != floodMaxIPs || !kept {
+		t.Fatalf("%d addresses tracked (cap %d), flooder kept %v", n, floodMaxIPs, kept)
 	}
-	// Once they are idle for a window, new addresses are counted again.
+	// Full of counters past a quarter of the threshold: a new one is not
+	// counted until they are idle for a window.
+	w.mu.Lock()
+	for _, c := range w.flood.ips {
+		c.sum[0] = 1000
+	}
+	w.countFlood("203.0.113.91", floodLog, "", "apache", &e)
+	refused := w.flood.ips["203.0.113.91"] == nil
+	w.mu.Unlock()
+	if !refused {
+		t.Fatal("a busy counter was evicted")
+	}
 	*now = now.Add(2 * time.Minute)
 	w.mu.Lock()
 	w.countFlood("203.0.113.90", floodLog, "", "apache", &e)
@@ -356,10 +409,10 @@ func TestFloodSampleIsBounded(t *testing.T) {
 		e := accessLogEntry{uri: fmt.Sprintf("/p%d?x=1", i%40), userAgent: "ua", status: 200 + (i%4)*100}
 		s.record(fmt.Sprintf("h%d.example.com", i%30), &e)
 	}
-	if s.hosts.names[floodTopSlots-1] == "" || len(strings.Split(s.paths.top(3), ", ")) != 3 {
+	if s.hosts.names[floodTopSlots-1] == "" || strings.Count(s.paths.top(3), ":") != 3 {
 		t.Fatalf("top: %q", s.paths.top(3))
 	}
-	if got := s.statusMix(); got != "2xx=250, 3xx=250, 4xx=250, 5xx=250" {
+	if got := s.statusMix(); got != `{"2xx":250,"3xx":250,"4xx":250,"5xx":250}` {
 		t.Fatalf("status mix %q", got)
 	}
 	long := strings.Repeat("é", 400) + "\x1b[31m"
@@ -368,6 +421,9 @@ func TestFloodSampleIsBounded(t *testing.T) {
 	}
 	if c := floodClean("a\x00b\nc"); c != "a?b?c" {
 		t.Fatalf("control characters: %q", c)
+	}
+	if c := floodClean("x\u202ey\u200bz\u2028\u0085é"); c != "x?y?z??é" {
+		t.Fatalf("format characters: %q", c)
 	}
 }
 
@@ -406,8 +462,16 @@ func TestCpanelDomlogs(t *testing.T) {
 		}
 	}
 	for _, n := range []string{"example.com", "example.com-ssl_log", "example.com-bytes_log", "ftpxferlog",
-		"example.com-ftp_log", "old.example.com.gz", ".hidden.com", "user1/shop.example.com-ssl_log"} {
+		"example.com-ftp_log", "old.example.com.gz", "example.com.20260101", ".hidden.com", "user1/shop.example.com-ssl_log",
+		"user1/open.example.com", "user2/other.example.com"} {
 		write(n)
+	}
+	// Writable by others: lines anyone could write are not read.
+	if err := os.Chmod(filepath.Join(dir, "user1", "open.example.com"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "user2"), 0o777); err != nil {
+		t.Fatal(err)
 	}
 	// The same log twice (a symlink): read once.
 	if err := os.Symlink(filepath.Join(dir, "example.com"), filepath.Join(dir, "user1", "example.com")); err != nil {
