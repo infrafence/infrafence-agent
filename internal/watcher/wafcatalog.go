@@ -46,6 +46,7 @@ var thresholdConfigKeys = map[string]string{
 	"joomla_auth": "cms_bruteforce",
 	"plugin_scan": "scanner_detected",
 	"404_flood":   "404_flood",
+	"http_flood":  "http_flood",
 }
 
 // BuiltinWAFCatalog returns the catalog of built-in rules.
@@ -87,7 +88,7 @@ func BuiltinWAFCatalog(version string) WAFCatalog {
 		ID: "shellshock:" + shellshockPattern, Group: "shellshock", EventType: "shellshock", Target: "ua_or_referer", Pattern: shellshockPattern,
 	})
 
-	for _, r := range []thresholdRule{ruleWPLogin, ruleXMLRPC, ruleWPAjax, ruleDrupalAuth, ruleJoomlaAuth, rulePluginScan, rule404Flood} {
+	for _, r := range []thresholdRule{ruleWPLogin, ruleXMLRPC, ruleWPAjax, ruleDrupalAuth, ruleJoomlaAuth, rulePluginScan, rule404Flood, ruleHTTPFlood} {
 		c.Thresholds = append(c.Thresholds, WAFCatalogThreshold{
 			Rule:             r.key,
 			EventType:        r.eventType,

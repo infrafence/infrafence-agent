@@ -52,8 +52,8 @@ var coexistActions = map[string]string{
 	"csf": "InfraFence keeps its own chain and never edits csf.conf, csf.allow or csf.deny. " +
 		"After csf -r it restores only its own chains, jumps and sets, within seconds and never while csf is restarting. " +
 		"CSF ports change only when you ask from the dashboard.",
-	"lfd":            "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set.",
-	"imunify":        "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently.",
+	"lfd":            "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set. lfd's CT_LIMIT counts connections; InfraFence's HTTP flood rule counts requests in the access logs, so a keep-alive flood is caught too.",
+	"imunify":        "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Both can ban an HTTP flood: InfraFence counts the requests of one address across all access logs (domlogs included) and never bans CDN edges or verified crawlers.",
 	"imunifyav":      "Both scan files. InfraFence never deletes or moves a file on its own: quarantine only on request.",
 	"cphulk":         "cPHulk blocks panel and service logins; InfraFence reads the same logs and bans at the firewall. cPHulk is not changed.",
 	"fail2ban":       "Compatible: both only drop traffic. InfraFence does not touch fail2ban's chains.",

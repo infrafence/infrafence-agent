@@ -226,6 +226,9 @@ loginhist_check
 # ── virtual patch and quarantine restore (test/distro/waf.sh) ──
 . /distro/waf.sh
 
+# ── HTTP flood over keep-alive: timed ban and one event (test/distro/httpflood.sh) ──
+. /distro/httpflood.sh
+
 # ── SSH checks read the effective configuration (test/distro/sshconfig.sh) ──
 . /distro/sshconfig.sh
 

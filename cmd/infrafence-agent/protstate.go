@@ -87,6 +87,9 @@ type pendingBan struct {
 	Reason string `json:"reason"`
 	Count  int    `json:"count"`
 	At     int64  `json:"at"`
+	// ExpiresAt is the ban's own end (RFC 3339) when the agent chose it
+	// (http_flood); empty: the dashboard picks it.
+	ExpiresAt string `json:"expires_at,omitempty"`
 	// Reported is when the dashboard accepted the report; zero: not yet.
 	Reported int64 `json:"reported,omitempty"`
 }
@@ -323,7 +326,10 @@ func saveProtectionState() {
 }
 
 // noteLocalBan records a ban the agent made itself, to report.
-func noteLocalBan(ip, reason string, count int) {
+func noteLocalBan(ip, reason string, count int) { noteLocalBanUntil(ip, reason, count, nil) }
+
+// noteLocalBanUntil is noteLocalBan for a ban with its own end (nil: none).
+func noteLocalBanUntil(ip, reason string, count int, expiresAt *string) {
 	// The firewall's key for it (an IPv6 address may come written otherwise).
 	if p := net.ParseIP(ip); p != nil {
 		ip = p.String()
@@ -339,7 +345,11 @@ func noteLocalBan(ip, reason string, count int) {
 		log.Printf("[protection] %d bans waiting to be reported: the oldest (%s) will not be", maxBanOutbox, oldest)
 		delete(prot.outbox, oldest)
 	}
-	prot.outbox[ip] = &pendingBan{IP: ip, Reason: reason, Count: count, At: protNow().Unix()}
+	p := &pendingBan{IP: ip, Reason: reason, Count: count, At: protNow().Unix()}
+	if expiresAt != nil {
+		p.ExpiresAt = *expiresAt
+	}
+	prot.outbox[ip] = p
 	prot.Unlock()
 	scheduleProtectionSave()
 }
@@ -389,7 +399,12 @@ func flushLocalBans(client *api.Client) {
 			dropped++
 			continue
 		}
-		if err := reportBan(client, api.BanRequest{IPAddress: p.IP, Reason: p.Reason, BanCount: p.Count}); err != nil {
+		req := api.BanRequest{IPAddress: p.IP, Reason: p.Reason, BanCount: p.Count}
+		if p.ExpiresAt != "" {
+			exp := p.ExpiresAt
+			req.ExpiresAt = &exp
+		}
+		if err := reportBan(client, req); err != nil {
 			if api.IsRejected(err) {
 				// The dashboard refuses this ban (validation, its own
 				// allow list): its decision; the others still go.

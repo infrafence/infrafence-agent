@@ -97,6 +97,9 @@ Lê os logs de acesso dos seus servidores web e atribui uma pontuação a cada I
 | XSS / Busca por `.env` / XMLRPC | +25 | Por pontuação |
 | Busca por arquivos de configuração | +20 | Por pontuação |
 | Rajada de 404 | +15 | Limite (15 requisições / 5 min) |
+| Flood HTTP (`http_flood`) | — | Ban direto (600 requisições / 1 min de um endereço, todos os sites juntos) |
+
+O **flood HTTP** não usa pontuação: um endereço que envia 600 ou mais requisições em um minuto (10 por segundo; arquivos estáticos não contam), em todos os logs de acesso juntos (cada vhost, os domlogs do cPanel incluindo os HTTPS, nginx, Apache, LiteSpeed), é banido na hora por 30 minutos, 6 horas se repetir em até 24 horas após o ban anterior, depois 24 horas. O limite (requisições por minuto, no mínimo 100) e o modo (desligado, só detecção) são definidos no painel; no modo Aprendizado ele só é notificado. Nunca banidos: endereços na whitelist, privados e CGNAT, os do próprio servidor, crawlers de buscadores verificados (DNS reverso confirmado) e nós de CDN (Cloudflare, Fastly, Akamai, Sucuri, Imperva, CloudFront, QUIC.cloud): um flood de um nó de CDN é notificado uma vez, porque o site registra a CDN em vez do visitante (ative `mod_remoteip` ou `real_ip`).
 
 A pontuação cai 5 pontos por minuto. Níveis de ação: **observar** (30) → **desacelerar** (60) → **bloquear** (80) → **ban no firewall** (100). No painel você vê cada regra embutida, altera pesos, limites e modo por tipo, desativa padrões individuais e adiciona regras próprias (URL, User-Agent ou Referer, texto ou regex). Cada release publica o catálogo de regras embutidas como `waf-catalog.json`.
 

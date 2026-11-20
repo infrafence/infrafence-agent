@@ -97,6 +97,9 @@ Lee los logs de acceso de tus servidores web y puntúa cada IP visitante:
 | XSS / Búsqueda de `.env` / XMLRPC | +25 | Por puntuación |
 | Búsqueda de archivos de configuración | +20 | Por puntuación |
 | Ráfaga de 404 | +15 | Umbral (15 peticiones / 5 min) |
+| Flood HTTP (`http_flood`) | — | Ban directo (600 peticiones / 1 min desde una dirección, todos los sitios juntos) |
+
+El **flood HTTP** no usa la puntuación: una dirección que envía 600 o más peticiones en un minuto (10 por segundo; los archivos estáticos no cuentan), en todos los logs de acceso juntos (cada vhost, los domlogs de cPanel incluidos los HTTPS, nginx, Apache, LiteSpeed), se banea de inmediato durante 30 minutos, 6 horas si vuelve a hacerlo en las 24 horas siguientes al ban anterior, luego 24 horas. El umbral (peticiones por minuto, al menos 100) y el modo (apagado, solo detección) se ajustan en el panel; en Aprendizaje solo se notifica. Nunca se banean: direcciones en la lista blanca, privadas y CGNAT, las del propio servidor, los rastreadores de buscadores verificados (DNS inverso confirmado) y los nodos CDN (Cloudflare, Fastly, Akamai, Sucuri, Imperva, CloudFront, QUIC.cloud): un flood desde un nodo CDN se notifica una vez, porque el sitio registra la CDN en lugar del visitante (activa `mod_remoteip` o `real_ip`).
 
 La puntuación baja 5 puntos por minuto. Niveles de acción: **observar** (30) → **frenar** (60) → **bloquear** (80) → **ban en el firewall** (100). En el panel ves cada regla integrada, cambias pesos, umbrales y modo por tipo, desactivas patrones concretos y añades reglas propias (URL, User-Agent o Referer, texto o regex). Cada release publica el catálogo de reglas integradas como `waf-catalog.json`.
 

@@ -690,7 +690,7 @@ the dashboard's event) or the firewall no longer closes it.
       "version": "14.20"
     },
     {
-      "action": "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set.",
+      "action": "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set. lfd's CT_LIMIT counts connections; InfraFence's HTTP flood rule counts requests in the access logs, so a keep-alive flood is caught too.",
       "action_id": "coexist_lfd",
       "active": true,
       "id": "lfd",
@@ -701,7 +701,7 @@ the dashboard's event) or the firewall no longer closes it.
       "version": null
     },
     {
-      "action": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently.",
+      "action": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Both can ban an HTTP flood: InfraFence counts the requests of one address across all access logs (domlogs included) and never bans CDN edges or verified crawlers.",
       "action_id": "coexist_imunify",
       "active": true,
       "id": "imunify",
