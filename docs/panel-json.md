@@ -701,7 +701,7 @@ the dashboard's event) or the firewall no longer closes it.
       "version": null
     },
     {
-      "action": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently.",
+      "action": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Imunify360 recreates its rules every minute and puts its own jumps first; InfraFence moves its jump back ahead within seconds (expected, summarized once an hour), and also drops its bans in the raw table, before Imunify360's chains, so they hold meanwhile.",
       "action_id": "coexist_imunify",
       "active": true,
       "id": "imunify",

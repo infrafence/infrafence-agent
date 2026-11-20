@@ -21,6 +21,7 @@ type fakeGuard struct {
 	checkTakes      time.Duration
 	ensureErr       error
 	repairs         []string
+	ahead           map[string]string
 	csfPID          int
 	checks, ensures int
 	repaired        int             // Ensure calls that repaired something
@@ -50,7 +51,7 @@ func newFakeGuard() *fakeGuard {
 			}
 			f.missing = false
 			f.repaired++
-			return firewall.EnsureResult{Repairs: f.repairs}, nil
+			return firewall.EnsureResult{Repairs: f.repairs, Ahead: f.ahead}, nil
 		},
 		report: func(e []api.EventRequest) error { f.events = append(f.events, e...); return nil },
 	}
