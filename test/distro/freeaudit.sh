@@ -101,8 +101,11 @@ if command -v systemctl >/dev/null; then
   # inside the audit's window and made the read-only check fail. Paused, and
   # a run already started is waited for, before the first snapshot.
   systemctl stop dnf-makecache.timer apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
-  for _ in $(seq 1 120); do
-    systemctl is-active --quiet dnf-makecache.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || break
+  # is-active --quiet is false for "activating": a run that is starting up
+  # (dnf-makecache downloading metadata) must be waited for too.
+  for _ in $(seq 1 300); do
+    systemctl is-active dnf-makecache.service apt-daily.service apt-daily-upgrade.service 2>/dev/null \
+      | grep -qE '^(active|activating|reloading|deactivating)$' || break
     sleep 1
   done
 fi
