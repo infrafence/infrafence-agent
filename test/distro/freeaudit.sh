@@ -95,6 +95,16 @@ snap_procs() { ps -eo pid=,comm= | awk '{print $1, $2}' | sort; }
 # units between the two snapshots.
 if command -v systemctl >/dev/null; then
   timeout 150 systemctl is-system-running --wait >/dev/null 2>&1 || true
+  # The distribution's own package-cache refresh runs on its timer minutes
+  # after boot (dnf-makecache on EL, apt-daily on Debian/Ubuntu) and writes
+  # its caches and unit states on its own schedule: on Rocky 8 it started
+  # inside the audit's window and made the read-only check fail. Paused, and
+  # a run already started is waited for, before the first snapshot.
+  systemctl stop dnf-makecache.timer apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  for _ in $(seq 1 120); do
+    systemctl is-active --quiet dnf-makecache.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || break
+    sleep 1
+  done
 fi
 # EL8's rpm keeps a Berkeley DB environment (/var/lib/rpm/__db.NNN) that
 # its first reader creates. A fresh image (GitHub's runners) has none, an
