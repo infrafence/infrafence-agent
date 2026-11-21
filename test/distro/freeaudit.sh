@@ -95,15 +95,21 @@ snap_procs() { ps -eo pid=,comm= | awk '{print $1, $2}' | sort; }
 # units between the two snapshots.
 if command -v systemctl >/dev/null; then
   timeout 150 systemctl is-system-running --wait >/dev/null 2>&1 || true
-  # The distribution's own package-cache refresh runs on its timer minutes
-  # after boot (dnf-makecache on EL, apt-daily on Debian/Ubuntu) and writes
-  # its caches and unit states on its own schedule: on Rocky 8 it started
-  # inside the audit's window and made the read-only check fail. Paused, and
-  # a run already started is waited for, before the first snapshot.
-  systemctl stop dnf-makecache.timer apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
-  # is-active --quiet is false for "activating": a run that is starting up
-  # (dnf-makecache downloading metadata) must be waited for too.
-  for _ in $(seq 1 300); do
+  # The distribution's own package-cache refresh (dnf-makecache on EL,
+  # apt-daily on Debian/Ubuntu) writes its caches and unit states on its own
+  # schedule. Its timer fires "10 minutes after boot", but a container shares
+  # the host's uptime, so on EL8 it fired right at the container's start and
+  # ran inside the audit's window: the read-only check failed. Before the
+  # first snapshot every such timer and service is stopped and masked for
+  # this boot only (mask --runtime writes under /run, outside the
+  # snapshots), so none can start until the container is gone. EL8's
+  # systemd 239 has no is-system-running --wait, hence no reliance on it.
+  for u in dnf-makecache.timer dnf-makecache.service apt-daily.timer apt-daily.service \
+           apt-daily-upgrade.timer apt-daily-upgrade.service; do
+    systemctl mask --runtime "$u" >/dev/null 2>&1 || true
+    systemctl stop "$u" >/dev/null 2>&1 || true
+  done
+  for _ in $(seq 1 120); do
     systemctl is-active dnf-makecache.service apt-daily.service apt-daily-upgrade.service 2>/dev/null \
       | grep -qE '^(active|activating|reloading|deactivating)$' || break
     sleep 1
