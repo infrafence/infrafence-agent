@@ -567,6 +567,21 @@ func runAgent() {
 			// (1st=24h, 2nd=7d, 3rd=30d, 4th+=permanent).
 			banAndReport(apiClient, "webwatcher", ip, reason, 1)
 		})
+		// http_flood bans carry their own duration (30 min, 6 h, 24 h).
+		webW.SetOnTimedBan(func(ip, reason string, d time.Duration) {
+			banAndReportFor(apiClient, "webwatcher", ip, reason, 1, d)
+		})
+		// What banAndReport would refuse anyway (the server's own and the
+		// protected addresses, the panel's allow list, a recent SSH login):
+		// an http_flood from them is logged, not reported as a ban.
+		webW.SetNeverBan(func(ip string) bool {
+			p := net.ParseIP(ip)
+			if p == nil || firewall.IsSafeIP(p) || panelAllowed(ip) {
+				return true
+			}
+			_, sshLogin := sshLoginGuard(ip)
+			return sshLogin
+		})
 		// Periodically clean up expired IP scores (every 5 minutes)
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
@@ -1178,6 +1193,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			webW.SetMonitorMode(true)
 		}
 		noteSuspendedSync()
+		// Nothing new is dropped while suspended: no raw-table early drop.
+		firewall.SetEarlyDrop(false)
 		// Still check for agent updates so the agent can be updated while
 		// suspended (host settings aren't applied in this state, so read the
 		// customer's update choice here).
@@ -1194,8 +1211,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		Window:    time.Duration(sync.Config.BFWindow) * time.Second,
 	})
 
-	// Apply monitor mode
+	// Apply monitor mode. The raw-table early drop of bans only while
+	// protecting (firewall/raw.go): Learning adds no rule there.
 	w.SetMonitorMode(sync.Config.MonitorMode)
+	firewall.SetEarlyDrop(!sync.Config.MonitorMode)
 	if mailW != nil {
 		mailW.SetMonitorMode(sync.Config.MonitorMode)
 	}
@@ -2744,6 +2763,13 @@ func modsecurityRemove() error { return modsecurity.New().Remove() }
 // dashboard ban) is no longer reported; once its ban expires and is cleaned
 // up, a new detection is reported as a new ban (which drives escalation).
 func banAndReport(client *api.Client, source, ip, reason string, count int) {
+	banAndReportFor(client, source, ip, reason, count, 0)
+}
+
+// banAndReportFor is banAndReport with the ban's own duration (http_flood's
+// escalation): the firewall ban and the reported ban end after d. With
+// d = 0 the ban lasts localBanFor here and the dashboard picks its expiry.
+func banAndReportFor(client *api.Client, source, ip, reason string, count int, d time.Duration) {
 	if protectionDisabled() {
 		return // switched off after a long refusal (refusal.go)
 	}
@@ -2754,7 +2780,13 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 	if guarded(ip, "banning") {
 		return // an SSH login in the last 30 days (sshlogins.go)
 	}
-	added, err := firewall.BanIPOnceUntil(ip, time.Now().Add(localBanFor))
+	until, expiresAt := time.Now().Add(localBanFor), (*string)(nil)
+	if d > 0 {
+		until = time.Now().Add(d)
+		exp := until.UTC().Format(time.RFC3339)
+		expiresAt = &exp
+	}
+	added, err := firewall.BanIPOnceUntil(ip, until)
 	if !added {
 		if err != nil {
 			log.Printf("[%s] not banning %s: %v", source, ip, err)
@@ -2770,11 +2802,12 @@ func banAndReport(client *api.Client, source, ip, reason string, count int) {
 	}
 	// Kept until the dashboard lists it: reported now or, when it can't be
 	// reached or refuses the agent, at the next successful sync.
-	noteLocalBan(ip, reason, count)
+	noteLocalBanUntil(ip, reason, count, expiresAt)
 	if err := reportBan(client, api.BanRequest{
 		IPAddress: ip,
 		Reason:    reason,
 		BanCount:  count,
+		ExpiresAt: expiresAt,
 	}); err != nil {
 		if !api.IsHeld(err) {
 			log.Printf("[api] failed to report ban (reported at the next sync): %v", err)

@@ -87,6 +87,7 @@ func TestFirewallIntegration(t *testing.T) {
 	sh(t, "iptables -A INPUT -s "+clientIP+" -j DROP") // legacy per-IP ban of an agent ban
 
 	Init()
+	SetEarlyDrop(true)
 	ApplyBans([]Ban{{IP: clientIP}})
 
 	t.Run("legacy INPUT rules migrated, customer rule kept", func(t *testing.T) {
@@ -109,6 +110,47 @@ func TestFirewallIntegration(t *testing.T) {
 		}
 		if canConnect() {
 			t.Fatal("banned client could connect")
+		}
+	})
+
+	t.Run("raw early drop holds the ban while another tool's ACCEPT chain is first", func(t *testing.T) {
+		raw := sh(t, "iptables -t raw -S")
+		if !ipset {
+			if strings.Contains(raw, rawChainName) {
+				t.Fatalf("raw chain without ipset:\n%s", raw)
+			}
+			return
+		}
+		if !strings.Contains(raw, jumpLine("PREROUTING", rawComment, rawChainName)) ||
+			!strings.Contains(raw, "-A "+rawChainName+" -m set --match-set "+banSetName+" src -j DROP") {
+			t.Fatalf("no raw early drop:\n%s", raw)
+		}
+		// Imunify360 every minute: its chain first in INPUT, ACCEPTing.
+		imunify := "iptables -N INPUT_imunify360 2>/dev/null; iptables -F INPUT_imunify360 && iptables -A INPUT_imunify360 -p tcp --dport 8080 -j ACCEPT && iptables -I INPUT 1 -j INPUT_imunify360"
+		sh(t, imunify)
+		if canConnect() {
+			t.Fatal("banned client got through the ACCEPT ahead of INFRAFENCE")
+		}
+		if n := sh(t, "iptables -t raw -L "+rawChainName+" -v -n -x | awk '/DROP/ {print $1}'"); n == "0" || n == "" {
+			t.Errorf("raw DROP counted %q packets", n)
+		}
+		res := mustEnsure(t)
+		if res.Ahead["jump-order:INPUT"] != "INPUT_imunify360" {
+			t.Errorf("repairs %v, ahead %v", res.Repairs, res.Ahead)
+		}
+		// Without the early drop the same order lets the ban through.
+		SetEarlyDrop(false)
+		if strings.Contains(sh(t, "iptables -t raw -S"), rawChainName) {
+			t.Fatal("raw chain left with early drop off")
+		}
+		sh(t, "iptables -I INPUT 1 -j INPUT_imunify360")
+		if !canConnect() {
+			t.Error("setup: with the ACCEPT chain first and no early drop the client should get through")
+		}
+		sh(t, "while iptables -D INPUT -j INPUT_imunify360 2>/dev/null; do :; done; iptables -F INPUT_imunify360 && iptables -X INPUT_imunify360")
+		SetEarlyDrop(true)
+		if canConnect() {
+			t.Fatal("banned client could connect with the early drop back")
 		}
 	})
 
@@ -137,6 +179,18 @@ func TestFirewallIntegration(t *testing.T) {
 	})
 
 	t.Run("self-heals after INPUT is flushed (ufw/firewalld reload)", func(t *testing.T) {
+		reload := "iptables -F INPUT && iptables -A INPUT -s " + custIP + " -j DROP && iptables -A INPUT -j ufw-user-input"
+		if ipset {
+			// With the early drop the ban holds before the repair too.
+			sh(t, reload)
+			if canConnect() {
+				t.Fatal("banned client got through ufw's ACCEPT with the raw early drop on")
+			}
+			mustEnsure(t)
+			// The filter chain alone, from here on.
+			SetEarlyDrop(false)
+			defer SetEarlyDrop(true)
+		}
 		// A reload restores the host's own persisted rules, not ours.
 		sh(t, "iptables -F INPUT && iptables -A INPUT -s "+custIP+" -j DROP && iptables -A INPUT -j ufw-user-input")
 		if !canConnect() {
@@ -152,6 +206,8 @@ func TestFirewallIntegration(t *testing.T) {
 	})
 
 	t.Run("self-heals after the chain itself is flushed", func(t *testing.T) {
+		SetEarlyDrop(false) // the filter chain alone
+		defer SetEarlyDrop(true)
 		sh(t, "iptables -F "+chainName)
 		if !canConnect() {
 			t.Fatal("setup: client should get through an empty chain")
@@ -211,7 +267,7 @@ func TestFirewallIntegration(t *testing.T) {
 			if !canConnect() {
 				t.Fatal("client should connect after the feed is cleared")
 			}
-			sh(t, "ipset destroy "+banSetName+" 2>/dev/null || (iptables -F "+chainName+" && ipset destroy "+banSetName+")")
+			sh(t, "ipset destroy "+banSetName+" 2>/dev/null || (iptables -F "+chainName+" && iptables -t raw -F "+rawChainName+" && ipset destroy "+banSetName+")")
 			if res := mustEnsure(t); !strings.Contains(strings.Join(res.Repairs, ","), "set:"+banSetName) {
 				t.Errorf("destroyed ban set not recreated: %v", res.Repairs)
 			}
@@ -350,6 +406,9 @@ func TestFirewallIntegration(t *testing.T) {
 		all := sh(t, "iptables -S")
 		if strings.Contains(all, chainName) || strings.Contains(all, "infrafence") {
 			t.Errorf("leftovers after RemoveAll:\n%s", all)
+		}
+		if raw := sh(t, "iptables -t raw -S"); strings.Contains(raw, "INFRAFENCE") || strings.Contains(raw, "infrafence") {
+			t.Errorf("raw leftovers after RemoveAll:\n%s", raw)
 		}
 		if hasIp6tables() {
 			if all6 := sh(t, "ip6tables -S"); strings.Contains(all6, "INFRAFENCE") || strings.Contains(all6, "infrafence") {

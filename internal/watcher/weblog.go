@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/infrafence/infrafence-agent/internal/proxysites"
@@ -169,6 +170,14 @@ type WebWatcher struct {
 	// cfWarned: logs already warned about Cloudflare requests without
 	// CF-Connecting-IP.
 	cfWarned map[string]bool
+
+	// http_flood (httpflood.go): request counts per address, ban history.
+	flood *floodState
+	// floodBacklog: logs whose lines being processed now are a backlog (a
+	// replay, a large chunk read at once), not counted for http_flood.
+	floodBacklog map[string]bool
+	onTimedBan TimedBanFunc
+	neverBan   func(ip string) bool
 }
 
 // ── Log path detection ──────────────────────────────────────────────
@@ -245,8 +254,17 @@ func DetectWebLogInfo() ([]LogPathInfo, map[string][]string) {
 		if info.Server == "" {
 			info.Server = serverOfLogPath(info.Path)
 		}
-		if !seen[info.Path] {
-			seen[info.Path] = true
+		// The same file under two names (a symlink, /usr/local/apache/logs
+		// and /var/log/apache2 on cPanel) is read once: its requests would
+		// count twice (http_flood).
+		key := info.Path
+		if !strings.HasPrefix(key, containerLogPrefix) {
+			if r, err := filepath.EvalSymlinks(key); err == nil {
+				key = r
+			}
+		}
+		if !seen[info.Path] && !seen[key] {
+			seen[info.Path], seen[key] = true, true
 			infos = append(infos, info)
 			if len(info.Domains) > 0 {
 				domainMap[info.Path] = info.Domains
@@ -917,46 +935,136 @@ func parseApacheVhosts(content string) []apacheVhost {
 
 // detectCpanelDomlogs finds per-domain access logs in cPanel's domlogs directory.
 // cPanel stores individual access logs at /usr/local/apache/domlogs/<domain>
-// (symlinked from /var/log/apache2/domlogs/ on some setups).
+// (symlinked from /var/log/apache2/domlogs/ on some setups); the HTTPS
+// requests of a domain go to <domain>-ssl_log next to it, and some versions
+// keep them in a directory per account (domlogs/<user>/). Apache and
+// LiteSpeed Enterprise (which reads Apache's configuration) both write them.
 func detectCpanelDomlogs() []LogPathInfo {
-	domlogDirs := []string{
-		"/usr/local/apache/domlogs",
-		"/var/log/apache2/domlogs",
-	}
-
-	var result []LogPathInfo
-	for _, dir := range domlogDirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			name := entry.Name()
-			// Skip SSL logs, FTP logs, bytes logs, and hidden files
-			if strings.HasSuffix(name, "-ssl_log") ||
-				strings.HasSuffix(name, "-bytes_log") ||
-				strings.HasSuffix(name, "-ftp_log") ||
-				strings.HasPrefix(name, ".") ||
-				name == "ftpxferlog" {
-				continue
-			}
-			path := filepath.Join(dir, name)
-			info, err := os.Stat(path)
-			if err != nil || info.IsDir() || info.Size() == 0 {
-				continue
-			}
-			// The filename IS the domain name in cPanel domlogs
-			result = append(result, LogPathInfo{
-				Path:    path,
-				Domains: []string{name},
-			})
-		}
-		if len(result) > 0 {
+	for _, dir := range []string{"/usr/local/apache/domlogs", "/var/log/apache2/domlogs"} {
+		if result := cpanelDomlogsIn(dir); len(result) > 0 {
 			log.Printf("[webwatcher] detected %d cPanel domlogs in %s", len(result), dir)
 			return result // found domlogs, no need to check other dirs
 		}
 	}
 	return nil
+}
+
+// maxCpanelDomlogs bounds the logs taken from a domlogs directory.
+const maxCpanelDomlogs = 4000
+
+// cpanelDomlogsIn lists the access logs of a cPanel domlogs directory and
+// of its per-account directories, each file once (through symlinks too).
+func cpanelDomlogsIn(dir string) []LogPathInfo {
+	var result []LogPathInfo
+	seen := map[string]bool{}
+	var scan func(d string, depth int)
+	scan = func(d string, depth int) {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			if len(result) >= maxCpanelDomlogs {
+				return
+			}
+			name := entry.Name()
+			path := filepath.Join(d, name)
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			if entry.IsDir() {
+				if depth == 0 && rootOwnedDir(path) {
+					scan(path, 1)
+				}
+				continue
+			}
+			domain, ok := cpanelDomlogDomain(name)
+			if !ok {
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil || info.IsDir() || info.Size() == 0 {
+				continue
+			}
+			// In an account's directory only the web server's own files:
+			// regular (no symlink), owned by the agent's user (root), not
+			// writable by others. Lines written by someone else could ban any
+			// address.
+			if depth == 1 && !trustedLogFile(path) {
+				continue
+			}
+			// An account's directory also keeps old logs: only those still
+			// written (the hot reload picks up one that starts again).
+			if depth == 1 && time.Since(info.ModTime()) > 7*24*time.Hour {
+				continue
+			}
+			real := path
+			if r, err := filepath.EvalSymlinks(path); err == nil {
+				real = r
+			}
+			if seen[real] {
+				continue
+			}
+			seen[real] = true
+			result = append(result, LogPathInfo{Path: path, Domains: []string{domain}})
+		}
+	}
+	scan(dir, 0)
+	return result
+}
+
+// cpanelDomlogDomain: the domain of a domlogs file name (example.com, the
+// HTTPS log example.com-ssl_log), false for what is not an access log
+// (bandwidth and FTP logs, rotated or compressed copies).
+func cpanelDomlogDomain(name string) (string, bool) {
+	if name == "ftpxferlog" || strings.HasSuffix(name, "-bytes_log") || strings.HasSuffix(name, "-ftp_log") {
+		return "", false
+	}
+	for _, suffix := range []string{".gz", ".bz2", ".xz", ".zip", ".bkup", ".offset", ".tmp", ".old"} {
+		if strings.HasSuffix(name, suffix) {
+			return "", false
+		}
+	}
+	domain := strings.TrimSuffix(name, "-ssl_log")
+	// The filename IS the domain name in cPanel domlogs; one ending in a
+	// number (example.com.1, example.com.20260101) is a rotated copy.
+	tld := domain[strings.LastIndexByte(domain, '.')+1:]
+	if !strings.ContainsRune(domain, '.') || strings.ContainsAny(domain, " /_") || !isTLDLabel(tld) {
+		return "", false
+	}
+	return domain, true
+}
+
+// isTLDLabel: letters only, or an IDN label (xn--).
+func isTLDLabel(s string) bool {
+	if strings.HasPrefix(s, "xn--") {
+		return len(s) > 4
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return len(s) >= 2
+}
+
+// rootOwnedDir: a directory owned by the agent's user and not writable by
+// group or others.
+func rootOwnedDir(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.IsDir() && fi.Mode().Perm()&0o022 == 0 && ownedByMe(fi)
+}
+
+// trustedLogFile: a regular file (not a symlink) owned by the agent's user,
+// not writable by group or others.
+func trustedLogFile(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o022 == 0 && ownedByMe(fi)
+}
+
+func ownedByMe(fi os.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Geteuid()
 }
 
 // ── Docker container log detection ──────────────────────────────────
@@ -1192,6 +1300,8 @@ func NewWebWatcher(paths []string, domainMap map[string][]string, onBan BanFunc,
 		activePaths:   make(map[string]context.CancelFunc),
 		sources:       make(map[string]LogPathInfo),
 		cfWarned:      make(map[string]bool),
+		flood:         newFloodState(),
+		floodBacklog:  make(map[string]bool),
 	}
 }
 
@@ -1477,6 +1587,7 @@ func (w *WebWatcher) cleanupLoop() {
 			w.attempts = make(map[string][]time.Time)
 		}
 		w.mu.Unlock()
+		w.pruneFlood()
 	}
 }
 
@@ -1498,7 +1609,8 @@ func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error 
 
 	// WEBLOG_REPLAY=1 → process the entire existing file (for testing/backfill)
 	var offset int64
-	if os.Getenv("WEBLOG_REPLAY") == "1" {
+	replay := os.Getenv("WEBLOG_REPLAY") == "1"
+	if replay {
 		offset = 0
 		log.Printf("[webwatcher] REPLAY mode: processing %s from beginning (%d bytes)", filepath.Base(logPath), fi.Size())
 	} else {
@@ -1544,6 +1656,13 @@ func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error 
 			partial += string(buf[:n])
 			offset += int64(n)
 
+			// Lines of the past read at once (a replay, a tail that was held
+			// up) would all count as this second's requests for http_flood.
+			backlog := replay || n > floodBacklogBytes
+			replay = false
+			if backlog {
+				w.setFloodBacklog(logPath, true)
+			}
 			for {
 				idx := strings.IndexByte(partial, '\n')
 				if idx < 0 {
@@ -1551,6 +1670,9 @@ func (w *WebWatcher) tailWithContext(ctx context.Context, logPath string) error 
 				}
 				w.processLine(logPath, partial[:idx])
 				partial = partial[idx+1:]
+			}
+			if backlog {
+				w.setFloodBacklog(logPath, false)
 			}
 		}
 
@@ -1879,6 +2001,9 @@ var (
 	ruleMedusaAuth = thresholdRule{"medusa_auth", "cms_bruteforce", 10, 2 * time.Minute}
 	rulePluginScan = thresholdRule{"plugin_scan", "scanner_detected", 5, 5 * time.Minute}
 	rule404Flood   = thresholdRule{"404_flood", "404_flood", 15, 5 * time.Minute}
+	// http_flood is counted per address across every log (httpflood.go);
+	// listed here for the catalog.
+	ruleHTTPFlood = thresholdRule{httpFloodType, httpFloodType, httpFloodDefault, floodWindowSecs * time.Second}
 )
 
 // ── Line processing ─────────────────────────────────────────────────
@@ -1949,12 +2074,21 @@ func (w *WebWatcher) processLine(logPath, line string) {
 		entry.domain = routerHost(entry.router)
 	}
 
+	uriRaw := strings.ToLower(entry.uri)
+
+	// ── http_flood: every request but static files, from every log ──
+	// Counted before the exemptions below (private addresses, whitelist),
+	// which the rule checks itself when an address crosses the threshold,
+	// so an exempt flood is logged rather than invisible.
+	if !w.banned[ip] && w.isTypeEnabled(httpFloodType) && !w.floodBacklog[logPath] && !floodStatic(uriRaw, entry.status) {
+		w.countFlood(ip, logPath, line, server, &entry)
+	}
+
 	// Skip private/reserved IPs (Docker bridge, localhost, etc.)
 	if isPrivateIP(ip) {
 		return
 	}
 
-	uriRaw := strings.ToLower(entry.uri)
 	// Double-decode URI to catch double URL-encoded attacks (%252fetc → %2fetc → /etc)
 	uriLower := uriRaw
 	if decoded, err := url.QueryUnescape(uriLower); err == nil {

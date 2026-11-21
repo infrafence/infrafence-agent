@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/infrafence/infrafence-agent/internal/api"
 	"github.com/infrafence/infrafence-agent/internal/firewall"
+	"github.com/infrafence/infrafence-agent/internal/preflight"
 )
 
 // The firewall guard keeps the INFRAFENCE chains, jumps and sets in place.
@@ -32,6 +34,13 @@ import (
 //     of repairs since the last one). Back-to-back repairs, or 3 a hour,
 //     mean another tool keeps rewriting the firewall: one firewall_conflict
 //     an hour.
+//   - Except a restore that only moves the agent's jumps back ahead of the
+//     chains of a tool that recreates its rules on a timer (Imunify360,
+//     every minute: preflight.PeriodicRuleOwner). That is expected: the
+//     first is logged at once, the others are counted and summarized once
+//     an hour, in the log and as an info event (never a warning or a
+//     firewall_conflict), and they do not count towards the back-off. A
+//     restore that repairs anything else is logged and reported as above.
 const (
 	guardTick       = time.Second
 	guardQuick      = 5 * time.Second
@@ -44,6 +53,7 @@ const (
 	guardCSFWait    = 2 * time.Minute
 	guardEventEvery = time.Minute
 	guardConflict   = time.Hour
+	guardExpected   = time.Hour
 )
 
 type firewallGuard struct {
@@ -52,6 +62,11 @@ type firewallGuard struct {
 	csfHolder   func() (pid int, held bool)
 	ensure      func() (firewall.EnsureResult, error)
 	report      func([]api.EventRequest) error
+	// periodicOwner names the installed tool that owns a chain and
+	// recreates its rules on a timer ("" for none); nil: none.
+	periodicOwner func(chain string) string
+	// earlyDrop reports whether bans are also dropped in the raw table.
+	earlyDrop func() bool
 
 	nextQuick, nextFull, followUp time.Time
 
@@ -70,6 +85,15 @@ type firewallGuard struct {
 	csfPID    int
 	csfSince  time.Time
 	csfForced bool // waited long enough for this lock holder
+
+	// Expected restores (expectedAfter): the first was logged; then how
+	// many since expSince, after which tools, repairing what.
+	expLogged    bool
+	lastExpected time.Time
+	expSince     time.Time
+	expN         int
+	expTools     map[string]bool
+	expWhat      map[string]bool
 }
 
 func newFirewallGuard(client *api.Client) *firewallGuard {
@@ -79,6 +103,9 @@ func newFirewallGuard(client *api.Client) *firewallGuard {
 		csfHolder:   firewall.CSFLockHolder,
 		ensure:      firewall.Ensure,
 		report:      client.ReportEvents,
+
+		periodicOwner: preflight.PeriodicRuleOwner,
+		earlyDrop:     firewall.EarlyDropInForce,
 	}
 	g.start()
 	return g
@@ -100,6 +127,7 @@ func runFirewallGuard(client *api.Client) {
 func (g *firewallGuard) tick() {
 	now := g.now()
 	g.flushEvents(now)
+	g.flushExpected(now)
 	if g.backoff > 0 && now.Sub(g.lastTrouble) >= guardQuiet {
 		g.backoff, g.retryAt = 0, time.Time{}
 	}
@@ -150,10 +178,19 @@ func (g *firewallGuard) tick() {
 	if res.First || len(res.Repairs) == 0 {
 		return
 	}
-	log.Printf("[firewall] guard: restored %v", res.Repairs)
 	if quick {
 		g.followUp = now.Add(guardFollowUp)
 	}
+	// A tool's periodic rebuild comes a minute apart: one within 30 s of
+	// the last (its follow-up aside) is not that, and is reported as usual.
+	if tools := g.expectedAfter(res); tools != "" && (followUp || g.lastExpected.IsZero() || now.Sub(g.lastExpected) >= guardBackToBack) {
+		if !followUp {
+			g.lastExpected = now
+		}
+		g.noteExpected(now, tools, res.Repairs)
+		return
+	}
+	log.Printf("[firewall] guard: restored %v", res.Repairs)
 	// A follow-up finishing the same rebuild is not the other tool
 	// rewriting the firewall again.
 	backToBack := !followUp && !g.lastRepair.IsZero() && now.Sub(g.lastRepair) < guardBackToBack
@@ -256,4 +293,102 @@ func (g *firewallGuard) send(events []api.EventRequest) {
 	if err := g.report(events); err != nil {
 		log.Printf("[firewall] guard: failed to report: %v", err)
 	}
+}
+
+// expectedAfter names the tools whose periodic rebuild explains every
+// repair of res ("" when one is not explained): each is a jump-order
+// repair, and every rule that could ACCEPT ahead of the agent's jump is a
+// jump to a chain of an installed tool that recreates its rules on a
+// timer.
+func (g *firewallGuard) expectedAfter(res firewall.EnsureResult) string {
+	if g.periodicOwner == nil {
+		return ""
+	}
+	var tools []string
+	for _, r := range res.Repairs {
+		ahead := res.Ahead[r]
+		if !strings.HasPrefix(r, "jump-order:") || ahead == "" {
+			return ""
+		}
+		// Every rule that could ACCEPT ahead of the agent's jump.
+		for _, chain := range strings.Split(ahead, ",") {
+			owner := g.periodicOwner(chain)
+			if owner == "" {
+				return ""
+			}
+			if !slices.Contains(tools, owner) {
+				tools = append(tools, owner)
+			}
+		}
+	}
+	sort.Strings(tools)
+	return strings.Join(tools, ", ")
+}
+
+// noteExpected logs the first expected restore and counts the others for
+// flushExpected.
+func (g *firewallGuard) noteExpected(now time.Time, tools string, what []string) {
+	if !g.expLogged {
+		g.expLogged = true
+		held := "bans are not enforced meanwhile for traffic its chains accept"
+		if g.earlyDrop != nil && g.earlyDrop() {
+			held = "bans hold meanwhile in the raw table"
+		}
+		log.Printf("[firewall] guard: restored %v after %s recreated its rules (expected: it recreates them on its own; %s). Further restores like this are summarized once an hour", what, tools, held)
+		g.sendExpected(now, tools, what, 1)
+		return
+	}
+	if g.expN == 0 {
+		g.expSince, g.expTools, g.expWhat = now, map[string]bool{}, map[string]bool{}
+	}
+	g.expN++
+	g.expTools[tools] = true
+	for _, w := range what {
+		g.expWhat[w] = true
+	}
+}
+
+// flushExpected logs and reports the expected restores counted, once an
+// hour.
+func (g *firewallGuard) flushExpected(now time.Time) {
+	if g.expN == 0 || now.Sub(g.expSince) < guardExpected {
+		return
+	}
+	tools := strings.Join(sortedKeys(g.expTools), ", ")
+	what := sortedKeys(g.expWhat)
+	log.Printf("[firewall] guard: jump order restored %d times in the last hour after %s recreated its rules (expected)", g.expN, tools)
+	g.sendExpected(now, tools, what, g.expN)
+	g.expN, g.expTools, g.expWhat = 0, nil, nil
+}
+
+// sendExpected reports expected restores as one event: info, not an
+// alert, while the raw table holds the bans meanwhile; a warning (at most
+// one an hour) where it cannot, since banned traffic the tool's chains
+// accept then gets through for those seconds.
+func (g *firewallGuard) sendExpected(now time.Time, tools string, what []string, n int) {
+	early := g.earlyDrop != nil && g.earlyDrop()
+	sev := "info"
+	if !early {
+		sev = "warning"
+	}
+	g.send([]api.EventRequest{{
+		Type:     "firewall_rules_restored",
+		Severity: sev,
+		Details: map[string]string{
+			"restored":       strings.Join(what, ", "),
+			"count":          strconv.Itoa(n),
+			"expected_after": tools,
+			"bans_held":      strconv.FormatBool(early),
+		},
+		OccurredAt: now.UTC().Format(time.RFC3339),
+	}})
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -20,7 +20,7 @@ agent_log() { journalctl -u infrafence-agent --no-pager --since "@$t0" 2>/dev/nu
 wait_log() { for _ in $(seq 1 60); do grep -q "$1" <<<"$(agent_log)" && return 0; sleep 1; done; return 1; }
 ours_left() {
   local rules sets
-  rules=$({ iptables -S; ip6tables -S; } 2>/dev/null || true)
+  rules=$({ iptables -S; iptables -t raw -S; ip6tables -S; } 2>/dev/null || true)
   sets=$(ipset list -n 2>/dev/null || true)
   grep -q INFRAFENCE <<<"$rules" && return 0
   grep -q '^infrafence-' <<<"$sets" && return 0

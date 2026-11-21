@@ -24,7 +24,7 @@ func TestWAFCatalogIntegrity(t *testing.T) {
 			t.Errorf("incomplete threshold rule %+v", th)
 		}
 	}
-	if len(c.Patterns) < 100 || len(c.Thresholds) != 7 {
+	if len(c.Patterns) < 100 || len(c.Thresholds) != 8 {
 		t.Errorf("unexpected catalog size: %d patterns, %d thresholds", len(c.Patterns), len(c.Thresholds))
 	}
 }
