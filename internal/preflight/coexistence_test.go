@@ -126,3 +126,25 @@ func TestCoexistenceModSecurityWithoutVendors(t *testing.T) {
 		t.Errorf("modsecurity: %+v mode %s", ms, c.Mode)
 	}
 }
+
+// Imunify360's chains are explained only where Imunify360 is installed.
+func TestPeriodicRuleOwner(t *testing.T) {
+	if got := PeriodicRuleOwnerEnv(ubuntu(), "INPUT_imunify360"); got != "" {
+		t.Errorf("without Imunify360: %q", got)
+	}
+	for _, p := range imunifyPaths {
+		env := ubuntu()
+		env.files[p] = ""
+		for chain, want := range map[string]string{
+			"INPUT_imunify360":  "Imunify360",
+			"OUTPUT_imunify360": "Imunify360",
+			"ufw-before-input":  "",
+			"LOCALINPUT":        "",
+			"":                  "",
+		} {
+			if got := PeriodicRuleOwnerEnv(env, chain); got != want {
+				t.Errorf("%s installed, chain %q: %q, want %q", p, chain, got, want)
+			}
+		}
+	}
+}

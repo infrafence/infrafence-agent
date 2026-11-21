@@ -202,6 +202,9 @@ fi
 # ── that login is known: its brute force is not banned (test/distro/loginhist.sh) ──
 loginhist_check
 
+# ── bans dropped in the raw table too: hold with another tool's chain first (test/distro/earlydrop.sh) ──
+. /distro/earlydrop.sh
+
 # ── preflight (read only) for the record ──
 /usr/local/bin/infrafence-agent preflight 2>/dev/null | head -25 | sed 's/^/[preflight] /'
 
@@ -257,6 +260,7 @@ loginhist_check
 bash /distro/install.sh --uninstall >/tmp/uninstall.log 2>&1
 left=""
 iptables -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables"
+iptables -t raw -S 2>/dev/null | grep -q INFRAFENCE && left="$left iptables-raw"
 ip6tables -S 2>/dev/null | grep -q INFRAFENCE && left="$left ip6tables"
 [ -e /var/lib/infrafence/firewall-state.json ] && left="$left firewall-state"
 [ -e /var/lib/infrafence/egress-destinations.json ] && left="$left egress-destinations"

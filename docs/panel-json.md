@@ -701,7 +701,7 @@ the dashboard's event) or the firewall no longer closes it.
       "version": null
     },
     {
-      "action": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Both can ban an HTTP flood: InfraFence counts the requests of one address across all access logs (domlogs included) and never bans CDN edges or verified crawlers.",
+      "action": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Both can ban an HTTP flood: InfraFence counts the requests of one address across all access logs (domlogs included) and never bans CDN edges or verified crawlers. Imunify360 recreates its rules every minute and puts its own jumps first; InfraFence moves its jump back ahead within seconds (expected, summarized once an hour), and also drops its bans in the raw table, before Imunify360's chains, so they hold meanwhile.",
       "action_id": "coexist_imunify",
       "active": true,
       "id": "imunify",

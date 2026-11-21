@@ -226,6 +226,9 @@ func restoreSettings(ws banWatchers, setBlocked func([]string), applyCountries f
 	if setBlocked != nil {
 		setBlocked(s.Countries)
 	}
+	if !protectionDisabled() {
+		firewall.SetEarlyDrop(!s.MonitorMode)
+	}
 	if protectionDisabled() {
 		// Switched off after a long refusal: nothing is banned or blocked
 		// until the dashboard accepts the agent again.

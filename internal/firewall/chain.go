@@ -83,6 +83,24 @@ type fwState struct {
 	v6Applied   []string
 	v6FailedKey string
 	v6InForce   bool
+
+	// The raw-table early drop (raw.go): wanted (SetEarlyDrop), and the
+	// chain as last applied, like the filter chains. A desired state
+	// iptables refused is retried after rawRetry; the failure is logged
+	// once. rawChecked: a chain left by an earlier run was looked for.
+	earlyDrop    bool
+	earlyDropSet bool
+	rawDesired   string
+	rawApplied   []string
+	rawFailedKey string
+	rawFailedAt  time.Time
+	rawLogged    bool
+	rawInForce   bool
+	rawChecked   bool
+
+	// ahead: for each jump-order repair of the current Ensure, the chain
+	// whose jump was ahead of the agent's (EnsureResult.Ahead).
+	ahead map[string]string
 }
 
 var fw = &fwState{bans: map[string]banEntry{}, geo: map[string][]string{}}
@@ -394,7 +412,16 @@ func currentRules(chain string) (lines []string, ok bool) {
 
 // currentRulesOf is currentRules for iptables or ip6tables.
 func currentRulesOf(bin, chain string) (lines []string, ok bool) {
-	out, err := run(bin, "-S", chain)
+	return currentRulesIn(bin, "filter", chain)
+}
+
+// currentRulesIn is currentRulesOf for a chain of any table.
+func currentRulesIn(bin, table, chain string) (lines []string, ok bool) {
+	args := []string{"-S", chain}
+	if table != "filter" {
+		args = append([]string{"-t", table}, args...)
+	}
+	out, err := run(bin, args...)
 	if err != nil {
 		return nil, false
 	}
@@ -533,7 +560,7 @@ func mayAccept(line string) bool {
 			return true
 		case t == "DROP" || t == "REJECT" || t == "RETURN" || t == "LOG":
 			return false
-		case t == chainName || t == rulesChainName || t == portsChainName || t == egressChainName:
+		case t == chainName || t == rulesChainName || t == portsChainName || t == egressChainName || t == rawChainName:
 			return false
 		case strings.HasPrefix(t, "f2b-") || strings.HasPrefix(t, "fail2ban") || strings.HasPrefix(strings.ToLower(t), "crowdsec"):
 			return false
@@ -586,33 +613,84 @@ func ensureJumpAhead(chain, comment, target string) (repaired []string, err erro
 
 // ensureJumpAheadOf is ensureJumpAhead for iptables or ip6tables.
 func ensureJumpAheadOf(bin, chain, comment, target string) (repaired []string, err error) {
-	prefix := ""
+	return ensureJumpAheadIn(bin, "filter", chain, comment, target)
+}
+
+// ensureJumpAheadIn is ensureJumpAheadOf for a chain of any table. A
+// jump-order repair notes the chain whose jump was ahead (noteAhead).
+func ensureJumpAheadIn(bin, table, chain, comment, target string) (repaired []string, err error) {
+	prefix, t := "", []string(nil)
 	if bin != "iptables" {
 		prefix = bin + ":"
 	}
-	lines, ok := currentRulesOf(bin, chain)
+	if table != "filter" {
+		prefix += table + ":"
+		t = []string{"-t", table}
+	}
+	lines, ok := currentRulesIn(bin, table, chain)
 	if !ok {
 		return nil, fmt.Errorf("cannot list %s", chain)
 	}
+	insert := append(append(append([]string{}, t...), "-I", chain, "1"), jumpArgs(comment, target)...)
 	ours, firstAccept := jumpPosition(lines, jumpLine(chain, comment, target))
 	switch {
 	case ours < 0:
-		if out, err := run(bin, append([]string{"-I", chain, "1"}, jumpArgs(comment, target)...)...); err != nil {
+		if out, err := run(bin, insert...); err != nil {
 			return nil, fmt.Errorf("insert %s jump: %s (%w)", chain, out, err)
 		}
 		repaired = append(repaired, "jump:"+prefix+chain)
 	case firstAccept >= 0 && ours > firstAccept:
 		// Insert the new jump first, then delete the old one by number, so
 		// there is never a moment without it.
-		if out, err := run(bin, append([]string{"-I", chain, "1"}, jumpArgs(comment, target)...)...); err != nil {
+		if out, err := run(bin, insert...); err != nil {
 			return nil, fmt.Errorf("move %s jump: %s (%w)", chain, out, err)
 		}
-		if out, err := run(bin, "-D", chain, strconv.Itoa(ours+2)); err != nil {
+		if out, err := run(bin, append(append([]string{}, t...), "-D", chain, strconv.Itoa(ours+2))...); err != nil {
 			return nil, fmt.Errorf("remove old %s jump: %s (%w)", chain, out, err)
 		}
 		repaired = append(repaired, "jump-order:"+prefix+chain)
+		noteAhead("jump-order:"+prefix+chain, acceptersAhead(lines[firstAccept:ours]))
 	}
 	return repaired, nil
+}
+
+// jumpTarget returns the chain or target a rule jumps to ("" for none).
+func jumpTarget(line string) string {
+	f := strings.Fields(line)
+	for i := 0; i+1 < len(f); i++ {
+		if f[i] == "-j" || f[i] == "-g" {
+			return f[i+1]
+		}
+	}
+	return ""
+}
+
+// acceptersAhead lists the targets of the rules that can ACCEPT among
+// lines (those ahead of the agent's jump), comma-separated.
+func acceptersAhead(lines []string) string {
+	var out []string
+	for _, l := range lines {
+		if mayAccept(l) {
+			t := jumpTarget(l)
+			if t == "" {
+				t = "?"
+			}
+			out = append(out, t)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// noteAhead records, for Ensure's result, which chain was ahead of the
+// agent's jump. Called with fw locked (from Ensure).
+func noteAhead(repair, target string) {
+	if target == "" {
+		return
+	}
+	if fw.ahead == nil {
+		fw.ahead = map[string]string{}
+	}
+	fw.ahead[repair] = target
 }
 
 // jumpPosition returns the index of jump in lines and of the first rule
@@ -699,17 +777,24 @@ type EnsureResult struct {
 	Repairs []string
 	// First is true for the initial setup at startup (not a repair).
 	First bool
+	// Ahead maps each jump-order repair ("jump-order:INPUT") to the
+	// targets of every rule that could ACCEPT ahead of the agent's jump,
+	// comma-separated ("INPUT_imunify360"), so the guard can tell a tool's
+	// periodic rebuild from a conflict.
+	Ahead map[string]string
 }
 
 // Ensure makes the host's firewall match the agent's state. Safe to call
 // often: it only changes what is missing or wrong.
-func Ensure() (EnsureResult, error) {
+func Ensure() (res EnsureResult, err error) {
 	fw.Lock()
 	defer fw.Unlock()
-	res := EnsureResult{First: !fw.initialized}
+	res = EnsureResult{First: !fw.initialized}
 	if fw.disabled {
 		return res, nil
 	}
+	fw.ahead = nil
+	defer func() { res.Ahead, fw.ahead = fw.ahead, nil }()
 
 	ipset := HasIpset()
 	if ipset {
@@ -753,6 +838,7 @@ func Ensure() (EnsureResult, error) {
 		return res, err
 	}
 	res.Repairs = append(res.Repairs, ensureDockerJump()...)
+	res.Repairs = append(res.Repairs, fw.ensureRaw(ipset)...)
 	res.Repairs = append(res.Repairs, fw.ensurePorts6()...)
 	// Only now, and only what is in force in nf_tables.
 	res.Repairs = append(res.Repairs, removeStaleLegacy(peErr == nil, fw.v6InForce, false)...)
@@ -760,6 +846,9 @@ func Ensure() (EnsureResult, error) {
 	return res, peErr
 }
 
+// The raw-table early drop (raw.go) is not looked at here: it backs up the
+// filter chain, and the guard's full Ensure, every minute, repairs it.
+//
 // NeedsRepair reports whether the INPUT jump to the INFRAFENCE chain is
 // gone or no longer ahead of the first rule that can ACCEPT (a banned
 // address would pass behind it), with a single "iptables -S INPUT": cheap
@@ -863,6 +952,7 @@ func (s *fwState) resetSnapshotsLocked() {
 	s.lastDesired, s.applied = "", nil
 	s.peFailedKey, s.peInForce = "", false
 	s.v6Desired, s.v6Applied, s.v6FailedKey, s.v6InForce = "", nil, "", false
+	s.rawDesired, s.rawApplied, s.rawFailedKey, s.rawInForce = "", nil, "", false
 	s.legacyDone = true
 }
 
@@ -928,7 +1018,7 @@ func removeChainsOf(bin string) []string {
 		_, _ = run(bin, "-X", ch)
 		done = append(done, "chain:"+prefix+ch)
 	}
-	return done
+	return append(done, removeRawOf(bin)...)
 }
 
 // The x_tables (legacy) tables loaded in the kernel, one name a line.

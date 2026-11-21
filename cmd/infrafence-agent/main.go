@@ -1193,6 +1193,8 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 			webW.SetMonitorMode(true)
 		}
 		noteSuspendedSync()
+		// Nothing new is dropped while suspended: no raw-table early drop.
+		firewall.SetEarlyDrop(false)
 		// Still check for agent updates so the agent can be updated while
 		// suspended (host settings aren't applied in this state, so read the
 		// customer's update choice here).
@@ -1209,8 +1211,10 @@ func syncAndApply(client *api.Client, w *watcher.Watcher, webW *watcher.WebWatch
 		Window:    time.Duration(sync.Config.BFWindow) * time.Second,
 	})
 
-	// Apply monitor mode
+	// Apply monitor mode. The raw-table early drop of bans only while
+	// protecting (firewall/raw.go): Learning adds no rule there.
 	w.SetMonitorMode(sync.Config.MonitorMode)
+	firewall.SetEarlyDrop(!sync.Config.MonitorMode)
 	if mailW != nil {
 		mailW.SetMonitorMode(sync.Config.MonitorMode)
 	}

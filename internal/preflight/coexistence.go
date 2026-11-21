@@ -52,8 +52,10 @@ var coexistActions = map[string]string{
 	"csf": "InfraFence keeps its own chain and never edits csf.conf, csf.allow or csf.deny. " +
 		"After csf -r it restores only its own chains, jumps and sets, within seconds and never while csf is restarting. " +
 		"CSF ports change only when you ask from the dashboard.",
-	"lfd":            "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set. lfd's CT_LIMIT counts connections; InfraFence's HTTP flood rule counts requests in the access logs, so a keep-alive flood is caught too.",
-	"imunify":        "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Both can ban an HTTP flood: InfraFence counts the requests of one address across all access logs (domlogs included) and never bans CDN edges or verified crawlers.",
+	"lfd": "Both read the same logs and block on their own; lfd blocks stay in CSF, InfraFence bans stay in its own set. lfd's CT_LIMIT counts connections; InfraFence's HTTP flood rule counts requests in the access logs, so a keep-alive flood is caught too.",
+	"imunify": "InfraFence leaves Imunify360's firewall, ipsets and WAF alone and keeps to its own chain; both block independently. Both can ban an HTTP flood: InfraFence counts the requests of one address across all access logs (domlogs included) and never bans CDN edges or verified crawlers. " +
+		"Imunify360 recreates its rules every minute and puts its own jumps first; InfraFence moves its jump back ahead within seconds (expected, summarized once an hour), " +
+		"and also drops its bans in the raw table, before Imunify360's chains, so they hold meanwhile.",
 	"imunifyav":      "Both scan files. InfraFence never deletes or moves a file on its own: quarantine only on request.",
 	"cphulk":         "cPHulk blocks panel and service logins; InfraFence reads the same logs and bans at the firewall. cPHulk is not changed.",
 	"fail2ban":       "Compatible: both only drop traffic. InfraFence does not touch fail2ban's chains.",
@@ -111,7 +113,7 @@ func DetectCoexistenceEnv(env Env) Coexistence {
 			add(Tool{ID: "lfd", Name: "lfd (Login Failure Daemon)", Kind: "brute_force", Active: active("lfd")})
 		}
 	}
-	if anyExists("/usr/bin/imunify360-agent", "/etc/sysconfig/imunify360") {
+	if anyExists(imunifyPaths...) {
 		t := Tool{ID: "imunify", Name: "Imunify360", Kind: "firewall", Firewall: true, Active: active("imunify360", "imunify360-agent")}
 		add(t)
 	} else if anyExists("/usr/bin/imunify-antivirus", "/etc/sysconfig/imunify360/imunify-antivirus.config") {
@@ -262,6 +264,45 @@ func firstExisting(env Env, paths []string) string {
 	for _, p := range paths {
 		if env.Exists(p) {
 			return p
+		}
+	}
+	return ""
+}
+
+// imunifyPaths: Imunify360 is installed when one of them exists.
+var imunifyPaths = []string{"/usr/bin/imunify360-agent", "/etc/sysconfig/imunify360"}
+
+// Firewall tools that recreate their own rules on a timer, whatever anyone
+// else does: each rebuild puts the jumps to their chains first in INPUT and
+// OUTPUT, ahead of the agent's, and the agent's guard moves its own back.
+// Expected, not a conflict (cmd/infrafence-agent/fwguard.go). Imunify360
+// does it every minute ("Rules and sets successfully recreated" in
+// /var/log/imunify360/console.log), with or without InfraFence. CSF,
+// firewalld, ufw and Plesk Firewall rebuild only when asked, and remove the
+// agent's jumps rather than reorder them: those restores are still logged
+// and reported as they happen.
+var periodicFirewalls = []struct {
+	name  string
+	paths []string // installed: any of them exists, as for DetectCoexistence
+	owns  func(chain string) bool
+}{
+	{"Imunify360", imunifyPaths, func(c string) bool { return strings.Contains(strings.ToLower(c), "imunify360") }},
+}
+
+// PeriodicRuleOwner names the installed tool that owns chain and recreates
+// its rules on a timer ("" for none).
+func PeriodicRuleOwner(chain string) string { return PeriodicRuleOwnerEnv(hostEnv{}, chain) }
+
+// PeriodicRuleOwnerEnv is PeriodicRuleOwner through env.
+func PeriodicRuleOwnerEnv(env Env, chain string) string {
+	for _, t := range periodicFirewalls {
+		if !t.owns(chain) {
+			continue
+		}
+		for _, p := range t.paths {
+			if env.Exists(p) {
+				return t.name
+			}
 		}
 	}
 	return ""
