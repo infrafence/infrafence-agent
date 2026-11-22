@@ -98,6 +98,11 @@ func cmdAudit(args []string) {
 		_, _ = fmt.Fprintf(os.Stderr, "infrafence-agent audit: %v\n\n%s", err, auditUsage)
 		os.Exit(2)
 	}
+	// A file a command of the audit writes (dnf -C may rebuild its solv cache under
+	// /var/cache/dnf, read later by dnf as root) is never writable by group or others,
+	// whatever umask the audit was started with (docker exec starts processes with 0000):
+	// group and other write bits are added to the inherited umask, nothing is removed.
+	syscall.Umask(syscall.Umask(0) | 0o022)
 	// Before anything runs a command (LowerPriority re-execs with this
 	// environment).
 	if err := audit.PinPath(); err != nil {

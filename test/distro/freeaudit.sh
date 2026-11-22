@@ -104,15 +104,22 @@ if command -v systemctl >/dev/null; then
   # this boot only (mask --runtime writes under /run, outside the
   # snapshots), so none can start until the container is gone. EL8's
   # systemd 239 has no is-system-running --wait, hence no reliance on it.
-  for u in dnf-makecache.timer dnf-makecache.service apt-daily.timer apt-daily.service \
-           apt-daily-upgrade.timer apt-daily-upgrade.service; do
+  # A run already started is let finish, not stopped: a dnf-makecache killed
+  # halfway leaves metadata newer than its solv cache, and the audit's dnf -C
+  # then rebuilds the solv files inside the window.
+  pkgcache_units="dnf-makecache.service apt-daily.service apt-daily-upgrade.service"
+  for u in dnf-makecache.timer apt-daily.timer apt-daily-upgrade.timer; do
     systemctl mask --runtime "$u" >/dev/null 2>&1 || true
     systemctl stop "$u" >/dev/null 2>&1 || true
   done
-  for _ in $(seq 1 120); do
-    systemctl is-active dnf-makecache.service apt-daily.service apt-daily-upgrade.service 2>/dev/null \
+  for _ in $(seq 1 300); do
+    # shellcheck disable=SC2086
+    systemctl is-active $pkgcache_units 2>/dev/null \
       | grep -qE '^(active|activating|reloading|deactivating)$' || break
     sleep 1
+  done
+  for u in $pkgcache_units; do
+    systemctl mask --runtime "$u" >/dev/null 2>&1 || true
   done
 fi
 # EL8's rpm keeps a Berkeley DB environment (/var/lib/rpm/__db.NNN) that
